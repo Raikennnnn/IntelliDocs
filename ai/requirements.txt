@@ -1,0 +1,6 @@
+Flask==3.0.3
+EasyOCR==1.7.1
+opencv-python==4.10.0.82
+numpy==1.26.4
+Werkzeug==3.0.3
+
