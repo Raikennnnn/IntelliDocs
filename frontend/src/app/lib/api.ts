@@ -4,8 +4,24 @@ export function getStoredUserId(): string | null {
   try {
     const raw = localStorage.getItem('user');
     if (!raw) return null;
-    const u = JSON.parse(raw) as { id?: string };
-    return u.id != null ? String(u.id) : null;
+    const u = JSON.parse(raw) as {
+      id?: string | number;
+      userId?: string | number;
+      user_id?: string | number;
+      user?: { id?: string | number; userId?: string | number; user_id?: string | number };
+    };
+
+    const candidate =
+      u.id ??
+      u.userId ??
+      u.user_id ??
+      u.user?.id ??
+      u.user?.userId ??
+      u.user?.user_id;
+
+    if (candidate == null) return null;
+    const normalized = String(candidate).trim();
+    return normalized.length > 0 ? normalized : null;
   } catch {
     return null;
   }

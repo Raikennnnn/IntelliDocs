@@ -36,10 +36,14 @@ export type StudentPortalData = {
   application: {
     id: string;
     status: string;
+    /** Normalized DB status: approved, pending, rejected, etc. */
+    status_code?: string;
     submittedDate: string;
     lastUpdated: string;
     documents: { name: string; status: string; remarks: string }[];
     registrarRemarks: string;
+    mode_of_payment?: string;
+    voucher_no?: string;
   };
 };
 
@@ -53,7 +57,15 @@ export function useStudentPortal() {
     setError(null);
     try {
       const res = await apiFetch('/api/student/me');
-      const json = await res.json();
+      const text = await res.text();
+      let json: any = {};
+      try {
+        json = JSON.parse(text);
+      } catch {
+        setError('Server returned an invalid response');
+        setData(null);
+        return;
+      }
       if (!res.ok) {
         setError(json.error || `Request failed (${res.status})`);
         setData(null);
@@ -71,7 +83,8 @@ export function useStudentPortal() {
         setData(null);
       }
     } catch (e) {
-      setError('Network error');
+      const message = e instanceof Error ? e.message : 'Network error';
+      setError(message);
       setData(null);
     } finally {
       setLoading(false);

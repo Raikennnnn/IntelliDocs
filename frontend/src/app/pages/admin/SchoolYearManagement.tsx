@@ -1,4 +1,7 @@
 import { useState } from 'react';
+import { toast } from 'sonner';
+import { apiFetch } from '../../lib/api';
+import { useSchoolYear } from '../../context/SchoolYearContext';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
@@ -17,42 +20,9 @@ import {
   Info
 } from 'lucide-react';
 
-// Mock School Years Data
-const initialSchoolYears = [
-  { 
-    id: 1, 
-    year: '2025-2026', 
-    status: 'Active', 
-    startDate: '2025-06-01', 
-    endDate: '2026-03-31',
-    enrolledStudents: 1247,
-    createdBy: 'Dr. Maria Santos',
-    createdDate: '2025-05-15'
-  },
-  { 
-    id: 2, 
-    year: '2024-2025', 
-    status: 'Inactive', 
-    startDate: '2024-06-01', 
-    endDate: '2025-03-31',
-    enrolledStudents: 1189,
-    createdBy: 'Dr. Maria Santos',
-    createdDate: '2024-05-20'
-  },
-  { 
-    id: 3, 
-    year: '2023-2024', 
-    status: 'Inactive', 
-    startDate: '2023-06-01', 
-    endDate: '2024-03-31',
-    enrolledStudents: 1156,
-    createdBy: 'Dr. Maria Santos',
-    createdDate: '2023-05-18'
-  },
-];
-
 export function SchoolYearManagement() {
-  const [schoolYears, setSchoolYears] = useState(initialSchoolYears);
+  const { schoolYears, activeSchoolYear, reloadSchoolYearSettings } = useSchoolYear();
+  const [isSaving, setIsSaving] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedYear, setSelectedYear] = useState<any>(null);
   const [isActivateDialogOpen, setIsActivateDialogOpen] = useState(false);
@@ -64,37 +34,44 @@ export function SchoolYearManagement() {
     status: 'Inactive'
   });
 
-  const activeSchoolYear = schoolYears.find(sy => sy.status === 'Active');
-
   const handleCreateSchoolYear = () => {
     // Validation
     if (!newSchoolYear.year || !newSchoolYear.startDate || !newSchoolYear.endDate) {
       alert('Please fill in all required fields');
       return;
     }
-
-    // Create new school year
-    const newSY = {
-      id: schoolYears.length + 1,
-      year: newSchoolYear.year,
-      startDate: newSchoolYear.startDate,
-      endDate: newSchoolYear.endDate,
-      status: 'Inactive',
-      enrolledStudents: 0,
-      createdBy: 'Dr. Maria Santos', // Would be current user
-      createdDate: new Date().toISOString().split('T')[0]
-    };
-
-    setSchoolYears([newSY, ...schoolYears]);
-    setIsCreateDialogOpen(false);
-    
-    // Reset form
-    setNewSchoolYear({
-      year: '',
-      startDate: '',
-      endDate: '',
-      status: 'Inactive'
-    });
+    void (async () => {
+      setIsSaving(true);
+      try {
+        const res = await apiFetch('/api/school-year', {
+          method: 'POST',
+          body: JSON.stringify({
+            year: newSchoolYear.year.trim(),
+            startDate: newSchoolYear.startDate,
+            endDate: newSchoolYear.endDate,
+          }),
+        });
+        const j = (await res.json()) as { success?: boolean; error?: string };
+        if (!res.ok || !j.success) {
+          toast.error(j.error || 'Failed to create school year');
+          return;
+        }
+        toast.success(`School year ${newSchoolYear.year.trim()} created`);
+        setIsCreateDialogOpen(false);
+        setNewSchoolYear({
+          year: '',
+          startDate: '',
+          endDate: '',
+          status: 'Inactive',
+        });
+        await reloadSchoolYearSettings();
+        window.dispatchEvent(new Event('school-year-settings-changed'));
+      } catch {
+        toast.error('Failed to create school year');
+      } finally {
+        setIsSaving(false);
+      }
+    })();
   };
 
   const handleActivateSchoolYear = (schoolYear: any) => {
@@ -102,26 +79,57 @@ export function SchoolYearManagement() {
     setIsActivateDialogOpen(true);
   };
 
-  const confirmActivateSchoolYear = () => {
-    // Deactivate all school years first
-    const updatedYears = schoolYears.map(sy => ({
-      ...sy,
-      status: sy.id === selectedYear.id ? 'Active' : 'Inactive'
-    }));
-    
-    setSchoolYears(updatedYears);
-    setIsActivateDialogOpen(false);
-    setSelectedYear(null);
+  const confirmActivateSchoolYear = async () => {
+    if (!selectedYear?.year) return;
+    setIsSaving(true);
+    try {
+      const res = await apiFetch('/api/school-year', {
+        method: 'PUT',
+        body: JSON.stringify({ active_school_year: selectedYear.year }),
+      });
+      const j = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !j.success) {
+        toast.error(j.error || 'Failed to set active school year');
+        return;
+      }
+      toast.success(`Active school year is now ${selectedYear.year}`);
+      await reloadSchoolYearSettings();
+      window.dispatchEvent(new Event('school-year-settings-changed'));
+      setIsActivateDialogOpen(false);
+      setSelectedYear(null);
+    } catch {
+      toast.error('Failed to update school year');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleDeactivateSchoolYear = (schoolYear: any) => {
-    if (window.confirm(`Are you sure you want to deactivate School Year ${schoolYear.year}? This will prevent new enrollments.`)) {
-      const updatedYears = schoolYears.map(sy => ({
-        ...sy,
-        status: sy.id === schoolYear.id ? 'Inactive' : sy.status
-      }));
-      
-      setSchoolYears(updatedYears);
+  const handleDeactivateSchoolYear = async (schoolYear: { year: string }) => {
+    if (
+      !window.confirm(
+        `Deactivate enrollment for school year ${schoolYear.year}? New student enrollments will be closed until you activate a school year again.`,
+      )
+    ) {
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const res = await apiFetch('/api/school-year', {
+        method: 'PUT',
+        body: JSON.stringify({ active_school_year: '' }),
+      });
+      const j = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !j.success) {
+        toast.error(j.error || 'Failed to deactivate');
+        return;
+      }
+      toast.success('Enrollment closed until a school year is activated again.');
+      await reloadSchoolYearSettings();
+      window.dispatchEvent(new Event('school-year-settings-changed'));
+    } catch {
+      toast.error('Failed to update school year');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -140,7 +148,10 @@ export function SchoolYearManagement() {
           <div className="flex-1">
             <p className="font-semibold text-green-900">Active School Year: {activeSchoolYear.year}</p>
             <p className="text-sm text-green-700 mt-1">
-              Current period: {new Date(activeSchoolYear.startDate).toLocaleDateString()} - {new Date(activeSchoolYear.endDate).toLocaleDateString()}
+              Current period:{' '}
+              {activeSchoolYear.startDate && activeSchoolYear.endDate
+                ? `${new Date(activeSchoolYear.startDate).toLocaleDateString()} - ${new Date(activeSchoolYear.endDate).toLocaleDateString()}`
+                : '—'}
             </p>
             <p className="text-sm text-green-700">
               Total enrolled students: {activeSchoolYear.enrolledStudents}
@@ -150,6 +161,7 @@ export function SchoolYearManagement() {
             variant="outline"
             size="sm"
             onClick={() => handleDeactivateSchoolYear(activeSchoolYear)}
+            disabled={isSaving}
             className="border-red-600 text-red-600 hover:bg-red-50"
           >
             <PowerOff className="w-4 h-4 mr-2" />
@@ -273,13 +285,13 @@ export function SchoolYearManagement() {
                     <TableCell className="text-sm text-gray-600">
                       <div className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {new Date(sy.startDate).toLocaleDateString()}
+                        {sy.startDate ? new Date(sy.startDate).toLocaleDateString() : '—'}
                       </div>
                     </TableCell>
                     <TableCell className="text-sm text-gray-600">
                       <div className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {new Date(sy.endDate).toLocaleDateString()}
+                        {sy.endDate ? new Date(sy.endDate).toLocaleDateString() : '—'}
                       </div>
                     </TableCell>
                     <TableCell className="text-center">
@@ -304,6 +316,7 @@ export function SchoolYearManagement() {
                         <Button
                           size="sm"
                           onClick={() => handleActivateSchoolYear(sy)}
+                          disabled={isSaving}
                           className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
                         >
                           <Power className="w-4 h-4 mr-1" />
@@ -314,6 +327,7 @@ export function SchoolYearManagement() {
                           size="sm"
                           variant="outline"
                           onClick={() => handleDeactivateSchoolYear(sy)}
+                          disabled={isSaving}
                           className="border-red-600 text-red-600 hover:bg-red-50"
                         >
                           <PowerOff className="w-4 h-4 mr-1" />
@@ -436,11 +450,12 @@ export function SchoolYearManagement() {
               Cancel
             </Button>
             <Button 
-              onClick={confirmActivateSchoolYear}
+              onClick={() => void confirmActivateSchoolYear()}
+              disabled={isSaving}
               className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
             >
               <Power className="w-4 h-4 mr-2" />
-              Activate School Year
+              {isSaving ? 'Saving…' : 'Activate School Year'}
             </Button>
           </DialogFooter>
         </DialogContent>

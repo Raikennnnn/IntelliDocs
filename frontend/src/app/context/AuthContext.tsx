@@ -31,6 +31,22 @@ function buildUserFromBackend(backendUser: Record<string, unknown>): User {
   };
 }
 
+function normalizeStoredUser(raw: unknown): User | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const idCandidate = obj.id ?? obj.userId ?? obj.user_id;
+  if (idCandidate == null || String(idCandidate).trim() === '') {
+    return null;
+  }
+  return {
+    id: String(idCandidate),
+    username: String(obj.username ?? ''),
+    role: toPortalRole(obj.role as string | undefined),
+    name: String(obj.name ?? obj.full_name ?? ''),
+    email: String(obj.email ?? ''),
+  };
+}
+
 interface AuthContextType {
   user: User | null;
   login: (email: string, password: string) => Promise<{ ok: boolean; user?: User }>;
@@ -48,7 +64,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const storedUser = localStorage.getItem('user');
     if (storedUser) {
       try {
-        setUser(JSON.parse(storedUser));
+        const parsed = JSON.parse(storedUser);
+        const normalized = normalizeStoredUser(parsed);
+        if (!normalized) {
+          // Old/stale user objects can miss ID; clear to avoid API calls without X-User-Id.
+          localStorage.removeItem('user');
+          setUser(null);
+          return;
+        }
+        setUser(normalized);
       } catch (error) {
         console.error('Failed to parse stored user:', error);
         localStorage.removeItem('user');
@@ -101,8 +125,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  if (context !== undefined) return context;
+
+  // Fallback: avoid hard-crashing the app if a route/layout is rendered outside the provider.
+  // This can happen during router error rendering or mis-wired layout trees.
+  const fallbackUser = (() => {
+    try {
+      const raw = localStorage.getItem('user');
+      if (!raw) return null;
+      return normalizeStoredUser(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  })();
+
+  return {
+    user: fallbackUser,
+    isAuthenticated: !!fallbackUser,
+    login: async () => ({ ok: false }),
+    logout: () => {
+      try {
+        localStorage.removeItem('user');
+      } catch {
+        // ignore
+      }
+    },
+  };
 }

@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import { Footer } from '../../components/Footer';
-import imgImageNuestraSenoraDeGuiaAcademy from 'figma:asset/e11655a0bb448323cab4def085b422d71c615f64.png';
-import img63643438711461766108172533030491587243660615N1 from 'figma:asset/77078bd1e5f540a772dbaed8ec32999c69977736.png';
+import imgImageNuestraSenoraDeGuiaAcademy from '../../../assets/logo.png';
+import aboutPageHero from '../../../assets/aboutpage.jpg';
 import svgPaths from '../../../imports/svg-avo07mw5zs';
 
 export function AboutPage() {
@@ -63,7 +63,7 @@ export function AboutPage() {
             <img 
               alt="About Hero Background" 
               className="absolute h-full w-full object-cover" 
-              src={img63643438711461766108172533030491587243660615N1} 
+              src={aboutPageHero} 
             />
           </div>
 

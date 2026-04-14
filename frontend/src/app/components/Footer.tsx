@@ -1,5 +1,5 @@
 import { Link } from 'react-router';
-import schoolLogo from 'figma:asset/e11655a0bb448323cab4def085b422d71c615f64.png';
+import schoolLogo from '../../assets/logo.png';
 
 export function Footer() {
   return (

@@ -53,12 +53,12 @@ require FCPATH . '../app/Config/Paths.php';
 
 $paths = new Paths();
 
-// LOAD THE FRAMEWORK BOOTSTRAP FILE
-require $paths->systemDirectory . '/Boot.php';
-
 $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?? '';
 if (preg_match('#/api(/|$)#', $requestPath)) {
   require_once 'api_index.php';
   exit;
 }
+// LOAD THE FRAMEWORK BOOTSTRAP FILE
+require $paths->systemDirectory . '/Boot.php';
+
 exit(Boot::bootWeb($paths));

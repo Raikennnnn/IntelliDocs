@@ -4,8 +4,8 @@ import { useAuth } from '../../context/AuthContext';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import imgImageNuestraSenoraDeGuiaAcademy from "figma:asset/e11655a0bb448323cab4def085b422d71c615f64.png";
-import img6425705401609027733346922618764889990646353N2 from "figma:asset/ec0f266d7e7cff918808f5daaab9064f36194772.png";
+import schoolLogo from "../../../assets/logo.png";
+import homePageImage from "../../../assets/homepage.jpg";
 
 export function Login() {
   const [email, setEmail] = useState('');
@@ -52,7 +52,7 @@ export function Login() {
             <img 
               alt="" 
               className="absolute h-full left-0 top-0 w-full object-cover scale-110" 
-              src={img6425705401609027733346922618764889990646353N2} 
+              src={homePageImage} 
             />
       </div>
 
@@ -67,7 +67,7 @@ export function Login() {
             <img 
               alt="School Logo" 
               className="w-full h-full object-contain" 
-              src={imgImageNuestraSenoraDeGuiaAcademy} 
+              src={schoolLogo} 
             />
           </div>
           <div>

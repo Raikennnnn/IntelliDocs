@@ -16,13 +16,10 @@ import {
   Eye,
   Search,
   Filter,
-  Brain,
-  AlertTriangle,
-  TrendingUp,
-  TrendingDown,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
+import { apiFetch } from "../../lib/api";
 
 interface Application {
   id: string;
@@ -36,183 +33,71 @@ interface Application {
   totalDocuments: number;
 }
 
-interface AIVerificationResult {
-  applicationId: string;
-  studentName: string;
-  strand: string;
-  gradeLevel: string;
-  documentName: string;
-  confidence: number;
-  status: "Verified" | "Suspicious" | "Failed";
-  issues: string[];
-  verifiedDate: string;
-}
-
 export function Applications() {
   const [activeTab, setActiveTab] = useState<"applications">("applications");
   const [searchTerm, setSearchTerm] = useState("");
   const [filterStatus, setFilterStatus] = useState<string>("All");
   const [filterStrand, setFilterStrand] = useState<string>("All");
   const [filterGradeLevel, setFilterGradeLevel] = useState<string>("All");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Mock data - replace with actual API data
-  const [applications] = useState<Application[]>([
-    {
-      id: "APP-2026-001",
-      studentName: "Juan Dela Cruz",
-      email: "juan.delacruz@email.com",
-      strand: "HUMSS",
-      gradeLevel: "11",
-      submittedDate: "March 15, 2026",
-      status: "Under Review",
-      documentsVerified: 2,
-      totalDocuments: 4,
-    },
-    {
-      id: "APP-2026-002",
-      studentName: "Maria Santos",
-      email: "maria.santos@email.com",
-      strand: "TVL-ICT",
-      gradeLevel: "12",
-      submittedDate: "March 16, 2026",
-      status: "Pending",
-      documentsVerified: 0,
-      totalDocuments: 5,
-    },
-    {
-      id: "APP-2026-003",
-      studentName: "Pedro Reyes",
-      email: "pedro.reyes@email.com",
-      strand: "HUMSS",
-      gradeLevel: "11",
-      submittedDate: "March 14, 2026",
-      status: "Approved",
-      documentsVerified: 4,
-      totalDocuments: 4,
-    },
-    {
-      id: "APP-2026-004",
-      studentName: "Ana Garcia",
-      email: "ana.garcia@email.com",
-      strand: "STEM",
-      gradeLevel: "12",
-      submittedDate: "March 13, 2026",
-      status: "Rejected",
-      documentsVerified: 3,
-      totalDocuments: 4,
-    },
-    {
-      id: "APP-2026-005",
-      studentName: "Carlos Mendoza",
-      email: "carlos.mendoza@email.com",
-      strand: "ABM",
-      gradeLevel: "11",
-      submittedDate: "March 17, 2026",
-      status: "Pending",
-      documentsVerified: 1,
-      totalDocuments: 4,
-    },
-    {
-      id: "APP-2026-006",
-      studentName: "Lisa Fernandez",
-      email: "lisa.fernandez@email.com",
-      strand: "TVL-EIM",
-      gradeLevel: "12",
-      submittedDate: "March 18, 2026",
-      status: "Under Review",
-      documentsVerified: 3,
-      totalDocuments: 4,
-    },
-  ]);
+  const [applications, setApplications] = useState<Application[]>([]);
+  
+  const loadApplications = async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch("/api/registrar/applications");
+      const text = await res.text();
+      let json: any = {};
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error("Server returned an invalid response");
+      }
 
-  // AI Verification Results
-  const verificationResults: AIVerificationResult[] = [
-    {
-      applicationId: "APP-2026-001",
-      studentName: "Juan Dela Cruz",
-      strand: "HUMSS",
-      gradeLevel: "11",
-      documentName: "SF10 / Form 137",
-      confidence: 62,
-      status: "Suspicious",
-      issues: [
-        "Possible tampering detected on grades section",
-        "Low image quality",
-        "Signature authenticity questionable",
-      ],
-      verifiedDate: "March 18, 2026",
-    },
-    {
-      applicationId: "APP-2026-002",
-      studentName: "Maria Santos",
-      strand: "TVL-ICT",
-      gradeLevel: "12",
-      documentName: "Good Moral Certificate",
-      confidence: 45,
-      status: "Failed",
-      issues: [
-        "School seal does not match database",
-        "Date format inconsistent",
-        "Font inconsistencies detected",
-      ],
-      verifiedDate: "March 18, 2026",
-    },
-    {
-      applicationId: "APP-2026-005",
-      studentName: "Carlos Mendoza",
-      strand: "ABM",
-      gradeLevel: "11",
-      documentName: "Birth Certificate",
-      confidence: 68,
-      status: "Suspicious",
-      issues: ["PSA security features not fully detected", "Border quality low"],
-      verifiedDate: "March 17, 2026",
-    },
-    {
-      applicationId: "APP-2026-001",
-      studentName: "Juan Dela Cruz",
-      strand: "HUMSS",
-      gradeLevel: "11",
-      documentName: "Birth Certificate",
-      confidence: 98,
-      status: "Verified",
-      issues: [],
-      verifiedDate: "March 15, 2026",
-    },
-    {
-      applicationId: "APP-2026-003",
-      studentName: "Pedro Reyes",
-      strand: "STEM",
-      gradeLevel: "11",
-      documentName: "SF9 (Report Card)",
-      confidence: 95,
-      status: "Verified",
-      issues: [],
-      verifiedDate: "March 16, 2026",
-    },
-    {
-      applicationId: "APP-2026-006",
-      studentName: "Lisa Fernandez",
-      strand: "TVL-EIM",
-      gradeLevel: "12",
-      documentName: "Good Moral Certificate",
-      confidence: 92,
-      status: "Verified",
-      issues: [],
-      verifiedDate: "March 17, 2026",
-    },
-    {
-      applicationId: "APP-2026-004",
-      studentName: "Ana Garcia",
-      strand: "STEM",
-      gradeLevel: "12",
-      documentName: "Birth Certificate",
-      confidence: 88,
-      status: "Verified",
-      issues: [],
-      verifiedDate: "March 16, 2026",
-    },
-  ];
+      if (!res.ok || !json.success) {
+        setError(json.error || `Failed to load applications (${res.status})`);
+        setApplications([]);
+        return;
+      }
+
+      const rows = (Array.isArray(json.applications) ? json.applications : []) as any[];
+      setApplications(
+        rows.map((row) => ({
+          id: String(row.id ?? ""),
+          studentName: String(row.studentName ?? "Unknown Applicant"),
+          email: String(row.email ?? ""),
+          strand: String(row.strand ?? ""),
+          gradeLevel: String(row.gradeLevel ?? ""),
+          submittedDate: row.submittedDate
+            ? new Date(String(row.submittedDate)).toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+              })
+            : "",
+          status: (row.status ?? "Pending") as Application["status"],
+          documentsVerified: Number(row.documentsVerified ?? 0),
+          totalDocuments: Number(row.totalDocuments ?? 0),
+        }))
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error");
+      setApplications([]);
+    } finally {
+      if (showLoading) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadApplications(true);
+    const intervalId = window.setInterval(() => {
+      loadApplications(false);
+    }, 10000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -244,25 +129,6 @@ export function Applications() {
     }
   };
 
-  const getConfidenceColor = (confidence: number) => {
-    if (confidence >= 90) return "text-green-600";
-    if (confidence >= 70) return "text-yellow-600";
-    return "text-red-600";
-  };
-
-  const getVerificationStatusColor = (status: string) => {
-    switch (status) {
-      case "Verified":
-        return "bg-green-600";
-      case "Suspicious":
-        return "bg-yellow-600";
-      case "Failed":
-        return "bg-red-600";
-      default:
-        return "bg-gray-600";
-    }
-  };
-
   const filteredApplications = applications.filter((app) => {
     const matchesSearch =
       app.studentName.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -276,30 +142,12 @@ export function Applications() {
     return matchesSearch && matchesFilter && matchesStrand && matchesGradeLevel;
   });
 
-  const filteredVerificationResults = verificationResults.filter((result) => {
-    const matchesSearch =
-      result.studentName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      result.applicationId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      result.documentName.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesStrand = filterStrand === "All" || result.strand === filterStrand;
-    const matchesGradeLevel =
-      filterGradeLevel === "All" || result.gradeLevel === filterGradeLevel;
-    return matchesSearch && matchesStrand && matchesGradeLevel;
-  });
-
   const stats = {
     total: applications.length,
     pending: applications.filter((a) => a.status === "Pending").length,
     underReview: applications.filter((a) => a.status === "Under Review").length,
     approved: applications.filter((a) => a.status === "Approved").length,
     rejected: applications.filter((a) => a.status === "Rejected").length,
-  };
-
-  const aiStats = {
-    total: verificationResults.length,
-    verified: verificationResults.filter((r) => r.status === "Verified").length,
-    suspicious: verificationResults.filter((r) => r.status === "Suspicious").length,
-    failed: verificationResults.filter((r) => r.status === "Failed").length,
   };
 
   return (
@@ -354,6 +202,12 @@ export function Applications() {
           </CardContent>
         </Card>
       </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {/* Filters */}
       <Card>
@@ -427,7 +281,7 @@ export function Applications() {
             <div className="space-y-3">
               {filteredApplications.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
-                  No applications found
+                  {loading ? "Loading applications..." : "No applications found"}
                 </div>
               ) : (
                 filteredApplications.map((app) => (
@@ -472,7 +326,7 @@ export function Applications() {
                               <div
                                 className="bg-[#2D5016] h-2 rounded-full"
                                 style={{
-                                  width: `${(app.documentsVerified / app.totalDocuments) * 100}%`,
+                                  width: `${app.totalDocuments > 0 ? (app.documentsVerified / app.totalDocuments) * 100 : 0}%`,
                                 }}
                               />
                             </div>

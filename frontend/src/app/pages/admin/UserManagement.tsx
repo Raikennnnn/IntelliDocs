@@ -18,8 +18,9 @@ import {
   CheckCircle,
   XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { apiFetch } from "../../lib/api";
 
 interface User {
   id: string;
@@ -36,6 +37,7 @@ export function UserManagement() {
   const [showAddUser, setShowAddUser] = useState(false);
   const [roleFilter, setRoleFilter] = useState<"All" | "Admin" | "Registrar" | "Student">("All");
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
   const [newUser, setNewUser] = useState({
     name: "",
     email: "",
@@ -43,63 +45,74 @@ export function UserManagement() {
     password: "",
   });
 
-  // Mock users data
-  const [users] = useState<User[]>([
-    {
-      id: "1",
-      name: "Juan Dela Cruz",
-      email: "juan.student@email.com",
-      role: "Student",
-      status: "Active",
-      lastLogin: "March 18, 2026",
-      createdDate: "March 15, 2026",
-    },
-    {
-      id: "2",
-      name: "Maria Cruz",
-      email: "maria.registrar@nsdg.edu.ph",
-      role: "Registrar",
-      status: "Active",
-      lastLogin: "March 18, 2026",
-      createdDate: "January 10, 2026",
-    },
-    {
-      id: "3",
-      name: "Admin User",
-      email: "admin@nsdg.edu.ph",
-      role: "Admin",
-      status: "Active",
-      lastLogin: "March 18, 2026",
-      createdDate: "January 5, 2026",
-    },
-    {
-      id: "4",
-      name: "Pedro Reyes",
-      email: "pedro.student@email.com",
-      role: "Student",
-      status: "Active",
-      lastLogin: "March 17, 2026",
-      createdDate: "March 14, 2026",
-    },
-    {
-      id: "5",
-      name: "Carlos Mendoza",
-      email: "carlos.student@email.com",
-      role: "Student",
-      status: "Inactive",
-      lastLogin: "March 10, 2026",
-      createdDate: "March 8, 2026",
-    },
-  ]);
+  const loadUsers = async () => {
+    const res = await apiFetch('/api/admin/users');
+    const text = await res.text();
+    let json: any = {};
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error('Server returned an invalid response');
+    }
+    if (!res.ok || !json.success) {
+      throw new Error(json.error || `Failed to load users (${res.status})`);
+    }
+    const rows = Array.isArray(json.users) ? json.users : [];
+    setUsers(rows.map((u: any) => ({
+      id: String(u.id ?? ''),
+      name: String(u.name ?? ''),
+      email: String(u.email ?? ''),
+      role: (u.role ?? 'Student') as User['role'],
+      status: (u.status ?? 'Active') as User['status'],
+      lastLogin: String(u.lastLogin ?? 'N/A'),
+      createdDate: u.createdDate
+        ? new Date(String(u.createdDate)).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+        : 'N/A',
+    })));
+  };
 
-  const handleAddUser = () => {
+  useEffect(() => {
+    loadUsers().catch((e) => {
+      toast.error(e instanceof Error ? e.message : 'Failed to load users');
+    });
+  }, []);
+
+  const handleAddUser = async () => {
     if (!newUser.name || !newUser.email || !newUser.password) {
       toast.error("Please fill in all fields");
       return;
     }
-    toast.success(`User ${newUser.name} has been added successfully`);
-    setShowAddUser(false);
-    setNewUser({ name: "", email: "", role: "Student", password: "" });
+    try {
+      const username = newUser.email.split('@')[0];
+      const role = newUser.role.toLowerCase();
+      const res = await apiFetch('/api/auth', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'create_user',
+          username,
+          email: newUser.email,
+          password: newUser.password,
+          full_name: newUser.name,
+          role,
+        }),
+      });
+      const text = await res.text();
+      let json: any = {};
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error('Server returned an invalid response');
+      }
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || `Failed to create user (${res.status})`);
+      }
+      toast.success(`User ${newUser.name} has been added successfully`);
+      setShowAddUser(false);
+      setNewUser({ name: "", email: "", role: "Student", password: "" });
+      await loadUsers();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to create user');
+    }
   };
 
   const handleEditUser = (user: User) => {
@@ -107,32 +120,103 @@ export function UserManagement() {
     setShowAddUser(false); // Close add user form if open
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingUser) return;
     
     if (!editingUser.name || !editingUser.email) {
       toast.error("Please fill in all required fields");
       return;
     }
-    
-    toast.success(`User ${editingUser.name} has been updated successfully`);
-    setEditingUser(null);
+
+    try {
+      const res = await apiFetch('/api/admin/users', {
+        method: 'PUT',
+        body: JSON.stringify({
+          id: editingUser.id,
+          name: editingUser.name,
+          email: editingUser.email,
+          role: editingUser.role,
+          status: editingUser.status,
+        }),
+      });
+      const text = await res.text();
+      let json: any = {};
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error('Server returned an invalid response');
+      }
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || `Failed to update user (${res.status})`);
+      }
+      toast.success(json.message || `User ${editingUser.name} has been updated successfully`);
+      setEditingUser(null);
+      await loadUsers();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to update user');
+    }
   };
 
   const handleCancelEdit = () => {
     setEditingUser(null);
   };
 
-  const handleDeactivateUser = (userName: string) => {
-    toast.success(`User ${userName} has been deactivated`);
+  const handleDeactivateUser = async (user: User) => {
+    try {
+      const res = await apiFetch('/api/admin/users', {
+        method: 'PUT',
+        body: JSON.stringify({ id: user.id, name: user.name, email: user.email, role: user.role, status: 'Inactive' }),
+      });
+      const text = await res.text();
+      const json = JSON.parse(text);
+      if (!res.ok || !json.success) throw new Error(json.error || `Failed (${res.status})`);
+      toast.success(`User ${user.name} has been deactivated`);
+      await loadUsers();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to deactivate user');
+    }
   };
 
-  const handleActivateUser = (userName: string) => {
-    toast.success(`User ${userName} has been activated`);
+  const handleActivateUser = async (user: User) => {
+    try {
+      const res = await apiFetch('/api/admin/users', {
+        method: 'PUT',
+        body: JSON.stringify({ id: user.id, name: user.name, email: user.email, role: user.role, status: 'Active' }),
+      });
+      const text = await res.text();
+      const json = JSON.parse(text);
+      if (!res.ok || !json.success) throw new Error(json.error || `Failed (${res.status})`);
+      toast.success(`User ${user.name} has been activated`);
+      await loadUsers();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to activate user');
+    }
   };
 
-  const handleDeleteUser = (userName: string) => {
-    toast.success(`User ${userName} has been deleted`);
+  const handleDeleteUser = async (user: User) => {
+    if (!confirm(`Delete user "${user.name}"? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      const res = await apiFetch('/api/admin/users', {
+        method: 'DELETE',
+        body: JSON.stringify({ id: user.id }),
+      });
+      const text = await res.text();
+      let json: any = {};
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error('Server returned an invalid response');
+      }
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || `Failed to delete user (${res.status})`);
+      }
+      toast.success(`User ${user.name} has been deleted`);
+      await loadUsers();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to delete user');
+    }
   };
 
   const getRoleBadgeColor = (role: string) => {
@@ -515,7 +599,7 @@ export function UserManagement() {
                           variant="outline"
                           size="sm"
                           className="border-yellow-600 text-yellow-600 hover:bg-yellow-600 hover:text-white"
-                          onClick={() => handleDeactivateUser(user.name)}
+                          onClick={() => handleDeactivateUser(user)}
                         >
                           Deactivate
                         </Button>
@@ -524,7 +608,7 @@ export function UserManagement() {
                           variant="outline"
                           size="sm"
                           className="border-green-600 text-green-600 hover:bg-green-600 hover:text-white"
-                          onClick={() => handleActivateUser(user.name)}
+                          onClick={() => handleActivateUser(user)}
                         >
                           Activate
                         </Button>
@@ -533,7 +617,7 @@ export function UserManagement() {
                         variant="outline"
                         size="sm"
                         className="border-red-600 text-red-600 hover:bg-red-600 hover:text-white"
-                        onClick={() => handleDeleteUser(user.name)}
+                        onClick={() => handleDeleteUser(user)}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>

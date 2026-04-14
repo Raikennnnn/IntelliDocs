@@ -2,7 +2,7 @@ import { Link } from 'react-router';
 import { Button } from './ui/button';
 import { Menu, X } from 'lucide-react';
 import { useState } from 'react';
-import schoolLogo from 'figma:asset/e11655a0bb448323cab4def085b422d71c615f64.png';
+import schoolLogo from '../../assets/logo.png';
 
 export function LandingNavbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);

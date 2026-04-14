@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import { Footer } from '../../components/Footer';
-import imgImageNuestraSenoraDeGuiaAcademy from 'figma:asset/e11655a0bb448323cab4def085b422d71c615f64.png';
-import img6425705401609027733346922618764889990646353N1 from 'figma:asset/ec0f266d7e7cff918808f5daaab9064f36194772.png';
+import imgImageNuestraSenoraDeGuiaAcademy from '../../../assets/logo.png';
+import homePageHero from '../../../assets/homepage.jpg';
 import svgPaths from '../../../imports/svg-01fncooay9';
 
 export function LandingPage() {
@@ -53,23 +53,22 @@ export function LandingPage() {
         </div>
       </div>
 
-      {/* Hero Section */}
-      <section className="relative h-[600px] overflow-hidden">
+      {/* Hero: fills the rest of the first screen (viewport minus 64px nav) */}
+      <section className="relative min-h-[calc(100dvh-4rem)] overflow-hidden">
         {/* Background Image */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          {/* TODO: Replace with legitimate hero background photo (e.g., school campus) */}
           <img 
             alt="Hero Background" 
-            className="absolute h-full w-full object-cover" 
-            src={img6425705401609027733346922618764889990646353N1} 
+            className="absolute h-full min-h-full w-full object-cover" 
+            src={homePageHero} 
           />
         </div>
 
         {/* Dark Overlay */}
         <div className="absolute inset-0 bg-black/40" />
 
-        {/* Hero Content */}
-        <div className="relative h-full max-w-[1280px] mx-auto px-8">
+        {/* Hero Content — original top offset preserved */}
+        <div className="relative z-[1] h-full max-w-[1280px] mx-auto px-8">
           <div className="pt-[90px] max-w-[768px]">
             <p className="font-semibold text-[20px] text-white leading-[28px] mb-4">
               WELCOME TO

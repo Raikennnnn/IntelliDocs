@@ -27,6 +27,7 @@ import { UserManagement } from './pages/admin/UserManagement';
 import { Reports as AdminReports } from './pages/admin/Reports';
 import { ActivityLogs as AdminActivityLogs } from './pages/admin/ActivityLogs';
 import { SystemSettings } from './pages/admin/SystemSettings';
+import { SchoolYearManagement } from './pages/admin/SchoolYearManagement';
 
 // Shared pages
 import { Announcements } from './pages/shared/Announcements';
@@ -271,6 +272,17 @@ export const router = createBrowserRouter([
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
           <SystemSettings />
+        </RouteWithLayout>
+      </ProtectedRoute>
+    ),
+    errorElement: <ErrorBoundary />,
+  },
+  {
+    path: '/admin/school-year',
+    element: (
+      <ProtectedRoute allowedRoles={['admin']}>
+        <RouteWithLayout navigation={adminNavigation}>
+          <SchoolYearManagement />
         </RouteWithLayout>
       </ProtectedRoute>
     ),

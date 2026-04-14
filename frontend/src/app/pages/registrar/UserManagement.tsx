@@ -12,24 +12,21 @@ interface User {
   id: string;
   name: string;
   email: string;
-  role: 'student' | 'teacher';
+  role: 'student';
   status: 'active' | 'inactive';
   createdDate: string;
   lastLogin: string;
   section?: string;
   gradeLevel?: string;
-  subject?: string;
 }
 
 export function UserManagement() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterRole, setFilterRole] = useState<'all' | 'student' | 'teacher'>('all');
+  const [filterRole, setFilterRole] = useState<'all' | 'student'>('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  
-  // Form state
-  const [accountType, setAccountType] = useState<'student' | 'teacher'>('student');
+
   const [formData, setFormData] = useState({
     firstName: '',
     middleName: '',
@@ -37,12 +34,9 @@ export function UserManagement() {
     email: '',
     username: '',
     lrn: '',
-    employeeId: '',
     gradeLevel: '',
     strand: '',
     section: '',
-    department: '',
-    subject: '',
   });
 
   const handleInputChange = (field: string, value: string) => {
@@ -57,14 +51,10 @@ export function UserManagement() {
       email: '',
       username: '',
       lrn: '',
-      employeeId: '',
       gradeLevel: '',
       strand: '',
       section: '',
-      department: '',
-      subject: '',
     });
-    setAccountType('student');
   };
 
   const handleCreateAccount = () => {
@@ -74,19 +64,13 @@ export function UserManagement() {
       return;
     }
 
-    if (accountType === 'student' && !formData.lrn) {
+    if (!formData.lrn) {
       toast.error('LRN is required for student accounts');
       return;
     }
 
-    if (accountType === 'teacher' && !formData.employeeId) {
-      toast.error('Employee ID is required for teacher accounts');
-      return;
-    }
-
-    // Success
     const fullName = `${formData.firstName} ${formData.middleName} ${formData.lastName}`.replace(/\s+/g, ' ').trim();
-    toast.success(`${accountType === 'student' ? 'Student' : 'Teacher'} account created successfully for ${fullName}`);
+    toast.success(`Student account created successfully for ${fullName}`);
     
     // Reset and close
     resetForm();
@@ -129,36 +113,6 @@ export function UserManagement() {
       section: 'HUMSS-A'
     },
     {
-      id: 'TCH001',
-      name: 'Prof. Roberto Garcia',
-      email: 'rg@teacher.ndga.edu.ph',
-      role: 'teacher',
-      status: 'active',
-      createdDate: '2024-06-01',
-      lastLogin: '2024-02-24',
-      subject: 'Mathematics'
-    },
-    {
-      id: 'TCH002',
-      name: 'Prof. Elena Cruz',
-      email: 'ec@teacher.ndga.edu.ph',
-      role: 'teacher',
-      status: 'active',
-      createdDate: '2024-06-01',
-      lastLogin: '2024-02-25',
-      subject: 'English'
-    },
-    {
-      id: 'TCH003',
-      name: 'Prof. Miguel Torres',
-      email: 'mt@teacher.ndga.edu.ph',
-      role: 'teacher',
-      status: 'active',
-      createdDate: '2024-06-05',
-      lastLogin: '2024-02-23',
-      subject: 'Science'
-    },
-    {
       id: 'STU004',
       name: 'Sofia Martinez',
       email: 'sm@student.ndga.edu.ph',
@@ -190,16 +144,15 @@ export function UserManagement() {
     return matchesSearch && matchesRole;
   });
 
-  const studentCount = mockUsers.filter(u => u.role === 'student').length;
-  const teacherCount = mockUsers.filter(u => u.role === 'teacher').length;
-  const activeCount = mockUsers.filter(u => u.status === 'active').length;
+  const studentCount = mockUsers.filter((u) => u.role === 'student').length;
+  const activeCount = mockUsers.filter((u) => u.status === 'active').length;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-semibold text-gray-900">User Management</h2>
-          <p className="text-gray-600">Manage teacher and student accounts</p>
+          <p className="text-gray-600">Manage student accounts</p>
         </div>
         <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
           <DialogTrigger asChild>
@@ -211,26 +164,10 @@ export function UserManagement() {
           <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Create New Account</DialogTitle>
-              <DialogDescription>
-                Create a new account for a teacher or student
-              </DialogDescription>
+              <DialogDescription>Create a new student account</DialogDescription>
             </DialogHeader>
 
             <div className="space-y-6 py-4">
-              {/* Account Type Selector */}
-              <div className="space-y-2">
-                <Label htmlFor="accountType">Account Type *</Label>
-                <Select value={accountType} onValueChange={(value: 'student' | 'teacher') => setAccountType(value)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select account type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="student">Student</SelectItem>
-                    <SelectItem value="teacher">Teacher</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
               {/* Personal Information */}
               <div>
                 <h4 className="text-sm font-semibold text-gray-700 mb-3">Personal Information</h4>
@@ -283,7 +220,7 @@ export function UserManagement() {
                     <Input
                       id="email"
                       type="email"
-                      placeholder={accountType === 'student' ? 'student@ndga.edu.ph' : 'teacher@ndga.edu.ph'}
+                      placeholder="student@ndga.edu.ph"
                       value={formData.email}
                       onChange={(e) => handleInputChange('email', e.target.value)}
                     />
@@ -291,9 +228,7 @@ export function UserManagement() {
                 </div>
               </div>
 
-              {/* Student-specific fields */}
-              {accountType === 'student' && (
-                <div>
+              <div>
                   <h4 className="text-sm font-semibold text-gray-700 mb-3">Student Information</h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
@@ -341,52 +276,6 @@ export function UserManagement() {
                     </div>
                   </div>
                 </div>
-              )}
-
-              {/* Teacher-specific fields */}
-              {accountType === 'teacher' && (
-                <div>
-                  <h4 className="text-sm font-semibold text-gray-700 mb-3">Teacher Information</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="employeeId">Employee ID *</Label>
-                      <Input
-                        id="employeeId"
-                        placeholder="Enter employee ID"
-                        value={formData.employeeId}
-                        onChange={(e) => handleInputChange('employeeId', e.target.value)}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="department">Department</Label>
-                      <Select value={formData.department} onValueChange={(value) => handleInputChange('department', value)}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select department" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="Academic Affairs">Academic Affairs</SelectItem>
-                          <SelectItem value="Mathematics">Mathematics</SelectItem>
-                          <SelectItem value="Science">Science</SelectItem>
-                          <SelectItem value="English">English</SelectItem>
-                          <SelectItem value="Filipino">Filipino</SelectItem>
-                          <SelectItem value="Social Studies">Social Studies</SelectItem>
-                          <SelectItem value="Physical Education">Physical Education</SelectItem>
-                          <SelectItem value="MAPEH">MAPEH</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2 md:col-span-2">
-                      <Label htmlFor="subject">Primary Subject/Specialization</Label>
-                      <Input
-                        id="subject"
-                        placeholder="e.g., Mathematics, English, Science"
-                        value={formData.subject}
-                        onChange={(e) => handleInputChange('subject', e.target.value)}
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {/* Information Note */}
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -424,8 +313,8 @@ export function UserManagement() {
             <div>
               <p className="text-sm font-medium text-blue-900">Account Creation Authority</p>
               <p className="text-sm text-blue-700 mt-1">
-                As a Registrar, you can create and manage accounts for <strong>Teachers</strong> and <strong>Students</strong> only. 
-                Principal and Admin/IT accounts are managed through higher-level administrative processes.
+                As a registrar, you can create and manage <strong>student</strong> accounts only. Admin and other registrar accounts
+                are created by an administrator.
               </p>
             </div>
           </div>
@@ -433,14 +322,14 @@ export function UserManagement() {
       </Card>
 
       {/* Statistics */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-gray-600">Total Users</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-3xl font-bold text-gray-900">{mockUsers.length}</div>
-            <p className="text-xs text-gray-500 mt-1">All accounts</p>
+            <p className="text-xs text-gray-500 mt-1">All student accounts</p>
           </CardContent>
         </Card>
 
@@ -451,16 +340,6 @@ export function UserManagement() {
           <CardContent>
             <div className="text-3xl font-bold text-[#2D5016]">{studentCount}</div>
             <p className="text-xs text-gray-500 mt-1">Active & Inactive</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Teachers</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-[#8B1538]">{teacherCount}</div>
-            <p className="text-xs text-gray-500 mt-1">Faculty members</p>
           </CardContent>
         </Card>
 
@@ -504,13 +383,6 @@ export function UserManagement() {
               >
                 Students
               </Button>
-              <Button
-                variant={filterRole === 'teacher' ? 'default' : 'outline'}
-                onClick={() => setFilterRole('teacher')}
-                className={filterRole === 'teacher' ? 'bg-[#8B1538] hover:bg-[#6B1028]' : ''}
-              >
-                Teachers
-              </Button>
             </div>
           </div>
         </CardContent>
@@ -543,23 +415,15 @@ export function UserManagement() {
                     <td className="px-4 py-3 text-sm text-gray-900">{user.name}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{user.email}</td>
                     <td className="px-4 py-3">
-                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                        user.role === 'student' 
-                          ? 'bg-green-100 text-green-800' 
-                          : 'bg-red-100 text-red-800'
-                      }`}>
-                        {user.role === 'student' ? 'Student' : 'Teacher'}
+                      <span className="inline-flex px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
+                        Student
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-600">
-                      {user.role === 'student' ? (
-                        <div>
-                          <div className="font-medium">{user.gradeLevel}</div>
-                          <div className="text-xs text-gray-500">{user.section}</div>
-                        </div>
-                      ) : (
-                        <div className="font-medium">{user.subject}</div>
-                      )}
+                      <div>
+                        <div className="font-medium">{user.gradeLevel}</div>
+                        <div className="text-xs text-gray-500">{user.section}</div>
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${

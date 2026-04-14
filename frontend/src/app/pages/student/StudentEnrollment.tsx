@@ -9,8 +9,6 @@ import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
-import { Calendar } from "../../components/ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover";
 import {
   CheckCircle,
   Upload,
@@ -24,13 +22,37 @@ import {
   FileCheck,
   DollarSign,
   Gift,
-  CalendarIcon,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, AlertDescription } from "../../components/ui/alert";
-import { format } from "date-fns";
-import { cn } from "../../components/ui/utils";
+import { apiFetch } from "../../lib/api";
+import { useEnrollmentAllowed } from "../../context/SchoolYearContext";
+
+/** YYYY-MM-DD in local calendar (avoids UTC shifting the day on `<input type="date">`). */
+function formatLocalDateYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Senior High: learner must be at least this many years old (DepEd K–12 typical range). */
+const SHS_MIN_AGE_YEARS = 15;
+
+function birthDateBoundsForShs(minAgeYears: number) {
+  const now = new Date();
+  const maxDob = new Date(now.getFullYear() - minAgeYears, now.getMonth(), now.getDate());
+  const minDob = new Date(now.getFullYear() - 120, now.getMonth(), now.getDate());
+  return { min: formatLocalDateYmd(minDob), max: formatLocalDateYmd(maxDob) };
+}
+
+function isBirthDateValidForShs(ymd: string, minAgeYears: number): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return false;
+  const { min, max } = birthDateBoundsForShs(minAgeYears);
+  return ymd >= min && ymd <= max;
+}
 
 interface DocumentUpload {
   name: string;
@@ -38,6 +60,8 @@ interface DocumentUpload {
   status: 'missing' | 'uploaded';
   required: boolean;
   requiredFor?: 'all' | 'transferee';
+  uploadedId?: number;
+  uploadedAt?: string;
 }
 
 interface EnrollmentFormData {
@@ -119,7 +143,12 @@ interface EnrollmentFormData {
 }
 
 export function StudentEnrollment() {
+  const enrollmentAllowed = useEnrollmentAllowed();
+  const shsBirthDateBounds = useMemo(() => birthDateBoundsForShs(SHS_MIN_AGE_YEARS), []);
   const [currentStep, setCurrentStep] = useState(1);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isEnrollmentLocked, setIsEnrollmentLocked] = useState(false);
+  const [enrollmentId, setEnrollmentId] = useState<number | null>(null);
   const [formData, setFormData] = useState<EnrollmentFormData>({
     enrollmentStatus: '',
     givenName: '',
@@ -182,33 +211,229 @@ export function StudentEnrollment() {
     { name: '2x2 Picture (White Background)', file: null, status: 'missing', required: true, requiredFor: 'all' },
   ]);
 
+  useEffect(() => {
+    const loadEnrollment = async () => {
+      try {
+        const res = await apiFetch('/api/student/enrollment');
+        const text = await res.text();
+        const json = JSON.parse(text) as { success?: boolean; enrollment?: { current_step?: number; form_data?: Partial<EnrollmentFormData> } | null; error?: string };
+        if (!res.ok || !json.success) {
+          if (json.error) toast.error(json.error);
+          return;
+        }
+        if (json.enrollment?.form_data) {
+          setFormData(prev => ({ ...prev, ...(json.enrollment?.form_data ?? {}) }));
+        }
+        if (json.enrollment?.id) {
+          setEnrollmentId(Number(json.enrollment.id));
+        }
+        if (json.enrollment && json.enrollment.can_edit === false) {
+          setIsEnrollmentLocked(true);
+          localStorage.setItem('studentEnrollmentLocked', '1');
+        } else {
+          setIsEnrollmentLocked(false);
+          localStorage.removeItem('studentEnrollmentLocked');
+        }
+        if (json.enrollment?.current_step && json.enrollment.current_step >= 1 && json.enrollment.current_step <= 6) {
+          setCurrentStep(json.enrollment.current_step);
+        }
+
+        const docsRes = await apiFetch('/api/documents');
+        const docsText = await docsRes.text();
+        const docsJson = JSON.parse(docsText) as { success?: boolean; documents?: Array<{ id: number; type: string; uploaded_at?: string }> };
+        if (docsRes.ok && docsJson.success && Array.isArray(docsJson.documents)) {
+          const mapByType = new Map<string, { id: number; uploaded_at?: string }>();
+          for (const d of docsJson.documents) {
+            mapByType.set(String(d.type || '').toLowerCase(), { id: Number(d.id), uploaded_at: d.uploaded_at });
+          }
+          setDocuments(prev =>
+            prev.map((doc) => {
+              const hit = mapByType.get(doc.name.toLowerCase());
+              return hit
+                ? { ...doc, status: 'uploaded', uploadedId: hit.id, uploadedAt: hit.uploaded_at }
+                : doc;
+            })
+          );
+        }
+      } catch {
+        // keep defaults when no draft exists / parse errors
+      }
+    };
+    loadEnrollment();
+  }, []);
+
+  const saveEnrollment = async (action: 'save_draft' | 'submit', step: number): Promise<boolean> => {
+    setIsSaving(true);
+    try {
+      const res = await apiFetch('/api/student/enrollment', {
+        method: 'POST',
+        body: JSON.stringify({
+          action,
+          current_step: step,
+          form_data: formData,
+        }),
+      });
+      const text = await res.text();
+      const json = JSON.parse(text) as { success?: boolean; error?: string; message?: string };
+      if (!res.ok || !json.success) {
+        toast.error(json.error || `Failed to save enrollment (${res.status})`);
+        if (res.status === 409) {
+          setIsEnrollmentLocked(true);
+          localStorage.setItem('studentEnrollmentLocked', '1');
+        }
+        return false;
+      }
+      if (action === 'submit') {
+        setIsEnrollmentLocked(true);
+        localStorage.setItem('studentEnrollmentLocked', '1');
+      }
+      if (json.enrollment_id) {
+        setEnrollmentId(Number(json.enrollment_id));
+      }
+      return true;
+    } catch {
+      toast.error('Failed to save enrollment');
+      return false;
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const handleInputChange = (field: keyof EnrollmentFormData, value: string | boolean) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleFileUpload = (index: number, file: File | null) => {
-    setDocuments(prev => {
-      const newDocs = [...prev];
-      newDocs[index] = {
-        ...newDocs[index],
-        file,
-        status: file ? 'uploaded' : 'missing'
-      };
-      return newDocs;
-    });
-    if (file) {
+  const handleFileUpload = async (index: number, file: File | null) => {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Maximum file size is 5MB');
+      return;
+    }
+
+    // Ensure we have an enrollment row before attaching documents.
+    let targetEnrollmentId = enrollmentId;
+    if (!targetEnrollmentId) {
+      const created = await saveEnrollment('save_draft', currentStep);
+      if (!created) return;
+      try {
+        const snapshotRes = await apiFetch('/api/student/enrollment');
+        const snapshotText = await snapshotRes.text();
+        const snapshotJson = JSON.parse(snapshotText) as { success?: boolean; enrollment?: { id?: number } };
+        if (snapshotRes.ok && snapshotJson.success && snapshotJson.enrollment?.id) {
+          targetEnrollmentId = Number(snapshotJson.enrollment.id);
+          setEnrollmentId(targetEnrollmentId);
+        }
+      } catch {
+        // Keep null and let backend resolve to latest enrollment by user.
+      }
+    }
+
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('document_type', documents[index].name);
+      if (targetEnrollmentId) {
+        form.append('enrollment_id', String(targetEnrollmentId));
+      }
+
+      const res = await apiFetch('/api/documents', {
+        method: 'POST',
+        body: form,
+      });
+      const text = await res.text();
+      const json = JSON.parse(text) as { success?: boolean; error?: string; document?: { id?: number; uploaded_at?: string } };
+      if (!res.ok || !json.success) {
+        toast.error(json.error || `Upload failed (${res.status})`);
+        return;
+      }
+
+      setDocuments(prev => {
+        const next = [...prev];
+        next[index] = {
+          ...next[index],
+          file,
+          status: 'uploaded',
+          uploadedId: Number(json.document?.id ?? 0) || undefined,
+          uploadedAt: json.document?.uploaded_at ?? new Date().toISOString(),
+        };
+        return next;
+      });
       toast.success(`${documents[index].name} uploaded successfully`);
+    } catch {
+      toast.error('Failed to upload document');
     }
   };
 
   const validateStep1 = () => {
-    const required = ['enrollmentStatus', 'givenName', 'lastName', 'gender', 'contactNumber', 'email', 'lrn', 'gradeLevel', 'strand', 'preferredSchedule'];
+    const required = [
+      'enrollmentStatus',
+      'givenName',
+      'lastName',
+      'gender',
+      'contactNumber',
+      'email',
+      'lrn',
+      'gradeLevel',
+      'strand',
+      'preferredSchedule',
+      'birthDate',
+      'birthPlace',
+      'religion',
+    ];
     for (const field of required) {
       if (!formData[field as keyof EnrollmentFormData]) {
         toast.error(`Please fill in all required fields`);
         return false;
       }
     }
+    if (!isBirthDateValidForShs(formData.birthDate, SHS_MIN_AGE_YEARS)) {
+      toast.error(
+        `Birth date must show the learner is at least ${SHS_MIN_AGE_YEARS} years old (Senior High eligibility).`,
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const validateStep2 = () => {
+    const motherName = formData.motherGivenName.trim();
+    const fatherName = formData.fatherGivenName.trim();
+    const guardianName = formData.guardianGivenName.trim();
+    const hasMother = motherName.length > 0;
+    const hasFather = fatherName.length > 0;
+    const hasGuardianFilled = formData.hasGuardian && guardianName.length > 0;
+
+    if (!hasMother && !hasFather && !hasGuardianFilled) {
+      toast.error(
+        'Please provide at least one parent or guardian name (mother, father, or guardian section).',
+      );
+      return false;
+    }
+
+    if (!formData.emergencyContact) {
+      toast.error('Please select who to contact in case of emergency.');
+      return false;
+    }
+
+    if (formData.emergencyContact === 'mother' && !hasMother) {
+      toast.error("Emergency contact is Mother, but mother's given name was not provided.");
+      return false;
+    }
+    if (formData.emergencyContact === 'father' && !hasFather) {
+      toast.error("Emergency contact is Father, but father's given name was not provided.");
+      return false;
+    }
+    if (formData.emergencyContact === 'guardian') {
+      if (!formData.hasGuardian) {
+        toast.error('To use Guardian as emergency contact, check "I have a guardian" and enter their details.');
+        return false;
+      }
+      if (!guardianName) {
+        toast.error("Emergency contact is Guardian, but guardian's given name was not provided.");
+        return false;
+      }
+    }
+
     return true;
   };
 
@@ -228,9 +453,12 @@ export function StudentEnrollment() {
     return true;
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (currentStep === 1 && !validateStep1()) return;
+    if (currentStep === 2 && !validateStep2()) return;
     if (currentStep === 4 && !validateStep4()) return;
+    const ok = await saveEnrollment('save_draft', currentStep);
+    if (!ok) return;
     setCurrentStep(prev => Math.min(prev + 1, 6));
   };
 
@@ -238,12 +466,18 @@ export function StudentEnrollment() {
     setCurrentStep(prev => Math.max(prev - 1, 1));
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    if (!validateStep1()) return;
+    if (!validateStep2()) return;
+    if (!formData.modeOfPayment?.trim()) {
+      toast.error('Please select a mode of payment (Payment & Promo step).');
+      return;
+    }
     if (!formData.confirmInformation) {
       toast.error('Please confirm that all information is accurate');
       return;
     }
-    toast.success("Enrollment application submitted successfully! You will be notified once reviewed.");
+    await saveEnrollment('submit', 6);
   };
 
   const tabs = [
@@ -255,8 +489,34 @@ export function StudentEnrollment() {
     { number: 6, name: 'Review & Submit', icon: FileCheck },
   ];
 
+  if (enrollmentAllowed && isEnrollmentLocked) {
+    return (
+      <div className="min-h-[min(520px,calc(100vh-8rem))] flex flex-col items-center justify-center px-6 py-16 bg-gray-50">
+        <Card className="w-full max-w-md border border-gray-200 shadow-sm">
+          <CardContent className="pt-12 pb-12 px-8 text-center">
+            <Loader2 className="h-12 w-12 animate-spin text-[#2D5016] mx-auto mb-6" aria-hidden />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Processing</h2>
+            <p className="text-sm text-gray-600 leading-relaxed">
+              Your enrollment has been submitted and is being processed. The Registrar&apos;s office will review your
+              application.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-0">
+      {!enrollmentAllowed && (
+        <div className="p-6">
+          <Alert variant="destructive">
+            <AlertDescription>
+              Enrollment is currently unavailable because there is no active school year.
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
       {/* Step Indicator */}
       <div className="bg-white border-b py-8 px-6">
         <div className="max-w-5xl mx-auto">
@@ -503,36 +763,14 @@ export function StudentEnrollment() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="birthDate">Birth Date *</Label>
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="outline"
-                          className={cn(
-                            "w-full justify-start text-left font-normal",
-                            !formData.birthDate && "text-muted-foreground"
-                          )}
-                        >
-                          <CalendarIcon className="mr-2 h-4 w-4" />
-                          {formData.birthDate ? (
-                            format(new Date(formData.birthDate), 'PPP')
-                          ) : (
-                            <span>dd-MM-yyyy</span>
-                          )}
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0" align="start">
-                        <Calendar
-                          mode="single"
-                          selected={formData.birthDate ? new Date(formData.birthDate) : undefined}
-                          onSelect={(date) => {
-                            if (date) {
-                              handleInputChange('birthDate', format(date, 'yyyy-MM-dd'));
-                            }
-                          }}
-                          initialFocus
-                        />
-                      </PopoverContent>
-                    </Popover>
+                    <Input
+                      id="birthDate"
+                      type="date"
+                      value={formData.birthDate}
+                      onChange={(e) => handleInputChange('birthDate', e.target.value)}
+                      min={shsBirthDateBounds.min}
+                      max={shsBirthDateBounds.max}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="birthPlace">Birth Place *</Label>
@@ -552,6 +790,8 @@ export function StudentEnrollment() {
                       className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
                     >
                       <option value="">Select Religion</option>
+                      <option value="Roman Catholic">Roman Catholic</option>
+                      <option value="INC (Iglesia Ni Cristo)">INC (Iglesia Ni Cristo)</option>
                       <option value="Buddhism">Buddhism</option>
                       <option value="Hinduism">Hinduism</option>
                       <option value="Christianity">Christianity</option>
@@ -619,13 +859,17 @@ export function StudentEnrollment() {
         {/* Step 2: Family Information */}
         {currentStep === 2 && (
           <div className="max-w-5xl mx-auto space-y-6">
+            <p className="text-sm text-gray-600 -mt-2 mb-2">
+              Single-parent or guardian-led households: fill only the sections that apply. You must enter at least one
+              parent or guardian name (and match your emergency contact choice below).
+            </p>
             {/* Mother's Information */}
             <Card>
               <CardContent className="p-8">
                 <h2 className="text-2xl font-semibold mb-6">Mother's Information</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="motherGivenName">Mother's Given Name *</Label>
+                    <Label htmlFor="motherGivenName">Mother's Given Name</Label>
                     <Input
                       id="motherGivenName"
                       value={formData.motherGivenName}
@@ -634,7 +878,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherMaidenMiddleName">Mother's Maiden Middle Name *</Label>
+                    <Label htmlFor="motherMaidenMiddleName">Mother's Maiden Middle Name</Label>
                     <Input
                       id="motherMaidenMiddleName"
                       value={formData.motherMaidenMiddleName}
@@ -643,7 +887,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherMaidenLastName">Mother's Maiden Last Name *</Label>
+                    <Label htmlFor="motherMaidenLastName">Mother's Maiden Last Name</Label>
                     <Input
                       id="motherMaidenLastName"
                       value={formData.motherMaidenLastName}
@@ -652,7 +896,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherContactNumber">Mother's Contact Number *</Label>
+                    <Label htmlFor="motherContactNumber">Mother's Contact Number</Label>
                     <Input
                       id="motherContactNumber"
                       value={formData.motherContactNumber}
@@ -679,7 +923,7 @@ export function StudentEnrollment() {
                 <h2 className="text-2xl font-semibold mb-6">Father's Information</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="fatherGivenName">Father's Given Name *</Label>
+                    <Label htmlFor="fatherGivenName">Father's Given Name</Label>
                     <Input
                       id="fatherGivenName"
                       value={formData.fatherGivenName}
@@ -688,7 +932,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherMiddleName">Father's Middle Name *</Label>
+                    <Label htmlFor="fatherMiddleName">Father's Middle Name</Label>
                     <Input
                       id="fatherMiddleName"
                       value={formData.fatherMiddleName}
@@ -697,7 +941,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherLastName">Father's Last Name *</Label>
+                    <Label htmlFor="fatherLastName">Father's Last Name</Label>
                     <Input
                       id="fatherLastName"
                       value={formData.fatherLastName}
@@ -706,7 +950,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherContactNumber">Father's Contact Number *</Label>
+                    <Label htmlFor="fatherContactNumber">Father's Contact Number</Label>
                     <Input
                       id="fatherContactNumber"
                       value={formData.fatherContactNumber}
@@ -747,7 +991,7 @@ export function StudentEnrollment() {
                     <h2 className="text-2xl font-semibold mb-6">Guardian's Information</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <Label htmlFor="guardianGivenName">Guardian's Given Name *</Label>
+                        <Label htmlFor="guardianGivenName">Guardian's Given Name</Label>
                         <Input
                           id="guardianGivenName"
                           value={formData.guardianGivenName}
@@ -756,7 +1000,7 @@ export function StudentEnrollment() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianMiddleName">Guardian's Middle Name *</Label>
+                        <Label htmlFor="guardianMiddleName">Guardian's Middle Name</Label>
                         <Input
                           id="guardianMiddleName"
                           value={formData.guardianMiddleName}
@@ -765,7 +1009,7 @@ export function StudentEnrollment() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianLastName">Guardian's Last Name *</Label>
+                        <Label htmlFor="guardianLastName">Guardian's Last Name</Label>
                         <Input
                           id="guardianLastName"
                           value={formData.guardianLastName}
@@ -774,7 +1018,7 @@ export function StudentEnrollment() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianContactNumber">Guardian's Contact Number *</Label>
+                        <Label htmlFor="guardianContactNumber">Guardian's Contact Number</Label>
                         <Input
                           id="guardianContactNumber"
                           value={formData.guardianContactNumber}
@@ -783,7 +1027,7 @@ export function StudentEnrollment() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="relationshipToGuardian">Relationship to Guardian *</Label>
+                        <Label htmlFor="relationshipToGuardian">Relationship to Guardian</Label>
                         <Input
                           id="relationshipToGuardian"
                           value={formData.relationshipToGuardian}
@@ -1081,17 +1325,11 @@ export function StudentEnrollment() {
                     ))}
                   </div>
 
-                  {formData.modeOfPayment && formData.modeOfPayment !== 'cash' && (
-                    <div className="space-y-2 mt-4">
-                      <Label htmlFor="voucherNo">Voucher No.</Label>
-                      <Input
-                        id="voucherNo"
-                        value={formData.voucherNo}
-                        onChange={(e) => handleInputChange('voucherNo', e.target.value)}
-                        placeholder="Enter voucher number"
-                      />
-                    </div>
-                  )}
+                  <p className="text-sm text-gray-600 mt-4 rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2">
+                    If you use a voucher program (QVR, ESC, QVA, or ALS), you will enter your{' '}
+                    <span className="font-semibold">voucher number on your dashboard</span> after the Registrar approves
+                    your enrollment.
+                  </p>
                 </div>
               </CardContent>
             </Card>
@@ -1181,17 +1419,19 @@ export function StudentEnrollment() {
                 {/* Mode of Payment */}
                 <div>
                   <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">Payment Information</h3>
-                  <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                     <div>
                       <p className="text-gray-600">Mode of Payment</p>
-                      <p className="font-medium uppercase">{formData.modeOfPayment}</p>
+                      <p className="font-medium uppercase">{formData.modeOfPayment || '—'}</p>
                     </div>
-                    {formData.voucherNo && (
-                      <div>
-                        <p className="text-gray-600">Voucher No.</p>
-                        <p className="font-medium">{formData.voucherNo}</p>
-                      </div>
-                    )}
+                    <div>
+                      <p className="text-gray-600">Voucher No.</p>
+                      <p className="font-medium text-gray-700">
+                        {formData.modeOfPayment === 'cash'
+                          ? 'Not applicable (cash)'
+                          : 'Add on your dashboard after enrollment is approved'}
+                      </p>
+                    </div>
                   </div>
                 </div>
 
@@ -1229,7 +1469,7 @@ export function StudentEnrollment() {
           <Button
             variant="outline"
             onClick={handleBack}
-            disabled={currentStep === 1}
+            disabled={currentStep === 1 || isSaving || isEnrollmentLocked || !enrollmentAllowed}
             className="border-gray-300"
           >
             <ChevronLeft className="w-4 h-4 mr-2" />
@@ -1238,19 +1478,20 @@ export function StudentEnrollment() {
           {currentStep < 6 ? (
             <Button
               onClick={handleNext}
+              disabled={isSaving || isEnrollmentLocked || !enrollmentAllowed}
               className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
             >
-              Next
+              {isSaving ? 'Saving...' : 'Next'}
               <ChevronRight className="w-4 h-4 ml-2" />
             </Button>
           ) : (
             <Button
               onClick={handleSubmit}
-              disabled={!formData.confirmInformation}
+              disabled={!formData.confirmInformation || isSaving || isEnrollmentLocked || !enrollmentAllowed}
               className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <CheckCircle className="w-4 h-4 mr-2" />
-              Submit Application
+              {isSaving ? 'Submitting...' : 'Submit Application'}
             </Button>
           )}
         </div>

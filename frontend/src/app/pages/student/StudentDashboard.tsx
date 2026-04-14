@@ -1,9 +1,15 @@
 import { useAuth } from '../../context/AuthContext';
 import { Link } from 'react-router';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
-import { CheckCircle2, Loader2 } from 'lucide-react';
+import { CheckCircle2, Loader2, Wallet } from 'lucide-react';
 import { useStudentPortal } from '../../hooks/useStudentPortal';
 import { Alert, AlertDescription } from '../../components/ui/alert';
+import { useEffect, useState } from 'react';
+import { Button } from '../../components/ui/button';
+import { Input } from '../../components/ui/input';
+import { Label } from '../../components/ui/label';
+import { apiFetch } from '../../lib/api';
+import { toast } from 'sonner';
 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
@@ -16,7 +22,7 @@ function Detail({ label, value }: { label: string; value: string }) {
 
 function appStatusPillClass(status: string) {
   const s = status.toLowerCase();
-  if (s.includes('approved')) return 'bg-green-100 text-green-800';
+  if (s.includes('approved') || s.includes('enrolled')) return 'bg-green-100 text-green-800';
   if (s.includes('reject')) return 'bg-red-100 text-red-800';
   if (s.includes('review') || s.includes('pending')) return 'bg-blue-100 text-blue-800';
   return 'bg-gray-100 text-gray-800';
@@ -25,6 +31,65 @@ function appStatusPillClass(status: string) {
 export function StudentDashboard() {
   const { user } = useAuth();
   const { data, loading, error, refetch } = useStudentPortal();
+  const [voucherInput, setVoucherInput] = useState('');
+  const [voucherSaving, setVoucherSaving] = useState(false);
+
+  const hasEnrollment = !!data?.application?.id && String(data?.application?.id ?? '').trim().length > 0;
+  const statusCode = String(data?.application?.status_code ?? '').toLowerCase();
+  // Lock ONLY after an actual enrollment submission exists.
+  // Brand new accounts should NOT be locked.
+  const enrollmentLocked =
+    hasEnrollment &&
+    ['pending', 'under review', 'under_review', 'review', 'approved'].includes(statusCode);
+
+  useEffect(() => {
+    if (!data) return;
+    if (enrollmentLocked) localStorage.setItem('studentEnrollmentLocked', '1');
+    else localStorage.removeItem('studentEnrollmentLocked');
+  }, [data, enrollmentLocked]);
+
+  const enrollmentApproved = statusCode === 'approved';
+  const payMode = String(data?.application?.mode_of_payment || '').toLowerCase();
+  const voucherSaved = String(data?.application?.voucher_no || '').trim();
+  const showVoucherCard = enrollmentApproved && payMode && payMode !== 'cash';
+
+  useEffect(() => {
+    if (voucherSaved) setVoucherInput(voucherSaved);
+  }, [voucherSaved]);
+
+  const saveVoucher = async () => {
+    const v = voucherInput.trim();
+    if (!v) {
+      toast.error('Enter your voucher number.');
+      return;
+    }
+    setVoucherSaving(true);
+    try {
+      const res = await apiFetch('/api/student/enrollment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_voucher', voucher_no: v }),
+      });
+      const text = await res.text();
+      let json: { success?: boolean; error?: string; message?: string } = {};
+      try {
+        json = JSON.parse(text);
+      } catch {
+        toast.error('Invalid server response');
+        return;
+      }
+      if (!res.ok || !json.success) {
+        toast.error(json.error || `Could not save (${res.status})`);
+        return;
+      }
+      toast.success(json.message || 'Voucher number saved.');
+      await refetch();
+    } catch {
+      toast.error('Failed to save voucher number');
+    } finally {
+      setVoucherSaving(false);
+    }
+  };
 
   if (!user) return null;
 
@@ -38,12 +103,14 @@ export function StudentDashboard() {
           <p className="text-gray-600 mt-1">Here&apos;s your enrollment overview</p>
         </div>
         <div className="flex gap-2">
-          <Link
-            to="/student/enrollment"
-            className="inline-flex items-center justify-center rounded-lg bg-[#8B1538] px-4 py-2 text-sm font-semibold text-white hover:bg-[#8B1538]/90"
-          >
-            Continue enrollment
-          </Link>
+          {!enrollmentLocked && (
+            <Link
+              to="/student/enrollment"
+              className="inline-flex items-center justify-center rounded-lg bg-[#8B1538] px-4 py-2 text-sm font-semibold text-white hover:bg-[#8B1538]/90"
+            >
+              Continue enrollment
+            </Link>
+          )}
           <button
             type="button"
             onClick={() => refetch()}
@@ -102,9 +169,52 @@ export function StudentDashboard() {
             </CardContent>
           </Card>
 
+          {showVoucherCard ? (
+            <Card className="border border-gray-200 border-l-4 border-l-[#8B1538] shadow-sm">
+              <CardHeader className="border-b border-gray-100 bg-white">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Wallet className="h-5 w-5 text-[#8B1538]" aria-hidden />
+                  Voucher number
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-6 space-y-4">
+                <p className="text-sm text-gray-600">
+                  Your enrollment is approved. Enter the voucher number for your selected payment mode (
+                  <span className="font-semibold uppercase">{payMode}</span>).
+                </p>
+                <div className="space-y-2 max-w-md">
+                  <Label htmlFor="dash-voucher">Voucher No.</Label>
+                  <Input
+                    id="dash-voucher"
+                    value={voucherInput}
+                    onChange={(e) => setVoucherInput(e.target.value)}
+                    placeholder="Enter voucher number"
+                    autoComplete="off"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  onClick={saveVoucher}
+                  disabled={voucherSaving}
+                  className="bg-[#8B1538] hover:bg-[#8B1538]/90"
+                >
+                  {voucherSaving ? 'Saving…' : 'Save voucher number'}
+                </Button>
+                {voucherSaved ? (
+                  <p className="text-xs text-green-800">
+                    A voucher number is on file. You can update it above if it changes.
+                  </p>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
+
           <Card className="border-gray-200 shadow-sm">
             <CardHeader className="border-b border-gray-100 bg-white">
               <CardTitle className="text-lg">Parent / guardian</CardTitle>
+              <p className="text-sm text-gray-500 font-normal pt-1">
+                From your enrollment application (mother, father, or legal guardian). Edit on the enrollment form while it is open; after submission, contact the Registrar for changes.
+              </p>
             </CardHeader>
             <CardContent className="pt-6">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">

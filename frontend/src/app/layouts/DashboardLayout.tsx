@@ -3,7 +3,7 @@ import { LogOut, Menu, X, GraduationCap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Button } from '../components/ui/button';
 import { useState, ReactNode } from 'react';
-import schoolLogo from 'figma:asset/e11655a0bb448323cab4def085b422d71c615f64.png';
+import schoolLogo from '../../assets/logo.png';
 import { 
   Home, 
   ClipboardList, 
@@ -12,7 +12,6 @@ import {
   Calendar, 
   FileText, 
   Bell, 
-  Lock, 
   Users, 
   BarChart3, 
   FolderOpen, 
@@ -37,6 +36,7 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
 
   const handleLogout = () => {
     localStorage.removeItem('user');
+    localStorage.removeItem('studentEnrollmentLocked');
     logout();
     navigate('/login');
   };
@@ -115,6 +115,7 @@ export const registrarNavigation = [
 
 export const adminNavigation = [
   { name: 'Dashboard', path: '/admin/dashboard', icon: Home },
+  { name: 'School Year', path: '/admin/school-year', icon: Calendar },
   { name: 'User Management', path: '/admin/user-management', icon: UsersRound },
   { name: 'Reports', path: '/admin/reports', icon: BarChart3 },
   { name: 'Activity Logs', path: '/admin/activity-logs', icon: Activity },

@@ -1,9 +1,63 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
+import { Alert, AlertDescription } from '../../components/ui/alert';
 import { FileText, Download, FileSpreadsheet, Users, School, CheckCircle, BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useEffect, useMemo, useState } from 'react';
+import { apiFetch } from '../../lib/api';
 
 export function Reports() {
+  const [error, setError] = useState<string | null>(null);
+  const [summary, setSummary] = useState({
+    totalEnrolled: 0,
+    totalSections: 0,
+    quotaUtilization: 0,
+    documentCompletionRate: 0,
+    overallQuota: 4000,
+    remainingSlots: 4000,
+    verifiedDocuments: 0,
+    totalDocuments: 0,
+  });
+  const [strands, setStrands] = useState<Array<{ name: string; totalApplications: number; enrolledStudents: number }>>([]);
+
+  useEffect(() => {
+    const loadOverview = async () => {
+      setError(null);
+      try {
+        const res = await apiFetch('/api/registrar/overview');
+        const text = await res.text();
+        let json: any = {};
+        try {
+          json = JSON.parse(text);
+        } catch {
+          throw new Error('Server returned an invalid response');
+        }
+
+        if (!res.ok || !json.success) {
+          setError(json.error || `Failed to load reports (${res.status})`);
+          return;
+        }
+
+        const s = json.summary ?? {};
+        setSummary({
+          totalEnrolled: Number(s.totalEnrolled ?? 0),
+          totalSections: Number(s.totalSections ?? 0),
+          quotaUtilization: Number(s.quotaUtilization ?? 0),
+          documentCompletionRate: Number(s.documentCompletionRate ?? 0),
+          overallQuota: Number(s.overallQuota ?? 4000),
+          remainingSlots: Number(s.remainingSlots ?? 0),
+          verifiedDocuments: Number(s.verifiedDocuments ?? 0),
+          totalDocuments: Number(s.totalDocuments ?? 0),
+        });
+        setStrands(Array.isArray(json.strands) ? json.strands : []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error');
+      }
+    };
+
+    loadOverview();
+  }, []);
+
   const handleExportPDF = (reportType: string) => {
     toast.success(`Exporting ${reportType} as PDF...`);
   };
@@ -12,6 +66,14 @@ export function Reports() {
     toast.success(`Exporting ${reportType} as Excel...`);
   };
 
+  const strandSummary = useMemo(() => {
+    if (strands.length === 0) return 'No strand data yet';
+    return strands
+      .slice(0, 3)
+      .map((s) => `${s.name}: ${s.enrolledStudents}`)
+      .join(' | ');
+  }, [strands]);
+
   const reports = [
     {
       id: 1,
@@ -19,7 +81,7 @@ export function Reports() {
       description: 'Comprehensive enrollment report showing students per strand with quota analysis',
       icon: Users,
       color: 'blue',
-      stats: { total: 202, byStrand: 'HUMSS: 130 | TVL: 72' }
+      stats: { total: summary.totalEnrolled, byStrand: strandSummary }
     },
     {
       id: 2,
@@ -27,7 +89,7 @@ export function Reports() {
       description: 'Complete list of all sections with student rosters and adviser assignments',
       icon: School,
       color: 'green',
-      stats: { total: '6 Sections', byStrand: 'HUMSS: 4 | TVL: 2' }
+      stats: { total: `${summary.totalSections} Sections`, byStrand: strandSummary }
     },
     {
       id: 3,
@@ -35,7 +97,7 @@ export function Reports() {
       description: 'Strand quota tracking with remaining slots and capacity utilization',
       icon: BarChart3,
       color: 'orange',
-      stats: { quotaTotal: 225, enrolled: 202, remaining: 23 }
+      stats: { quotaTotal: summary.overallQuota, enrolled: summary.totalEnrolled, remaining: summary.remainingSlots }
     },
     {
       id: 4,
@@ -43,7 +105,11 @@ export function Reports() {
       description: 'Student document submission status with completion tracking',
       icon: CheckCircle,
       color: 'purple',
-      stats: { complete: 5, incomplete: 3, rate: '62.5%' }
+      stats: {
+        complete: summary.verifiedDocuments,
+        incomplete: Math.max(0, summary.totalDocuments - summary.verifiedDocuments),
+        rate: `${summary.documentCompletionRate.toFixed(1)}%`,
+      }
     }
   ];
 
@@ -54,6 +120,12 @@ export function Reports() {
         <p className="text-gray-600">Generate and export various registrar reports</p>
       </div>
 
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
@@ -61,7 +133,7 @@ export function Reports() {
             <CardTitle className="text-sm font-medium text-gray-600">Total Enrolled</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-blue-600">202</div>
+            <div className="text-3xl font-bold text-blue-600">{summary.totalEnrolled}</div>
           </CardContent>
         </Card>
 
@@ -70,7 +142,7 @@ export function Reports() {
             <CardTitle className="text-sm font-medium text-gray-600">Total Sections</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-[#2D5016]">6</div>
+            <div className="text-3xl font-bold text-[#2D5016]">{summary.totalSections}</div>
           </CardContent>
         </Card>
 
@@ -79,7 +151,7 @@ export function Reports() {
             <CardTitle className="text-sm font-medium text-gray-600">Quota Utilization</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-orange-600">89.8%</div>
+            <div className="text-3xl font-bold text-orange-600">{summary.quotaUtilization.toFixed(1)}%</div>
           </CardContent>
         </Card>
 
@@ -88,7 +160,7 @@ export function Reports() {
             <CardTitle className="text-sm font-medium text-gray-600">Document Complete</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-purple-600">62.5%</div>
+            <div className="text-3xl font-bold text-purple-600">{summary.documentCompletionRate.toFixed(1)}%</div>
           </CardContent>
         </Card>
       </div>

@@ -111,7 +111,9 @@ export function ActiveSchoolYearBanner() {
           Active School Year: {activeSchoolYear.year}
         </p>
         <p className="text-xs text-green-700">
-          {new Date(activeSchoolYear.startDate).toLocaleDateString()} - {new Date(activeSchoolYear.endDate).toLocaleDateString()}
+          {activeSchoolYear.startDate && activeSchoolYear.endDate
+            ? `${new Date(activeSchoolYear.startDate).toLocaleDateString()} - ${new Date(activeSchoolYear.endDate).toLocaleDateString()}`
+            : 'Dates configured in School Year Management'}
         </p>
       </div>
       <div className="bg-green-600 text-white text-xs font-medium px-3 py-1 rounded-full">

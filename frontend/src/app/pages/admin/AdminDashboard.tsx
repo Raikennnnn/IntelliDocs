@@ -1,13 +1,60 @@
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
-import { mockSecurityAlerts, mockSecurityLogs, mockUsers } from '../../data/mockData';
+import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Users, Activity, Shield, AlertTriangle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { apiFetch } from '../../lib/api';
 
 export function AdminDashboard() {
-  const totalUsers = Object.keys(mockUsers).length;
-  const activeSessions = 12;
-  const openAlerts = mockSecurityAlerts.filter(a => a.status === 'Open').length;
-  const recentLogs = mockSecurityLogs.slice(0, 5);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [summary, setSummary] = useState({
+    totalUsers: 0,
+    activeSessions: 0,
+    securityAlerts: 0,
+    systemStatus: 'Operational',
+  });
+  const [alerts, setAlerts] = useState<Array<any>>([]);
+  const [recentLogs, setRecentLogs] = useState<Array<any>>([]);
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await apiFetch('/api/admin/overview');
+        const text = await res.text();
+        let json: any = {};
+        try {
+          json = JSON.parse(text);
+        } catch {
+          throw new Error('Server returned an invalid response');
+        }
+        if (!res.ok || !json.success) {
+          setError(json.error || `Failed to load dashboard (${res.status})`);
+          return;
+        }
+        const next = json.summary ?? {};
+        setSummary({
+          totalUsers: Number(next.totalUsers ?? 0),
+          activeSessions: Number(next.activeSessions ?? 0),
+          securityAlerts: Number(next.securityAlerts ?? 0),
+          systemStatus: String(next.systemStatus ?? 'Operational'),
+        });
+        setAlerts(Array.isArray(json.alerts) ? json.alerts : []);
+        setRecentLogs(Array.isArray(json.activityLogs) ? json.activityLogs : []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error');
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+    const id = window.setInterval(() => {
+      load();
+    }, 10000);
+    return () => window.clearInterval(id);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -15,6 +62,12 @@ export function AdminDashboard() {
         <h2 className="text-2xl font-semibold text-gray-900">Admin Dashboard</h2>
         <p className="text-gray-600">System administration and security monitoring</p>
       </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -24,7 +77,7 @@ export function AdminDashboard() {
             <Users className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{totalUsers}</div>
+            <div className="text-2xl font-bold">{summary.totalUsers}</div>
             <p className="text-xs text-muted-foreground">Registered accounts</p>
           </CardContent>
         </Card>
@@ -35,7 +88,7 @@ export function AdminDashboard() {
             <Activity className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-600">{activeSessions}</div>
+            <div className="text-2xl font-bold text-green-600">{summary.activeSessions}</div>
             <p className="text-xs text-muted-foreground">Currently logged in</p>
           </CardContent>
         </Card>
@@ -46,7 +99,7 @@ export function AdminDashboard() {
             <AlertTriangle className="h-4 w-4 text-orange-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-orange-600">{openAlerts}</div>
+            <div className="text-2xl font-bold text-orange-600">{summary.securityAlerts}</div>
             <p className="text-xs text-muted-foreground">Require attention</p>
           </CardContent>
         </Card>
@@ -57,7 +110,7 @@ export function AdminDashboard() {
             <Shield className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-sm font-bold text-green-600">Operational</div>
+            <div className="text-sm font-bold text-green-600">{summary.systemStatus}</div>
             <p className="text-xs text-muted-foreground">All systems running</p>
           </CardContent>
         </Card>
@@ -70,7 +123,7 @@ export function AdminDashboard() {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {mockSecurityAlerts.map((alert) => (
+            {(alerts.length > 0 ? alerts : [{ id: 'empty', type: 'No alerts', description: loading ? 'Loading...' : 'No alerts available', severity: 'Low', timestamp: '' }]).map((alert) => (
               <div 
                 key={alert.id} 
                 className={`p-4 border-l-4 rounded-lg ${

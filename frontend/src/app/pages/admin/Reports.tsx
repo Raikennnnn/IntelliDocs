@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
@@ -22,6 +23,8 @@ import {
   FileText,
   Clock
 } from 'lucide-react';
+import { Alert, AlertDescription } from '../../components/ui/alert';
+import { apiFetch } from '../../lib/api';
 
 // Mock Data
 const systemPerformanceData = [
@@ -67,6 +70,85 @@ const auditTrail = [
 export function Reports() {
   const [activeTab, setActiveTab] = useState<'performance' | 'security' | 'database' | 'activity' | 'audit'>('performance');
   const [dateRange, setDateRange] = useState('7days');
+  const [error, setError] = useState<string | null>(null);
+  const [summary, setSummary] = useState({
+    systemUptime: 'N/A',
+    databaseSizeLabel: 'N/A',
+    securityEvents: 0,
+    activeUsers: 0,
+  });
+  const [reportsData, setReportsData] = useState<{
+    performance: any[];
+    security: any[];
+    database: any[];
+    activity: any[];
+    audit: any[];
+  }>({
+    performance: [],
+    security: [],
+    database: [],
+    activity: [],
+    audit: [],
+  });
+
+  useEffect(() => {
+    const load = async () => {
+      setError(null);
+      try {
+        const res = await apiFetch('/api/admin/overview');
+        const text = await res.text();
+        let json: any = {};
+        try {
+          json = JSON.parse(text);
+        } catch {
+          throw new Error('Server returned an invalid response');
+        }
+        if (!res.ok || !json.success) {
+          throw new Error(json.error || `Failed to load reports (${res.status})`);
+        }
+        const s = json.summary ?? {};
+        setSummary({
+          systemUptime: s.systemStatus === 'Operational' ? 'Operational' : 'N/A',
+          databaseSizeLabel: String(s.databaseSizeLabel ?? 'N/A'),
+          securityEvents: Number(s.securityEvents ?? 0),
+          activeUsers: Number(s.activeUsers ?? 0),
+        });
+
+        const reportsRes = await apiFetch('/api/admin/reports');
+        const reportsText = await reportsRes.text();
+        let reportsJson: any = {};
+        try {
+          reportsJson = JSON.parse(reportsText);
+        } catch {
+          throw new Error('Server returned an invalid reports response');
+        }
+        if (!reportsRes.ok || !reportsJson.success) {
+          throw new Error(reportsJson.error || `Failed to load reports details (${reportsRes.status})`);
+        }
+        setReportsData({
+          performance: Array.isArray(reportsJson.performance) ? reportsJson.performance : [],
+          security: Array.isArray(reportsJson.securityReports) ? reportsJson.securityReports : [],
+          database: Array.isArray(reportsJson.databaseReports) ? reportsJson.databaseReports : [],
+          activity: Array.isArray(reportsJson.userActivityReports) ? reportsJson.userActivityReports : [],
+          audit: Array.isArray(reportsJson.auditTrail) ? reportsJson.auditTrail : [],
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error');
+      }
+    };
+    load();
+  }, []);
+
+  const performanceRows = reportsData.performance.length > 0 ? reportsData.performance : systemPerformanceData;
+  const securityRows = reportsData.security.length > 0 ? reportsData.security : securityReports;
+  const databaseRows = reportsData.database.length > 0 ? reportsData.database : databaseReports;
+  const activityRows = reportsData.activity.length > 0 ? reportsData.activity : userActivityReports;
+  const auditRows = reportsData.audit.length > 0 ? reportsData.audit : auditTrail;
+
+  const totalLogins = activityRows.reduce((sum, r) => sum + Number(r.logins ?? 0), 0);
+  const totalActiveUsers = activityRows.reduce((sum, r) => sum + Number(r.activeUsers ?? 0), 0);
+  const totalFailed = activityRows.reduce((sum, r) => sum + Number(r.failedLogins ?? 0), 0);
+  const failedRate = totalLogins > 0 ? ((totalFailed / totalLogins) * 100).toFixed(1) : '0.0';
 
   const getSeverityBadge = (severity: string) => {
     switch (severity) {
@@ -141,6 +223,12 @@ export function Reports() {
         </div>
       </div>
 
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
@@ -151,8 +239,8 @@ export function Reports() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-[#2D5016]">99.98%</div>
-            <p className="text-xs text-gray-500 mt-1">Last 30 days</p>
+            <div className="text-3xl font-bold text-[#2D5016]">{summary.systemUptime}</div>
+            <p className="text-xs text-gray-500 mt-1">Current status</p>
           </CardContent>
         </Card>
 
@@ -164,8 +252,8 @@ export function Reports() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-gray-900">8.7 GB</div>
-            <p className="text-xs text-gray-500 mt-1">+508 MB this week</p>
+            <div className="text-3xl font-bold text-gray-900">{summary.databaseSizeLabel}</div>
+            <p className="text-xs text-gray-500 mt-1">Live database indicator</p>
           </CardContent>
         </Card>
 
@@ -177,7 +265,7 @@ export function Reports() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-orange-600">22</div>
+            <div className="text-3xl font-bold text-orange-600">{summary.securityEvents}</div>
             <p className="text-xs text-gray-500 mt-1">Last 24 hours</p>
           </CardContent>
         </Card>
@@ -190,7 +278,7 @@ export function Reports() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-blue-600">393</div>
+            <div className="text-3xl font-bold text-blue-600">{summary.activeUsers}</div>
             <p className="text-xs text-gray-500 mt-1">Currently online</p>
           </CardContent>
         </Card>
@@ -233,7 +321,7 @@ export function Reports() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {systemPerformanceData.map((metric, index) => (
+                {performanceRows.map((metric, index) => (
                   <div key={index} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-gray-700">{metric.metric}</span>
@@ -335,7 +423,7 @@ export function Reports() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {securityReports.map((report, index) => (
+                    {securityRows.map((report, index) => (
                       <TableRow key={index} className={report.severity === 'Critical' ? 'bg-red-50' : ''}>
                         <TableCell className="text-sm">
                           <div className="flex items-center gap-1">
@@ -381,7 +469,7 @@ export function Reports() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {databaseReports.map((db, index) => (
+                    {databaseRows.map((db, index) => (
                       <TableRow key={index}>
                         <TableCell className="font-medium font-mono text-sm">{db.database}</TableCell>
                         <TableCell className="font-semibold">{db.size}</TableCell>
@@ -443,7 +531,7 @@ export function Reports() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {userActivityReports.map((report, index) => (
+                    {activityRows.map((report, index) => (
                       <TableRow key={index}>
                         <TableCell className="font-medium">{report.role}</TableCell>
                         <TableCell className="text-center font-semibold">{report.logins}</TableCell>
@@ -467,16 +555,16 @@ export function Reports() {
               {/* Total Summary */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
                 <div className="border rounded-lg p-4 text-center">
-                  <p className="text-sm text-gray-600 mb-1">Total Logins (7 Days)</p>
-                  <p className="text-3xl font-bold text-gray-900">1,523</p>
+                  <p className="text-sm text-gray-600 mb-1">Total Logins (Derived)</p>
+                  <p className="text-3xl font-bold text-gray-900">{totalLogins}</p>
                 </div>
                 <div className="border rounded-lg p-4 text-center">
                   <p className="text-sm text-gray-600 mb-1">Active Users Now</p>
-                  <p className="text-3xl font-bold text-[#2D5016]">393</p>
+                  <p className="text-3xl font-bold text-[#2D5016]">{totalActiveUsers}</p>
                 </div>
                 <div className="border rounded-lg p-4 text-center">
                   <p className="text-sm text-gray-600 mb-1">Failed Login Rate</p>
-                  <p className="text-3xl font-bold text-orange-600">0.7%</p>
+                  <p className="text-3xl font-bold text-orange-600">{failedRate}%</p>
                 </div>
               </div>
             </CardContent>
@@ -506,7 +594,7 @@ export function Reports() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {auditTrail.map((log, index) => (
+                    {auditRows.map((log, index) => (
                       <TableRow key={index}>
                         <TableCell className="text-sm">
                           <div className="flex items-center gap-1">

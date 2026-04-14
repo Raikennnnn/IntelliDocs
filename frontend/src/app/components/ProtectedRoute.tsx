@@ -6,14 +6,32 @@ interface ProtectedRouteProps {
   allowedRoles: string[];
 }
 
+function getValidStoredUser(): any | null {
+  try {
+    const raw = localStorage.getItem('user');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as any;
+    const id = parsed?.id ?? parsed?.userId ?? parsed?.user_id ?? parsed?.user?.id ?? parsed?.user?.userId ?? parsed?.user?.user_id;
+    if (id == null || String(id).trim() === '') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) {
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Get user from localStorage
-    const userStr = localStorage.getItem('user');
-    const userData = userStr ? JSON.parse(userStr) : null;
+    const userData = getValidStoredUser();
+    if (!userData) {
+      try {
+        localStorage.removeItem('user');
+      } catch {
+        // ignore
+      }
+    }
     setUser(userData);
     setLoading(false);
   }, []);

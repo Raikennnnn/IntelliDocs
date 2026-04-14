@@ -1,58 +1,78 @@
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
-import { Progress } from '../../components/ui/progress';
 import { Users, CheckCircle, AlertCircle, TrendingUp } from 'lucide-react';
+import { Alert, AlertDescription } from '../../components/ui/alert';
+import { useEffect, useMemo, useState } from 'react';
+import { apiFetch } from '../../lib/api';
+
+type StrandRow = {
+  name: string;
+  totalApplications: number;
+  enrolledStudents: number;
+};
 
 export function RegistrarDashboard() {
-  // Mock data for strand quotas
-  const strands = [
-    {
-      name: 'STEM',
-      fullName: 'Science, Technology, Engineering and Mathematics',
-      totalApplications: 720,
-      enrolledStudents: 680,
-      color: 'blue'
-    },
-    {
-      name: 'HUMSS',
-      fullName: 'Humanities and Social Sciences',
-      totalApplications: 650,
-      enrolledStudents: 620,
-      color: 'green'
-    },
-    {
-      name: 'ABM',
-      fullName: 'Accountancy, Business and Management',
-      totalApplications: 580,
-      enrolledStudents: 550,
-      color: 'purple'
-    },
-    {
-      name: 'TVL-ICT',
-      fullName: 'Information and Communications Technology',
-      totalApplications: 420,
-      enrolledStudents: 400,
-      color: 'cyan'
-    },
-    {
-      name: 'TVL-EIM',
-      fullName: 'Electrical Installation and Maintenance',
-      totalApplications: 380,
-      enrolledStudents: 360,
-      color: 'orange'
-    },
-    {
-      name: 'TVL-BPP/FBS',
-      fullName: 'Bread and Pastry Production / Food & Beverage Services',
-      totalApplications: 350,
-      enrolledStudents: 330,
-      color: 'pink'
-    }
-  ];
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [strands, setStrands] = useState<StrandRow[]>([]);
+  const [summary, setSummary] = useState({
+    overallQuota: 4000,
+    totalApplications: 0,
+    totalEnrolled: 0,
+    remainingSlots: 4000,
+  });
 
-  // Overall quota is 4,000 students
-  const overallQuota = 4000;
-  const totalEnrolled = strands.reduce((sum, s) => sum + s.enrolledStudents, 0);
-  const totalApplications = strands.reduce((sum, s) => sum + s.totalApplications, 0);
+  useEffect(() => {
+    const loadOverview = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await apiFetch('/api/registrar/overview');
+        const text = await res.text();
+        let json: any = {};
+        try {
+          json = JSON.parse(text);
+        } catch {
+          throw new Error('Server returned an invalid response');
+        }
+
+        if (!res.ok || !json.success) {
+          setError(json.error || `Failed to load dashboard (${res.status})`);
+          setStrands([]);
+          return;
+        }
+
+        const nextSummary = json.summary ?? {};
+        setSummary({
+          overallQuota: Number(nextSummary.overallQuota ?? 4000),
+          totalApplications: Number(nextSummary.totalApplications ?? 0),
+          totalEnrolled: Number(nextSummary.totalEnrolled ?? 0),
+          remainingSlots: Number(nextSummary.remainingSlots ?? 0),
+        });
+        setStrands(Array.isArray(json.strands) ? json.strands as StrandRow[] : []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Network error');
+        setStrands([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadOverview();
+  }, []);
+
+  const overallQuota = summary.overallQuota;
+  const totalEnrolled = summary.totalEnrolled;
+  const totalApplications = summary.totalApplications;
+
+  const strandMeta = useMemo(() => ({
+    STEM: { fullName: 'Science, Technology, Engineering and Mathematics', bg: 'bg-blue-100', icon: 'text-blue-600' },
+    HUMSS: { fullName: 'Humanities and Social Sciences', bg: 'bg-green-100', icon: 'text-green-600' },
+    ABM: { fullName: 'Accountancy, Business and Management', bg: 'bg-purple-100', icon: 'text-purple-600' },
+    'TVL-ICT': { fullName: 'Information and Communications Technology', bg: 'bg-cyan-100', icon: 'text-cyan-600' },
+    'TVL-EIM': { fullName: 'Electrical Installation and Maintenance', bg: 'bg-orange-100', icon: 'text-orange-600' },
+    'TVL-BPP/FBS': { fullName: 'Bread and Pastry Production / Food & Beverage Services', bg: 'bg-pink-100', icon: 'text-pink-600' },
+    Unspecified: { fullName: 'No strand specified', bg: 'bg-gray-100', icon: 'text-gray-600' },
+  }), []);
 
   const getProgressColor = (percentage: number) => {
     if (percentage >= 90) return 'bg-red-600';
@@ -72,6 +92,12 @@ export function RegistrarDashboard() {
         <h2 className="text-2xl font-semibold text-gray-900">Registrar Dashboard</h2>
         <p className="text-gray-600">Student Information System Overview</p>
       </div>
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {/* Overall Summary */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -124,7 +150,7 @@ export function RegistrarDashboard() {
           <CardContent>
             <div className="flex items-center justify-between">
               <div className="text-3xl font-bold text-orange-600">
-                {overallQuota - totalEnrolled}
+                {summary.remainingSlots}
               </div>
               <AlertCircle className="w-8 h-8 text-orange-600" />
             </div>
@@ -137,8 +163,9 @@ export function RegistrarDashboard() {
         <h3 className="text-xl font-semibold text-gray-900 mb-4">Strand Enrollment Overview</h3>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {strands.map((strand) => {
-            const remainingSlots = overallQuota - totalEnrolled;
-            const percentageFilled = (totalEnrolled / overallQuota) * 100;
+            const remainingSlots = Math.max(0, overallQuota - strand.enrolledStudents);
+            const percentageFilled = overallQuota > 0 ? (strand.enrolledStudents / overallQuota) * 100 : 0;
+            const meta = strandMeta[strand.name as keyof typeof strandMeta] ?? strandMeta.Unspecified;
             
             return (
               <Card key={strand.name} className="border-2 hover:shadow-lg transition-shadow">
@@ -148,10 +175,10 @@ export function RegistrarDashboard() {
                       <CardTitle className="text-2xl font-bold text-[#8B1538]">
                         {strand.name}
                       </CardTitle>
-                      <p className="text-sm text-gray-600 mt-1">{strand.fullName}</p>
+                      <p className="text-sm text-gray-600 mt-1">{meta.fullName}</p>
                     </div>
-                    <div className={`w-12 h-12 rounded-full bg-${strand.color}-100 flex items-center justify-center`}>
-                      <Users className={`w-6 h-6 text-${strand.color}-600`} />
+                    <div className={`w-12 h-12 rounded-full ${meta.bg} flex items-center justify-center`}>
+                      <Users className={`w-6 h-6 ${meta.icon}`} />
                     </div>
                   </div>
                 </CardHeader>
@@ -209,6 +236,9 @@ export function RegistrarDashboard() {
               </Card>
             );
           })}
+          {!loading && strands.length === 0 && (
+            <div className="text-gray-500 text-sm">No strand data available yet.</div>
+          )}
         </div>
       </div>
 

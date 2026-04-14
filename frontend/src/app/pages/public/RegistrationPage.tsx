@@ -1,4 +1,4 @@
-import registrationImage from 'figma:asset/da4150ecce5f1b8daf4daba3e7d3afeee240ac53.png'
+import registrationImage from '../../../assets/registerpage.png'
 import { apiFetch } from '../../lib/api';
 import { useState } from "react";
 import { useNavigate, Link } from "react-router";
@@ -7,7 +7,7 @@ import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { Mail, Lock, User, Eye, EyeOff, ArrowLeft, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
-import schoolLogo from "figma:asset/e11655a0bb448323cab4def085b422d71c615f64.png";
+import schoolLogo from "../../../assets/logo.png";
 
 // Registration Page Component
 export function RegistrationPage() {
@@ -22,6 +22,8 @@ export function RegistrationPage() {
   });
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [isLoading, setIsLoading] = useState(false);
+  const [devOtp, setDevOtp] = useState<string | null>(null);
+  const [otpDelivery, setOtpDelivery] = useState<'sent' | 'failed' | null>(null);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -74,18 +76,34 @@ export function RegistrationPage() {
           full_name: formData.fullName
         }),
       });
-      const data = await response.json();
-      
-      if (data.success) {
-        setIsLoading(false);
-        toast.success('Account created! OTP sent.');
+
+      const responseText = await response.text();
+      let data: { success?: boolean; error?: string; message?: string; otp_delivery?: string; dev_otp?: string } = {};
+      try {
+        data = JSON.parse(responseText) as { success?: boolean; error?: string };
+      } catch {
+        throw new Error('Server returned an invalid response. Check backend API setup.');
+      }
+
+      if (response.ok && data.success) {
+        setDevOtp(data.dev_otp ?? null);
+        setOtpDelivery(data.otp_delivery === 'sent' ? 'sent' : 'failed');
+        if (data.otp_delivery === 'sent') {
+          toast.success(data.message || 'Account created! OTP sent.');
+        } else {
+          toast.warning(data.message || 'Account created, but OTP email delivery failed.');
+          if (data.dev_otp) {
+            toast.info(`Dev OTP: ${data.dev_otp}`);
+          }
+        }
         setStep('otp');
       } else {
-        toast.error(data.error || 'Registration failed');
-        setIsLoading(false);
+        toast.error(data.error || `Registration failed (${response.status})`);
       }
     } catch (error) {
-      toast.error('Network error');
+      const message = error instanceof Error ? error.message : 'Network error';
+      toast.error(message);
+    } finally {
       setIsLoading(false);
     }
   };
@@ -100,15 +118,33 @@ export function RegistrationPage() {
     }
 
     setIsLoading(true);
-
-    // Mock OTP - use 123456
-    if (enteredOtp === '123456') {
-      toast.success('Welcome! Please login.');
-      navigate('/login');
-    } else {
-      toast.error('Enter 6-digit OTP (demo: 123456)');
+    try {
+      const response = await apiFetch('/api/auth', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'verify_otp',
+          email: formData.email,
+          otp: enteredOtp,
+        }),
+      });
+      const text = await response.text();
+      let data: { success?: boolean; error?: string; message?: string } = {};
+      try {
+        data = JSON.parse(text) as { success?: boolean; error?: string; message?: string };
+      } catch {
+        throw new Error('Server returned an invalid response');
+      }
+      if (response.ok && data.success) {
+        toast.success(data.message || 'Email verified. Please login.');
+        navigate('/login');
+      } else {
+        toast.error(data.error || `OTP verification failed (${response.status})`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Network error');
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   return (
@@ -300,8 +336,20 @@ export function RegistrationPage() {
                   <div className="flex items-start gap-3">
                     <CheckCircle className="w-5 h-5 text-[#2D5016] mt-0.5" />
                     <div className="text-sm text-gray-800">
-                      <p className="font-medium mb-1">Demo: Enter 123456</p>
-                      <p>Production: Real email OTP</p>
+                      {otpDelivery === 'sent' ? (
+                        <>
+                          <p className="font-medium mb-1">Check your inbox for the 6-digit OTP.</p>
+                          <p>Code expires in 10 minutes.</p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="font-medium mb-1">Email delivery is not available on this environment.</p>
+                          <p>Use the dev OTP below or configure SMTP/mail provider.</p>
+                        </>
+                      )}
+                      {devOtp && (
+                        <p className="mt-2 text-[#8B1538] font-semibold">Dev OTP: {devOtp}</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -315,10 +363,38 @@ export function RegistrationPage() {
                 </Button>
 
                 <div className="text-center">
-                  <p className="text-sm text-gray-600 mb-2">Demo OTP: 123456</p>
                   <button
                     type="button"
-                    onClick={() => toast.success('OTP resent to your email')}
+                    onClick={async () => {
+                      try {
+                        const response = await apiFetch('/api/auth', {
+                          method: 'POST',
+                          body: JSON.stringify({
+                            action: 'resend_otp',
+                            email: formData.email,
+                          }),
+                        });
+                        const text = await response.text();
+                        let data: { success?: boolean; error?: string; message?: string; dev_otp?: string } = {};
+                        try {
+                          data = JSON.parse(text) as { success?: boolean; error?: string; message?: string; dev_otp?: string };
+                        } catch {
+                          throw new Error('Server returned an invalid response');
+                        }
+                        if (response.ok && data.success) {
+                          setDevOtp(data.dev_otp ?? null);
+                          setOtpDelivery(data.dev_otp ? 'failed' : 'sent');
+                          toast.success(data.message || 'OTP resent to your email');
+                          if (data.dev_otp) {
+                            toast.info(`Dev OTP: ${data.dev_otp}`);
+                          }
+                        } else {
+                          toast.error(data.error || `Resend failed (${response.status})`);
+                        }
+                      } catch (error) {
+                        toast.error(error instanceof Error ? error.message : 'Network error');
+                      }
+                    }}
                     className="text-[#8B1538] font-semibold hover:underline text-sm"
                   >
                     Resend OTP

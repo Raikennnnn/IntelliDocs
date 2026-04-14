@@ -10,10 +10,15 @@ export function Announcements() {
   const getRelevantAnnouncements = () => {
     if (!user) return mockAnnouncements;
     
-    return mockAnnouncements.filter(announcement => {
+    return mockAnnouncements.filter((announcement) => {
       if (announcement.target === 'Whole School') return true;
       if (user.role === 'student' && announcement.target === 'Students') return true;
-      if (user.role === 'teacher' && announcement.target === 'Teachers') return true;
+      if (
+        (user.role === 'registrar' || user.role === 'admin') &&
+        announcement.target === 'Teachers'
+      ) {
+        return true;
+      }
       return false;
     });
   };

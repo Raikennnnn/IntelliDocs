@@ -122,12 +122,32 @@ export function ApplicationForm() {
     setFormData(prev => ({ ...prev, [field]: file }));
   };
 
+  const hasAtLeastOneParentOrGuardian = () => {
+    const f = formData.fatherName.trim();
+    const m = formData.motherName.trim();
+    const g = formData.guardianName.trim();
+    return f.length > 0 || m.length > 0 || g.length > 0;
+  };
+
   const handleSubmit = () => {
+    if (!hasAtLeastOneParentOrGuardian()) {
+      alert('Please provide at least one parent or guardian name (father, mother, or guardian).');
+      setActiveTab(1);
+      return;
+    }
     if (!formData.certified) {
       alert('Please certify that the information is true and correct.');
       return;
     }
     setSubmitted(true);
+  };
+
+  const goNextTab = () => {
+    if (activeTab === 1 && !hasAtLeastOneParentOrGuardian()) {
+      alert('Please provide at least one parent or guardian name (father, mother, or guardian).');
+      return;
+    }
+    setActiveTab(Math.min(tabs.length - 1, activeTab + 1));
   };
 
   if (submitted) {
@@ -313,11 +333,15 @@ export function ApplicationForm() {
             {/* Tab 2 - Parent/Guardian Information */}
             {activeTab === 1 && (
               <div className="space-y-6">
-                <h2 className="text-2xl font-bold text-gray-900 mb-6">Parent/Guardian Information</h2>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Parent/Guardian Information</h2>
+                <p className="text-sm text-gray-600 mb-6">
+                  Single-parent households: fill only the sections that apply. At least one parent or guardian name is
+                  required before you continue.
+                </p>
                 
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="fatherName">Father's Name *</Label>
+                    <Label htmlFor="fatherName">Father's Name</Label>
                     <Input
                       id="fatherName"
                       value={formData.fatherName}
@@ -326,7 +350,7 @@ export function ApplicationForm() {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="fatherOccupation">Father's Occupation *</Label>
+                    <Label htmlFor="fatherOccupation">Father's Occupation</Label>
                     <Input
                       id="fatherOccupation"
                       value={formData.fatherOccupation}
@@ -337,7 +361,7 @@ export function ApplicationForm() {
                 </div>
 
                 <div>
-                  <Label htmlFor="fatherContact">Father's Contact Number *</Label>
+                  <Label htmlFor="fatherContact">Father's Contact Number</Label>
                   <Input
                     id="fatherContact"
                     type="tel"
@@ -349,7 +373,7 @@ export function ApplicationForm() {
 
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="motherName">Mother's Name *</Label>
+                    <Label htmlFor="motherName">Mother's Name</Label>
                     <Input
                       id="motherName"
                       value={formData.motherName}
@@ -358,7 +382,7 @@ export function ApplicationForm() {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="motherMaidenName">Mother's Maiden Name *</Label>
+                    <Label htmlFor="motherMaidenName">Mother's Maiden Name</Label>
                     <Input
                       id="motherMaidenName"
                       value={formData.motherMaidenName}
@@ -370,7 +394,7 @@ export function ApplicationForm() {
 
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="motherOccupation">Mother's Occupation *</Label>
+                    <Label htmlFor="motherOccupation">Mother's Occupation</Label>
                     <Input
                       id="motherOccupation"
                       value={formData.motherOccupation}
@@ -379,7 +403,7 @@ export function ApplicationForm() {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="motherContact">Mother's Contact Number *</Label>
+                    <Label htmlFor="motherContact">Mother's Contact Number</Label>
                     <Input
                       id="motherContact"
                       type="tel"
@@ -762,7 +786,7 @@ export function ApplicationForm() {
               
               {activeTab < tabs.length - 1 ? (
                 <Button
-                  onClick={() => setActiveTab(Math.min(tabs.length - 1, activeTab + 1))}
+                  onClick={goNextTab}
                   className="bg-[#8B1538] hover:bg-[#8B1538]/90"
                 >
                   Next
