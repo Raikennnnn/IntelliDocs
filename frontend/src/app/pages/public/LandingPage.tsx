@@ -1,10 +1,60 @@
 import { Link } from 'react-router';
 import { Footer } from '../../components/Footer';
 import imgImageNuestraSenoraDeGuiaAcademy from '../../../assets/logo.png';
-import homePageHero from '../../../assets/homepage.jpg';
+import homePageHero from '../../../assets/homepage-Bxdbuq6s.png';
 import svgPaths from '../../../imports/svg-01fncooay9';
+import { useEffect, useState } from 'react';
+import { AnnouncementCarousel, type CarouselAnnouncement } from '../../components/AnnouncementCarousel';
+
+type LandingAnnouncement = CarouselAnnouncement;
 
 export function LandingPage() {
+  const fallbackAnnouncements = [
+    {
+      date: 'May 10, 2026',
+      badge: 'Announcement',
+      title: 'Enrollment for SY 2026–2027 is now open',
+      body: 'Submit your application and upload the required documents through the student portal.',
+    },
+    {
+      date: 'May 15, 2026',
+      badge: 'Event',
+      title: 'Senior High Orientation (Incoming Grade 11)',
+      body: 'Orientation will be held in the school auditorium. Attendance is encouraged for students and guardians.',
+    },
+    {
+      date: 'May 20, 2026',
+      badge: 'Reminder',
+      title: 'Document verification schedule',
+      body: 'Registrars will prioritize applications with complete uploads. Please ensure files are clear and readable.',
+    },
+  ] as const;
+
+  const [announcements, setAnnouncements] = useState<LandingAnnouncement[]>([...fallbackAnnouncements]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/announcements?scope=landing', { credentials: 'include' });
+        const data = await res.json();
+        if (!data?.success || !Array.isArray(data.announcements)) return;
+        const mapped: LandingAnnouncement[] = data.announcements.map((a: any) => ({
+          id: String(a.id ?? ''),
+          date: String(a.date ?? ''),
+          badge: String(a.badge ?? 'Announcement'),
+          title: String(a.title ?? ''),
+          body: String(a.body ?? ''),
+          imageUrl: a.imageUrl ? String(a.imageUrl) : null,
+        }));
+        if (mapped.length > 0) {
+          setAnnouncements(mapped);
+        }
+      } catch {
+        // keep fallbackAnnouncements
+      }
+    })();
+  }, []);
+
   return (
     <div className="bg-white min-h-screen">
       {/* Navigation */}
@@ -64,11 +114,11 @@ export function LandingPage() {
           />
         </div>
 
-        {/* Dark Overlay */}
-        <div className="absolute inset-0 bg-black/40" />
+        {/* Light burgundy wash — same deep-red family as the login page (rgba(72,0,21)), much softer for the homepage */}
+        <div className="absolute inset-0 bg-[rgba(72,0,21,0.22)]" aria-hidden />
 
         {/* Hero Content — original top offset preserved */}
-        <div className="relative z-[1] h-full max-w-[1280px] mx-auto px-8">
+        <div className="relative z-[1] h-full max-w-[1280px] mx-auto px-8 [&_h1]:drop-shadow-[0_2px_28px_rgba(0,0,0,0.28)] [&_p]:drop-shadow-[0_1px_14px_rgba(0,0,0,0.25)]">
           <div className="pt-[90px] max-w-[768px]">
             <p className="font-semibold text-[20px] text-white leading-[28px] mb-4">
               WELCOME TO
@@ -106,6 +156,30 @@ export function LandingPage() {
         </div>
       </section>
 
+      {/* Announcements & Events */}
+      <section className="bg-gray-50 py-16">
+        <div className="max-w-[1280px] mx-auto px-8">
+          <div className="mb-10">
+            <Link
+              to="/events"
+              className="group inline-block rounded-lg transition-colors hover:bg-white/60 -m-2 p-2"
+            >
+              <h2 className="font-bold text-[36px] text-[#8b1538] leading-[40px] group-hover:underline">
+                Announcements & Events
+              </h2>
+              <p className="mt-2 text-[16px] text-[#4a5565] leading-[24px]">
+                Stay updated with the latest school updates and activities.
+              </p>
+              <p className="mt-2 text-sm font-semibold text-[#8b1538] group-hover:underline">
+                View all events →
+              </p>
+            </Link>
+          </div>
+
+          <AnnouncementCarousel items={announcements} imageHeightClass="h-72 md:h-96" />
+        </div>
+      </section>
+
       {/* Academic Strands Section */}
       <section className="bg-white py-16">
         <div className="max-w-[1280px] mx-auto px-8">
@@ -117,14 +191,16 @@ export function LandingPage() {
             <p className="font-normal text-[16px] text-[#4a5565] leading-[24px]">
               Choose your path to success
             </p>
+            <p className="mt-2 text-sm text-[#6b7280]">
+              Select a strand to read more about the program.
+            </p>
           </div>
 
-          {/* Strands Grid */}
+          {/* Strands Grid — unified maroon accent; each strand links to detail page */}
           <div className="grid md:grid-cols-2 gap-8 max-w-[1106px] mx-auto">
             {/* Academic Track */}
-            <div className="bg-white border border-[rgba(0,0,0,0.1)] rounded-[14px] p-8 shadow-lg">
-              {/* Icon */}
-              <div className="bg-[#8b1538] rounded-[10px] size-[64px] mb-6 flex items-center justify-center">
+            <div className="rounded-[14px] border border-gray-200 bg-white p-8 shadow-lg">
+              <div className="mb-6 flex size-[64px] items-center justify-center rounded-[10px] bg-[#2d5016]">
                 <svg className="size-[32px]" fill="none" viewBox="0 0 32 32">
                   <g>
                     <path d={svgPaths.p27718b80} stroke="white" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.66" />
@@ -134,41 +210,47 @@ export function LandingPage() {
                 </svg>
               </div>
 
-              <h3 className="font-bold text-[24px] text-[#8b1538] leading-[32px] mb-4">
-                Academic Track
-              </h3>
-              <div className="space-y-4">
-                <div>
-                  <p className="font-bold text-[14px] text-[#101828] mb-1">
+              <h3 className="mb-4 text-[24px] font-bold leading-[32px] text-[#2d5016]">Academic Track</h3>
+              <div className="space-y-2">
+                <Link
+                  to="/admissions/strands/humss"
+                  className="block p-3 -m-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2 rounded-xl"
+                >
+                  <p className="mb-1 text-[14px] font-bold text-[#101828]">
                     Humanities and Social Sciences (HUMSS)
                   </p>
-                  <p className="font-normal text-[13px] text-[#4a5565] leading-[20px]">
+                  <p className="text-[13px] font-normal leading-[20px] text-[#4a5565]">
                     Focuses on human behavior, societal structures, and communication arts.
                   </p>
-                </div>
-                <div>
-                  <p className="font-bold text-[14px] text-[#101828] mb-1">
+                </Link>
+                <Link
+                  to="/admissions/strands/abm"
+                  className="block p-3 -m-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2 rounded-xl"
+                >
+                  <p className="mb-1 text-[14px] font-bold text-[#101828]">
                     Accountancy, Business, and Management (ABM)
                   </p>
-                  <p className="font-normal text-[13px] text-[#4a5565] leading-[20px]">
+                  <p className="text-[13px] font-normal leading-[20px] text-[#4a5565]">
                     Ideal for students aiming for careers in business and entrepreneurship.
                   </p>
-                </div>
-                <div>
-                  <p className="font-bold text-[14px] text-[#101828] mb-1">
+                </Link>
+                <Link
+                  to="/admissions/strands/stem"
+                  className="block p-3 -m-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2 rounded-xl"
+                >
+                  <p className="mb-1 text-[14px] font-bold text-[#101828]">
                     Science, Technology, Engineering, and Mathematics (STEM)
                   </p>
-                  <p className="font-normal text-[13px] text-[#4a5565] leading-[20px]">
+                  <p className="text-[13px] font-normal leading-[20px] text-[#4a5565]">
                     Designed for students pursuing careers in engineering, medicine, and IT.
                   </p>
-                </div>
+                </Link>
               </div>
             </div>
 
             {/* TVL Track */}
-            <div className="bg-white border border-[rgba(0,0,0,0.1)] rounded-[14px] p-8 shadow-lg">
-              {/* Icon */}
-              <div className="bg-[#2d5016] rounded-[10px] size-[64px] mb-6 flex items-center justify-center">
+            <div className="rounded-[14px] border border-gray-200 bg-white p-8 shadow-lg">
+              <div className="mb-6 flex size-[64px] items-center justify-center rounded-[10px] bg-[#2d5016]">
                 <svg className="size-[32px]" fill="none" viewBox="0 0 32 32">
                   <g>
                     <path d={svgPaths.p27718b80} stroke="white" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.66" />
@@ -178,34 +260,43 @@ export function LandingPage() {
                 </svg>
               </div>
 
-              <h3 className="font-bold text-[24px] text-[#2d5016] leading-[32px] mb-4">
+              <h3 className="mb-4 text-[24px] font-bold leading-[32px] text-[#2d5016]">
                 Technical-Vocational-Livelihood (TVL)
               </h3>
-              <div className="space-y-4">
-                <div>
-                  <p className="font-bold text-[14px] text-[#101828] mb-1">
+              <div className="space-y-2">
+                <Link
+                  to="/admissions/strands/ict"
+                  className="block p-3 -m-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2 rounded-xl"
+                >
+                  <p className="mb-1 text-[14px] font-bold text-[#101828]">
                     Information and Communications Technology (ICT)
                   </p>
-                  <p className="font-normal text-[13px] text-[#4a5565] leading-[20px]">
+                  <p className="text-[13px] font-normal leading-[20px] text-[#4a5565]">
                     Focuses on computer systems, programming, and digital technologies.
                   </p>
-                </div>
-                <div>
-                  <p className="font-bold text-[14px] text-[#101828] mb-1">
+                </Link>
+                <Link
+                  to="/admissions/strands/eim"
+                  className="block p-3 -m-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2 rounded-xl"
+                >
+                  <p className="mb-1 text-[14px] font-bold text-[#101828]">
                     Electrical Installation and Maintenance (EIM)
                   </p>
-                  <p className="font-normal text-[13px] text-[#4a5565] leading-[20px]">
+                  <p className="text-[13px] font-normal leading-[20px] text-[#4a5565]">
                     Covers electrical wiring, troubleshooting, and maintenance systems.
                   </p>
-                </div>
-                <div>
-                  <p className="font-bold text-[14px] text-[#101828] mb-1">
+                </Link>
+                <Link
+                  to="/admissions/strands/bpp-fbs"
+                  className="block p-3 -m-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2 rounded-xl"
+                >
+                  <p className="mb-1 text-[14px] font-bold text-[#101828]">
                     Bread and Pastry Production / Food and Beverages Services (BPP/FBS)
                   </p>
-                  <p className="font-normal text-[13px] text-[#4a5565] leading-[20px]">
+                  <p className="text-[13px] font-normal leading-[20px] text-[#4a5565]">
                     Training in culinary arts, baking, and hospitality services.
                   </p>
-                </div>
+                </Link>
               </div>
             </div>
           </div>

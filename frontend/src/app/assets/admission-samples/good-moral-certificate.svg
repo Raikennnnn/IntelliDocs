@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="360" viewBox="0 0 280 360">
+  <rect width="280" height="360" fill="#fafafa" stroke="#e2e8f0" stroke-width="2" rx="6"/>
+  <rect x="30" y="40" width="220" height="260" fill="#fff" stroke="#cbd5e1"/>
+  <rect x="50" y="70" width="180" height="10" fill="#8B1538" opacity="0.2" rx="2"/>
+  <rect x="50" y="100" width="180" height="5" fill="#e2e8f0"/>
+  <rect x="50" y="115" width="180" height="5" fill="#e2e8f0"/>
+  <rect x="50" y="130" width="140" height="5" fill="#e2e8f0"/>
+  <text x="140" y="330" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#64748b">Sample: Good Moral</text>
+</svg>

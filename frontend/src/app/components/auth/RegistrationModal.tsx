@@ -41,6 +41,19 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
     }
   };
 
+  const handleOtpPaste = (e: React.ClipboardEvent) => {
+    const raw = e.clipboardData.getData('text') || '';
+    const digits = raw.replace(/\D/g, '').slice(0, 6);
+    if (digits.length === 0) return;
+    e.preventDefault();
+    const next = ['', '', '', '', '', ''];
+    for (let i = 0; i < digits.length && i < 6; i++) next[i] = digits[i];
+    setOtp(next);
+    const focusIndex = Math.min(digits.length, 5);
+    const el = document.getElementById(`otp-${focusIndex}`);
+    el?.focus();
+  };
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -111,7 +124,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
         {/* Content */}
         <div className="p-6">
           {step === 'register' ? (
-            <form onSubmit={handleRegister} className="space-y-4">
+            <form onSubmit={handleRegister} className="space-y-4" autoComplete="off">
               <div>
                 <Label htmlFor="fullName" className="mb-2 flex items-center gap-2">
                   <User className="w-4 h-4" />
@@ -120,6 +133,8 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                 <Input
                   id="fullName"
                   type="text"
+                  name="fullName"
+                  autoComplete="off"
                   value={formData.fullName}
                   onChange={(e) => handleInputChange('fullName', e.target.value)}
                   placeholder="Enter your full name"
@@ -135,6 +150,8 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                 <Input
                   id="email"
                   type="email"
+                  name="email"
+                  autoComplete="off"
                   value={formData.email}
                   onChange={(e) => handleInputChange('email', e.target.value)}
                   placeholder="your.email@example.com"
@@ -150,6 +167,8 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                 <Input
                   id="password"
                   type="password"
+                  name="password"
+                  autoComplete="new-password"
                   value={formData.password}
                   onChange={(e) => handleInputChange('password', e.target.value)}
                   placeholder="Minimum 8 characters"
@@ -165,6 +184,8 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                 <Input
                   id="confirmPassword"
                   type="password"
+                  name="confirmPassword"
+                  autoComplete="new-password"
                   value={formData.confirmPassword}
                   onChange={(e) => handleInputChange('confirmPassword', e.target.value)}
                   placeholder="Re-enter your password"
@@ -204,7 +225,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
               </p>
             </form>
           ) : (
-            <form onSubmit={handleVerifyOtp} className="space-y-6">
+            <form onSubmit={handleVerifyOtp} className="space-y-6" autoComplete="off">
               <div className="text-center">
                 <div className="bg-green-100 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
                   <Mail className="w-8 h-8 text-green-600" />
@@ -217,7 +238,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
 
               <div>
                 <Label className="mb-3 block text-center">Enter OTP Code</Label>
-                <div className="flex gap-2 justify-center">
+                <div className="flex gap-2 justify-center" onPaste={handleOtpPaste}>
                   {otp.map((digit, index) => (
                     <Input
                       key={index}
@@ -227,6 +248,8 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                       maxLength={1}
                       value={digit}
                       onChange={(e) => handleOtpChange(index, e.target.value)}
+                      onPaste={handleOtpPaste}
+                      autoComplete="one-time-code"
                       className="w-12 h-12 text-center text-xl font-semibold"
                     />
                   ))}

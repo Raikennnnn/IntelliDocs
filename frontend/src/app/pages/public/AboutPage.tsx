@@ -1,7 +1,7 @@
 import { Link } from 'react-router';
 import { Footer } from '../../components/Footer';
 import imgImageNuestraSenoraDeGuiaAcademy from '../../../assets/logo.png';
-import aboutPageHero from '../../../assets/aboutpage.jpg';
+import aboutPageHero from '../../../assets/aboutpage-C52rUoUG.png';
 import svgPaths from '../../../imports/svg-avo07mw5zs';
 
 export function AboutPage() {

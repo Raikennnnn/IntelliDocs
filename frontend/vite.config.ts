@@ -38,6 +38,11 @@ export default defineConfig({
         secure: false,
         rewrite: (reqPath) => PHP_PUBLIC_BASE + reqPath,
       },
+      '/IntelliDocs/public/uploads': {
+        target: 'http://127.0.0.1',
+        changeOrigin: true,
+        secure: false,
+      },
     },
   },
   resolve: {

@@ -36,7 +36,9 @@ import { Announcements } from './pages/shared/Announcements';
 import { LandingPage } from './pages/public/LandingPage';
 import { AboutPage } from './pages/public/AboutPage';
 import { AdmissionsPage } from './pages/public/AdmissionsPage';
+import { StrandInfoPage } from './pages/public/StrandInfoPage';
 import { ContactPage } from './pages/public/ContactPage';
+import { EventsPage } from './pages/public/EventsPage';
 import { ApplicationForm } from './pages/public/ApplicationForm';
 import { RegistrationPage } from './pages/public/RegistrationPage';
 
@@ -311,6 +313,11 @@ export const router = createBrowserRouter([
     errorElement: <ErrorBoundary />,
   },
   {
+    path: '/admissions/strands/:strandSlug',
+    element: <StrandInfoPage />,
+    errorElement: <ErrorBoundary />,
+  },
+  {
     path: '/admissions',
     element: <AdmissionsPage />,
     errorElement: <ErrorBoundary />,
@@ -318,6 +325,11 @@ export const router = createBrowserRouter([
   {
     path: '/contact',
     element: <ContactPage />,
+    errorElement: <ErrorBoundary />,
+  },
+  {
+    path: '/events',
+    element: <EventsPage />,
     errorElement: <ErrorBoundary />,
   },
   {

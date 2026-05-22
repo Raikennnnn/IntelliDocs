@@ -17,6 +17,8 @@ interface SchoolYearContextType {
   activeSchoolYear: SchoolYear | undefined;
   /** False when admin disabled enrollment or no active year is configured */
   enrollmentEnabled: boolean;
+  ongoingSchoolYearLabel: string | null;
+  enrollmentSchoolYearLabel: string | null;
   settingsLoaded: boolean;
   reloadSchoolYearSettings: () => Promise<void>;
   setActiveSchoolYear: (year: SchoolYear) => void;
@@ -49,6 +51,8 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
   const [schoolYears, setSchoolYears] = useState<SchoolYear[]>([]);
   const [enrollmentEnabled, setEnrollmentEnabled] = useState(true);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [ongoingSchoolYearLabel, setOngoingSchoolYearLabel] = useState<string | null>(null);
+  const [enrollmentSchoolYearLabel, setEnrollmentSchoolYearLabel] = useState<string | null>(null);
 
   const reloadSchoolYearSettings = useCallback(async () => {
     try {
@@ -57,18 +61,22 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
         success?: boolean;
         enrollment_enabled?: boolean;
         active_school_year?: string | null;
+        ongoing_school_year?: string | null;
+        enrollment_school_year?: string | null;
         school_years?: any[];
       };
       if (j.success) {
         setEnrollmentEnabled(!!j.enrollment_enabled);
+        setOngoingSchoolYearLabel(j.ongoing_school_year ?? null);
+        setEnrollmentSchoolYearLabel(j.enrollment_school_year ?? j.active_school_year ?? null);
         if (Array.isArray(j.school_years)) {
-          setSchoolYears(normalizeSchoolYearRows(j.school_years, j.active_school_year ?? null));
+          setSchoolYears(normalizeSchoolYearRows(j.school_years, (j.enrollment_school_year ?? j.active_school_year) ?? null));
         } else {
           // Minimal fallback: keep list but align active status if we already had local rows.
           setSchoolYears((prev) =>
             prev.map((sy) => ({
               ...sy,
-              status: j.active_school_year && sy.year === j.active_school_year ? 'Active' : 'Inactive',
+              status: (j.enrollment_school_year ?? j.active_school_year) && sy.year === (j.enrollment_school_year ?? j.active_school_year) ? 'Active' : 'Inactive',
             })),
           );
         }
@@ -119,6 +127,8 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
         schoolYears,
         activeSchoolYear,
         enrollmentEnabled,
+        ongoingSchoolYearLabel,
+        enrollmentSchoolYearLabel,
         settingsLoaded,
         reloadSchoolYearSettings,
         setActiveSchoolYear,

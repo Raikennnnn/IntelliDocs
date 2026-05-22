@@ -105,12 +105,14 @@ export const studentNavigation = [
   { name: 'Dashboard', path: '/student/dashboard', icon: Home },
   { name: 'Enrollment', path: '/student/enrollment', icon: ClipboardList },
   { name: 'Application Status', path: '/student/application-status', icon: CheckSquare },
+  { name: 'Announcements', path: '/student/announcements', icon: Bell },
 ];
 
 export const registrarNavigation = [
   { name: 'Dashboard', path: '/registrar/dashboard', icon: Home },
   { name: 'Applications', path: '/registrar/applications', icon: ClipboardList },
   { name: 'Reports', path: '/registrar/reports', icon: BarChart3 },
+  { name: 'Announcements', path: '/registrar/announcements', icon: Bell },
 ];
 
 export const adminNavigation = [
@@ -120,4 +122,5 @@ export const adminNavigation = [
   { name: 'Reports', path: '/admin/reports', icon: BarChart3 },
   { name: 'Activity Logs', path: '/admin/activity-logs', icon: Activity },
   { name: 'System Settings', path: '/admin/system-settings', icon: Settings },
+  { name: 'Announcements', path: '/admin/announcements', icon: Bell },
 ];

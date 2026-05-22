@@ -13,173 +13,108 @@ import {
   AlertTriangle,
   CheckCircle,
   XCircle,
-  TrendingUp,
-  TrendingDown,
   FileText,
-  Eye,
-  Filter,
 } from "lucide-react";
-import { Link } from "react-router";
 import { useState } from "react";
 
-interface AIVerificationResult {
-  applicationId: string;
-  studentName: string;
-  strand: string;
-  gradeLevel: string;
-  documentName: string;
-  confidence: number;
-  status: "Verified" | "Suspicious" | "Failed";
-  issues: string[];
-  verifiedDate: string;
+type DocType =
+  | "form137"
+  | "sf10"
+  | "sf9"
+  | "good_moral"
+  | "birth_certificate"
+  | "other";
+
+type VerifyStatus = "verified" | "failed";
+
+interface VerifyApiResponse {
+  status: VerifyStatus;
+  confidence: number; // 0..1 verification score
+  ocr_confidence?: number; // 0..1 readability
+  tamper_score?: number; // 0..1 (1=clean, 0=suspicious)
+  tamper_signals?: string[];
+  extracted_text?: string;
+  word_count?: number;
+  issues?: string[];
+}
+
+interface VerificationHistoryItem {
+  id: string;
+  filename: string;
+  docType: DocType;
+  verifiedAt: string;
+  result: VerifyApiResponse;
 }
 
 export function AIVerification() {
-  const [filterStrand, setFilterStrand] = useState<string>("All");
-  const [filterGradeLevel, setFilterGradeLevel] = useState<string>("All");
+  const [docType, setDocType] = useState<DocType>("form137");
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [latest, setLatest] = useState<VerificationHistoryItem | null>(null);
+  const [history, setHistory] = useState<VerificationHistoryItem[]>([]);
 
-  // Mock AI verification results
-  const verificationResults: AIVerificationResult[] = [
-    {
-      applicationId: "APP-2026-001",
-      studentName: "Juan Dela Cruz",
-      strand: "HUMSS",
-      gradeLevel: "11",
-      documentName: "SF10 / Form 137",
-      confidence: 62,
-      status: "Suspicious",
-      issues: [
-        "Possible tampering detected on grades section",
-        "Low image quality",
-        "Signature authenticity questionable",
-      ],
-      verifiedDate: "March 18, 2026",
-    },
-    {
-      applicationId: "APP-2026-002",
-      studentName: "Maria Santos",
-      strand: "TVL-ICT",
-      gradeLevel: "12",
-      documentName: "Good Moral Certificate",
-      confidence: 45,
-      status: "Failed",
-      issues: [
-        "School seal does not match database",
-        "Date format inconsistent",
-        "Font inconsistencies detected",
-      ],
-      verifiedDate: "March 18, 2026",
-    },
-    {
-      applicationId: "APP-2026-005",
-      studentName: "Carlos Mendoza",
-      strand: "ABM",
-      gradeLevel: "11",
-      documentName: "Birth Certificate",
-      confidence: 68,
-      status: "Suspicious",
-      issues: ["PSA security features not fully detected", "Border quality low"],
-      verifiedDate: "March 17, 2026",
-    },
-    {
-      applicationId: "APP-2026-001",
-      studentName: "Juan Dela Cruz",
-      strand: "HUMSS",
-      gradeLevel: "11",
-      documentName: "Birth Certificate",
-      confidence: 98,
-      status: "Verified",
-      issues: [],
-      verifiedDate: "March 15, 2026",
-    },
-    {
-      applicationId: "APP-2026-003",
-      studentName: "Pedro Reyes",
-      strand: "STEM",
-      gradeLevel: "11",
-      documentName: "SF9 (Report Card)",
-      confidence: 95,
-      status: "Verified",
-      issues: [],
-      verifiedDate: "March 16, 2026",
-    },
-    {
-      applicationId: "APP-2026-006",
-      studentName: "Lisa Fernandez",
-      strand: "TVL-EIM",
-      gradeLevel: "12",
-      documentName: "Good Moral Certificate",
-      confidence: 92,
-      status: "Verified",
-      issues: [],
-      verifiedDate: "March 17, 2026",
-    },
-    {
-      applicationId: "APP-2026-007",
-      studentName: "Mark Gonzales",
-      strand: "TVL-BPP/FBS",
-      gradeLevel: "11",
-      documentName: "Birth Certificate",
-      confidence: 88,
-      status: "Verified",
-      issues: [],
-      verifiedDate: "March 16, 2026",
-    },
-  ];
+  const AI_BASE_URL =
+    (import.meta as any).env?.VITE_AI_BASE_URL || "http://127.0.0.1:5000";
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "Verified":
-        return "bg-green-600";
-      case "Suspicious":
-        return "bg-yellow-600";
-      case "Failed":
-        return "bg-red-600";
-      default:
-        return "bg-gray-600";
-    }
+  const statusBadge = (status: VerifyStatus) => {
+    if (status === "verified") return <Badge className="bg-green-600">Verified</Badge>;
+    return <Badge className="bg-red-600">Failed</Badge>;
   };
 
-  const getConfidenceColor = (confidence: number) => {
-    if (confidence >= 90) return "text-green-600";
-    if (confidence >= 70) return "text-yellow-600";
+  const confidenceClass = (confidence01: number) => {
+    const pct = Math.round(confidence01 * 100);
+    if (pct >= 75) return "text-green-600";
+    if (pct >= 50) return "text-yellow-600";
     return "text-red-600";
   };
 
-  const getConfidenceIcon = (confidence: number) => {
-    if (confidence >= 90)
-      return <TrendingUp className="w-4 h-4 text-green-600" />;
-    return <TrendingDown className="w-4 h-4 text-red-600" />;
-  };
+  const runVerify = async () => {
+    setError(null);
+    if (!file) {
+      setError("Please choose an image file first.");
+      return;
+    }
 
-  const stats = {
-    total: verificationResults.length,
-    verified: verificationResults.filter((r) => r.status === "Verified").length,
-    suspicious: verificationResults.filter((r) => r.status === "Suspicious")
-      .length,
-    failed: verificationResults.filter((r) => r.status === "Failed").length,
-    avgConfidence: Math.round(
-      verificationResults.reduce((sum, r) => sum + r.confidence, 0) /
-        verificationResults.length
-    ),
-  };
+    const form = new FormData();
+    form.append("image", file);
+    form.append("doc_type", docType);
 
-  // Filter results by strand and grade level
-  const filteredResults = verificationResults.filter((result) => {
-    const matchesStrand = filterStrand === "All" || result.strand === filterStrand;
-    const matchesGradeLevel =
-      filterGradeLevel === "All" || result.gradeLevel === filterGradeLevel;
-    return matchesStrand && matchesGradeLevel;
-  });
+    setLoading(true);
+    try {
+      const res = await fetch(`${AI_BASE_URL}/verify`, {
+        method: "POST",
+        body: form,
+      });
+      const data = (await res.json()) as VerifyApiResponse | { error?: string };
+      if (!res.ok) {
+        const msg = (data as any)?.error || "AI verification failed.";
+        throw new Error(msg);
+      }
+      const item: VerificationHistoryItem = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        filename: file.name,
+        docType,
+        verifiedAt: new Date().toLocaleString(),
+        result: data as VerifyApiResponse,
+      };
+      setLatest(item);
+      setHistory((prev) => [item, ...prev]);
+    } catch (e: any) {
+      setError(e?.message || "Unable to connect to the AI service.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold text-gray-900">
-          AI Verification Results
+          AI Verification (Simple OCR)
         </h2>
         <p className="text-gray-600">
-          Review AI-powered document verification results
+          Upload a document image and run OCR-based checks.
         </p>
       </div>
 
@@ -187,270 +122,204 @@ export function AIVerification() {
       <Alert className="border-[#8B1538] bg-red-50">
         <Brain className="h-4 w-4 text-[#8B1538]" />
         <AlertDescription className="text-gray-700">
-          <strong>AI Verification System:</strong> Our AI analyzes documents
-          for authenticity, tampering, and compliance. Results with low
-          confidence scores require manual review.
+          <strong>AI Verification System:</strong> This uses a local Python OCR
+          service (default{" "}
+          <code className="font-mono">http://127.0.0.1:5000</code>). If you
+          haven’t started it yet, run it from <code className="font-mono">ai/</code>.
         </AlertDescription>
       </Alert>
 
-      {/* Statistics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
-              <p className="text-sm text-gray-600">Total Verified</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <p className="text-2xl font-bold text-green-600">
-                {stats.verified}
-              </p>
-              <p className="text-sm text-gray-600">Passed</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <p className="text-2xl font-bold text-yellow-600">
-                {stats.suspicious}
-              </p>
-              <p className="text-sm text-gray-600">Suspicious</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <p className="text-2xl font-bold text-red-600">{stats.failed}</p>
-              <p className="text-sm text-gray-600">Failed</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <p
-                className={`text-2xl font-bold ${getConfidenceColor(stats.avgConfidence)}`}
-              >
-                {stats.avgConfidence}%
-              </p>
-              <p className="text-sm text-gray-600">Avg Confidence</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Filters */}
+      {/* Verify form */}
       <Card>
-        <CardContent className="pt-6">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2">
-              <Filter className="w-4 h-4 text-gray-600" />
+        <CardHeader>
+          <CardTitle>Run verification</CardTitle>
+          <CardDescription>
+            Upload an image (JPG/PNG) and choose the document type.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <div className="text-sm font-medium text-gray-700">Document type</div>
               <select
-                value={filterStrand}
-                onChange={(e) => setFilterStrand(e.target.value)}
-                className="h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                value={docType}
+                onChange={(e) => setDocType(e.target.value as DocType)}
+                className="h-10 w-full px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
               >
-                <option value="All">All Strands</option>
-                <option value="STEM">STEM</option>
-                <option value="HUMSS">HUMSS</option>
-                <option value="ABM">ABM</option>
-                <option value="TVL-ICT">TVL-ICT</option>
-                <option value="TVL-EIM">TVL-EIM</option>
-                <option value="TVL-BPP/FBS">TVL-BPP/FBS</option>
+                <option value="form137">SF10 / Form 137</option>
+                <option value="sf10">SF10</option>
+                <option value="sf9">SF9 / Report card</option>
+                <option value="good_moral">Good moral</option>
+                <option value="birth_certificate">Birth certificate</option>
+                <option value="other">Other</option>
               </select>
             </div>
-            <div className="flex items-center gap-2">
-              <Filter className="w-4 h-4 text-gray-600" />
-              <select
-                value={filterGradeLevel}
-                onChange={(e) => setFilterGradeLevel(e.target.value)}
-                className="h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
-              >
-                <option value="All">All Grade Levels</option>
-                <option value="11">Grade 11</option>
-                <option value="12">Grade 12</option>
-              </select>
+
+            <div className="space-y-2 md:col-span-2">
+              <div className="text-sm font-medium text-gray-700">Image file</div>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-gray-100 file:text-gray-900 hover:file:bg-gray-200"
+              />
+              {file ? (
+                <div className="text-xs text-gray-600">
+                  Selected: <span className="font-medium">{file.name}</span>
+                </div>
+              ) : null}
             </div>
-            <div className="text-sm text-gray-600">
-              Showing {filteredResults.length} of {verificationResults.length} results
-            </div>
+          </div>
+
+          {error ? (
+            <Alert className="border-red-300 bg-red-50">
+              <AlertDescription className="text-red-700">{error}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          <div className="flex items-center gap-3">
+            <Button
+              className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
+              onClick={runVerify}
+              disabled={loading}
+            >
+              {loading ? "Verifying..." : "Run AI verification"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setLatest(null);
+                setError(null);
+                setFile(null);
+              }}
+              disabled={loading}
+            >
+              Clear
+            </Button>
           </div>
         </CardContent>
       </Card>
 
-      {/* Flagged Documents (Priority Review) */}
-      <Card className="border-red-300">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-red-600">
-            <AlertTriangle className="w-5 h-5" />
-            Flagged Documents - Requires Attention
-          </CardTitle>
-          <CardDescription>
-            Documents with low confidence scores or detected issues
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {filteredResults
-            .filter(
-              (result) =>
-                result.status === "Suspicious" || result.status === "Failed"
-            )
-            .map((result, index) => (
-              <div
-                key={index}
-                className="p-4 border border-red-200 rounded-lg bg-red-50 hover:border-red-400 transition-colors"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-3 flex-1">
-                    <AlertTriangle className="w-5 h-5 text-red-600 mt-0.5" />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <h3 className="font-semibold text-gray-900">
-                          {result.documentName}
-                        </h3>
-                        <Badge className={getStatusColor(result.status)}>
-                          {result.status}
-                        </Badge>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-sm mb-2">
-                        <div>
-                          <span className="text-gray-600">Student: </span>
-                          <span className="font-medium">
-                            {result.studentName}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-gray-600">Application: </span>
-                          <span className="font-medium">
-                            {result.applicationId}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-gray-600">Strand: </span>
-                          <span className="font-medium">
-                            {result.strand}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-gray-600">Grade: </span>
-                          <span className="font-medium">
-                            {result.gradeLevel}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2 mb-2">
-                        {getConfidenceIcon(result.confidence)}
-                        <span className="text-sm text-gray-600">
-                          Confidence Score:{" "}
-                        </span>
-                        <span
-                          className={`font-semibold ${getConfidenceColor(result.confidence)}`}
-                        >
-                          {result.confidence}%
-                        </span>
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium text-red-700">
-                          Detected Issues:
-                        </p>
-                        <ul className="list-disc list-inside text-sm text-red-600 space-y-1">
-                          {result.issues.map((issue, idx) => (
-                            <li key={idx}>{issue}</li>
-                          ))}
-                        </ul>
-                      </div>
-                      <p className="text-xs text-gray-500 mt-2">
-                        Verified: {result.verifiedDate}
-                      </p>
-                    </div>
-                  </div>
-                  <Link to={`/registrar/review-documents/${result.applicationId}`}>
-                    <Button
-                      size="sm"
-                      className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white ml-4"
-                    >
-                      <Eye className="w-4 h-4 mr-2" />
-                      Review
-                    </Button>
-                  </Link>
+      {/* Latest result */}
+      {latest ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-3">
+              Latest result {statusBadge(latest.result.status)}
+            </CardTitle>
+            <CardDescription>
+              {latest.filename} • {latest.docType} • {latest.verifiedAt}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-4 border rounded-md">
+                <div className="text-sm text-gray-600">Verification score</div>
+                <div className={`text-2xl font-bold ${confidenceClass(latest.result.confidence)}`}>
+                  {Math.round(latest.result.confidence * 100)}%
                 </div>
               </div>
-            ))}
-        </CardContent>
-      </Card>
-
-      {/* All Verification Results */}
-      <Card>
-        <CardHeader>
-          <CardTitle>All Verification Results</CardTitle>
-          <CardDescription>Complete AI verification history</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {filteredResults.map((result, index) => (
-            <div
-              key={index}
-              className="p-4 border rounded-lg hover:border-[#8B1538] transition-colors"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-3 flex-1">
-                  {result.status === "Verified" ? (
-                    <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
-                  ) : result.status === "Suspicious" ? (
-                    <AlertTriangle className="w-5 h-5 text-yellow-600 mt-0.5" />
-                  ) : (
-                    <XCircle className="w-5 h-5 text-red-600 mt-0.5" />
-                  )}
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <h3 className="font-medium text-gray-900">
-                        {result.documentName}
-                      </h3>
-                      <Badge className={getStatusColor(result.status)}>
-                        {result.status}
-                      </Badge>
-                    </div>
-                    <div className="grid grid-cols-3 gap-4 text-sm text-gray-600">
-                      <div>
-                        <span className="text-gray-500">Student: </span>
-                        <span className="font-medium">
-                          {result.studentName}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">Strand / Grade: </span>
-                        <span className="font-medium">
-                          {result.strand} - Grade {result.gradeLevel}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className="text-gray-500">Confidence: </span>
-                        <span
-                          className={`font-semibold ${getConfidenceColor(result.confidence)}`}
-                        >
-                          {result.confidence}%
-                        </span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      {result.verifiedDate}
-                    </p>
-                  </div>
+              <div className="p-4 border rounded-md">
+                <div className="text-sm text-gray-600">OCR readability</div>
+                <div className={`text-2xl font-bold ${confidenceClass(latest.result.ocr_confidence ?? 0)}`}>
+                  {typeof latest.result.ocr_confidence === "number"
+                    ? `${Math.round(latest.result.ocr_confidence * 100)}%`
+                    : "-"}
                 </div>
-                <Link to={`/registrar/review-documents/${result.applicationId}`}>
-                  <Button variant="outline" size="sm" className="ml-4">
-                    <FileText className="w-4 h-4 mr-2" />
-                    View
-                  </Button>
-                </Link>
+              </div>
+              <div className="p-4 border rounded-md">
+                <div className="text-sm text-gray-600">Words detected</div>
+                <div className="text-2xl font-bold text-gray-900">
+                  {latest.result.word_count ?? "-"}
+                </div>
               </div>
             </div>
-          ))}
+            <div className="p-4 border rounded-md">
+              <div className="text-sm text-gray-600">Service</div>
+              <div className="text-sm font-medium text-gray-900 break-all">
+                {AI_BASE_URL}
+              </div>
+            </div>
+
+            {latest.result.issues?.length ? (
+              <div className="p-4 border border-yellow-200 rounded-md bg-yellow-50">
+                <div className="text-sm font-medium text-yellow-800 mb-2">
+                  Detected issues
+                </div>
+                <ul className="list-disc list-inside text-sm text-yellow-800 space-y-1">
+                  {latest.result.issues.map((i, idx) => (
+                    <li key={idx}>{i}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="space-y-2">
+              <div className="text-sm font-medium text-gray-700">Extracted text</div>
+              <pre className="whitespace-pre-wrap text-sm p-4 border rounded-md bg-gray-50 max-h-64 overflow-auto">
+                {latest.result.extracted_text || "(no text returned)"}
+              </pre>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {/* History */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileText className="w-5 h-5" />
+            Verification history
+          </CardTitle>
+          <CardDescription>Results from this browser session.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {history.length === 0 ? (
+            <div className="text-sm text-gray-600">No runs yet.</div>
+          ) : (
+            history.map((h) => (
+              <div
+                key={h.id}
+                className="p-4 border rounded-lg hover:border-[#8B1538] transition-colors"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3 flex-1">
+                    {h.result.status === "verified" ? (
+                      <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
+                    ) : (
+                      <XCircle className="w-5 h-5 text-red-600 mt-0.5" />
+                    )}
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="font-medium text-gray-900">{h.filename}</div>
+                        {statusBadge(h.result.status)}
+                      </div>
+                      <div className="text-sm text-gray-600">
+                        Type: <span className="font-medium">{h.docType}</span> •{" "}
+                        {h.verifiedAt}
+                      </div>
+                      <div className="text-sm text-gray-600 mt-1">
+                        Confidence:{" "}
+                        <span className={`font-semibold ${confidenceClass(h.result.confidence)}`}>
+                          {Math.round(h.result.confidence * 100)}%
+                        </span>
+                        {typeof h.result.word_count === "number" ? (
+                          <span> • Words: {h.result.word_count}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setLatest(h)}
+                  >
+                    View
+                  </Button>
+                </div>
+              </div>
+            ))
+          )}
         </CardContent>
       </Card>
     </div>

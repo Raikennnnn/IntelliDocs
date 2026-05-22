@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#8B1538;stop-opacity:0.15"/>
+      <stop offset="100%" style="stop-color:#8B1538;stop-opacity:0.35"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="600" fill="url(#bg)"/>
+  <rect x="80" y="120" width="320" height="8" rx="4" fill="#8B1538" opacity="0.5"/>
+  <rect x="80" y="160" width="240" height="6" rx="3" fill="#94a3b8"/>
+  <rect x="80" y="200" width="280" height="6" rx="3" fill="#cbd5e1"/>
+  <circle cx="580" cy="280" r="100" fill="#8B1538" opacity="0.12"/>
+  <text x="400" y="340" text-anchor="middle" font-family="Georgia,serif" font-size="28" font-weight="bold" fill="#8B1538">HUMSS</text>
+  <text x="400" y="380" text-anchor="middle" font-family="system-ui,sans-serif" font-size="16" fill="#64748b">Replace with your strand photo</text>
+  <text x="400" y="410" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#94a3b8">public/strands/humss.jpg</text>
+</svg>

@@ -43,6 +43,19 @@ export function RegistrationPage() {
     }
   };
 
+  const handleOtpPaste = (e: React.ClipboardEvent) => {
+    const raw = e.clipboardData.getData('text') || '';
+    const digits = raw.replace(/\D/g, '').slice(0, 6);
+    if (digits.length === 0) return;
+    e.preventDefault();
+    const next = ['', '', '', '', '', ''];
+    for (let i = 0; i < digits.length && i < 6; i++) next[i] = digits[i];
+    setOtp(next);
+    const focusIndex = Math.min(digits.length, 5);
+    const el = document.getElementById(`otp-${focusIndex}`);
+    el?.focus();
+  };
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -194,7 +207,7 @@ export function RegistrationPage() {
               </div>
 
               {/* Registration Form */}
-              <form onSubmit={handleRegister} className="space-y-5">
+              <form onSubmit={handleRegister} className="space-y-5" autoComplete="off">
                 <div>
                   <Label htmlFor="fullName" className="text-gray-700 mb-2 block">
                     Enter your full name <span className="text-[#8B1538]">*</span>
@@ -204,6 +217,8 @@ export function RegistrationPage() {
                     <Input
                       id="fullName"
                       type="text"
+                      name="fullName"
+                      autoComplete="off"
                       value={formData.fullName}
                       onChange={(e) => handleInputChange('fullName', e.target.value)}
                       placeholder="John Doe"
@@ -222,6 +237,8 @@ export function RegistrationPage() {
                     <Input
                       id="email"
                       type="email"
+                      name="email"
+                      autoComplete="off"
                       value={formData.email}
                       onChange={(e) => handleInputChange('email', e.target.value)}
                       placeholder="yourname@example.com"
@@ -240,6 +257,8 @@ export function RegistrationPage() {
                     <Input
                       id="password"
                       type={showPassword ? 'text' : 'password'}
+                      name="password"
+                      autoComplete="new-password"
                       value={formData.password}
                       onChange={(e) => handleInputChange('password', e.target.value)}
                       placeholder="Minimum 8 characters"
@@ -265,6 +284,8 @@ export function RegistrationPage() {
                     <Input
                       id="confirmPassword"
                       type={showPassword ? 'text' : 'password'}
+                      name="confirmPassword"
+                      autoComplete="new-password"
                       value={formData.confirmPassword}
                       onChange={(e) => handleInputChange('confirmPassword', e.target.value)}
                       placeholder="Re-enter your password"
@@ -313,10 +334,10 @@ export function RegistrationPage() {
                 </p>
               </div>
 
-              <form onSubmit={handleVerifyOtp} className="space-y-6">
+              <form onSubmit={handleVerifyOtp} className="space-y-6" autoComplete="off">
                 <div>
                   <Label className="text-gray-700 mb-3 block">Enter OTP Code</Label>
-                  <div className="flex gap-3 justify-between">
+                  <div className="flex gap-3 justify-between" onPaste={handleOtpPaste}>
                     {otp.map((digit, index) => (
                       <Input
                         key={index}
@@ -326,6 +347,8 @@ export function RegistrationPage() {
                         maxLength={1}
                         value={digit}
                         onChange={(e) => handleOtpChange(index, e.target.value)}
+                        onPaste={handleOtpPaste}
+                        autoComplete="one-time-code"
                         className="w-14 h-14 text-center text-2xl font-semibold"
                       />
                     ))}

@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import { apiFetch } from "../../lib/api";
 import { useEnrollmentAllowed } from "../../context/SchoolYearContext";
@@ -144,6 +145,7 @@ interface EnrollmentFormData {
 
 export function StudentEnrollment() {
   const enrollmentAllowed = useEnrollmentAllowed();
+  const [, setSearchParams] = useSearchParams();
   const shsBirthDateBounds = useMemo(() => birthDateBoundsForShs(SHS_MIN_AGE_YEARS), []);
   const [currentStep, setCurrentStep] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
@@ -202,6 +204,31 @@ export function StudentEnrollment() {
     confirmInformation: false,
   });
 
+  const NCR_CITIES = [
+    "Caloocan City",
+    "Las Piñas City",
+    "Makati City",
+    "Malabon City",
+    "Mandaluyong City",
+    "Manila",
+    "Marikina City",
+    "Muntinlupa City",
+    "Navotas City",
+    "Parañaque City",
+    "Pasay City",
+    "Pasig City",
+    "Pateros",
+    "Quezon City",
+    "San Juan City",
+    "Taguig City",
+    "Valenzuela City",
+  ] as const;
+
+  const isBirthPlaceOther =
+    formData.birthPlace &&
+    formData.birthPlace !== "" &&
+    !NCR_CITIES.some((c) => c.toLowerCase() === formData.birthPlace.toLowerCase());
+
   const [documents, setDocuments] = useState<DocumentUpload[]>([
     { name: 'PSA Birth Certificate', file: null, status: 'missing', required: true, requiredFor: 'all' },
     { name: 'Grade 10 Report Card (SF9)', file: null, status: 'missing', required: true, requiredFor: 'all' },
@@ -216,7 +243,16 @@ export function StudentEnrollment() {
       try {
         const res = await apiFetch('/api/student/enrollment');
         const text = await res.text();
-        const json = JSON.parse(text) as { success?: boolean; enrollment?: { current_step?: number; form_data?: Partial<EnrollmentFormData> } | null; error?: string };
+        const json = JSON.parse(text) as {
+          success?: boolean;
+          enrollment?: {
+            id?: number;
+            current_step?: number;
+            form_data?: Partial<EnrollmentFormData>;
+            can_edit?: boolean;
+          } | null;
+          error?: string;
+        };
         if (!res.ok || !json.success) {
           if (json.error) toast.error(json.error);
           return;
@@ -255,12 +291,29 @@ export function StudentEnrollment() {
             })
           );
         }
+
+        const stepFromUrl = new URLSearchParams(window.location.search).get("step");
+        const parsedStep = stepFromUrl != null ? parseInt(stepFromUrl, 10) : NaN;
+        const lockedNow = json.enrollment != null && json.enrollment.can_edit === false;
+        const canUseUrlStep =
+          !lockedNow &&
+          !Number.isNaN(parsedStep) &&
+          parsedStep >= 1 &&
+          parsedStep <= 6;
+        if (canUseUrlStep) {
+          setCurrentStep(parsedStep);
+        }
+        const nextParams = new URLSearchParams(window.location.search);
+        if (nextParams.has("step")) {
+          nextParams.delete("step");
+          setSearchParams(nextParams, { replace: true });
+        }
       } catch {
         // keep defaults when no draft exists / parse errors
       }
     };
     loadEnrollment();
-  }, []);
+  }, [setSearchParams]);
 
   const saveEnrollment = async (action: 'save_draft' | 'submit', step: number): Promise<boolean> => {
     setIsSaving(true);
@@ -299,7 +352,33 @@ export function StudentEnrollment() {
     }
   };
 
+  const UPPERCASE_FIELDS = new Set<keyof EnrollmentFormData>([
+    'givenName',
+    'middleName',
+    'middleInitial',
+    'lastName',
+    'extensionName',
+    'motherGivenName',
+    'motherMaidenMiddleName',
+    'motherMaidenLastName',
+    'fatherGivenName',
+    'fatherMiddleName',
+    'fatherLastName',
+    'guardianGivenName',
+    'guardianMiddleName',
+    'guardianLastName',
+    'motherOccupation',
+    'fatherOccupation',
+    'previousSchoolAttended',
+    'sectionAtPreviousSchool',
+    'lastSchoolYearAttended',
+  ]);
+
   const handleInputChange = (field: keyof EnrollmentFormData, value: string | boolean) => {
+    if (typeof value === 'string' && UPPERCASE_FIELDS.has(field)) {
+      setFormData(prev => ({ ...prev, [field]: value.toUpperCase() }));
+      return;
+    }
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
@@ -395,7 +474,7 @@ export function StudentEnrollment() {
     return true;
   };
 
-  const validateStep2 = () => {
+  const validateStep2 = (opts?: { confirmMissingParents?: boolean }) => {
     const motherName = formData.motherGivenName.trim();
     const fatherName = formData.fatherGivenName.trim();
     const guardianName = formData.guardianGivenName.trim();
@@ -403,10 +482,22 @@ export function StudentEnrollment() {
     const hasFather = fatherName.length > 0;
     const hasGuardianFilled = formData.hasGuardian && guardianName.length > 0;
 
-    if (!hasMother && !hasFather && !hasGuardianFilled) {
-      toast.error(
-        'Please provide at least one parent or guardian name (mother, father, or guardian section).',
+    // Soft validation: if a parent section is missing, confirm before continuing.
+    // (Students from single-parent/guardian-led households can proceed.)
+    const missingParts: string[] = [];
+    if (!hasMother) missingParts.push("Mother");
+    if (!hasFather) missingParts.push("Father");
+
+    if (opts?.confirmMissingParents && missingParts.length > 0) {
+      const ok = window.confirm(
+        `You did not fill in ${missingParts.join(" and ")} information.\n\nDo you want to continue anyway?`,
       );
+      if (!ok) return false;
+    }
+
+    // Still require at least one contact name overall so the registrar has a responsible party.
+    if (!hasMother && !hasFather && !hasGuardianFilled) {
+      toast.error("Please provide at least one parent or guardian name.");
       return false;
     }
 
@@ -455,7 +546,7 @@ export function StudentEnrollment() {
 
   const handleNext = async () => {
     if (currentStep === 1 && !validateStep1()) return;
-    if (currentStep === 2 && !validateStep2()) return;
+    if (currentStep === 2 && !validateStep2({ confirmMissingParents: true })) return;
     if (currentStep === 4 && !validateStep4()) return;
     const ok = await saveEnrollment('save_draft', currentStep);
     if (!ok) return;
@@ -468,7 +559,7 @@ export function StudentEnrollment() {
 
   const handleSubmit = async () => {
     if (!validateStep1()) return;
-    if (!validateStep2()) return;
+    if (!validateStep2({ confirmMissingParents: false })) return;
     if (!formData.modeOfPayment?.trim()) {
       toast.error('Please select a mode of payment (Payment & Promo step).');
       return;
@@ -612,6 +703,7 @@ export function StudentEnrollment() {
                       value={formData.givenName}
                       onChange={(e) => handleInputChange('givenName', e.target.value)}
                       placeholder="Enter given name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -622,6 +714,7 @@ export function StudentEnrollment() {
                       onChange={(e) => handleInputChange('middleName', e.target.value)}
                       placeholder="Enter middle name"
                       required
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -633,6 +726,7 @@ export function StudentEnrollment() {
                       placeholder="M.I."
                       maxLength={2}
                       required
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -642,6 +736,7 @@ export function StudentEnrollment() {
                       value={formData.lastName}
                       onChange={(e) => handleInputChange('lastName', e.target.value)}
                       placeholder="Enter last name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -651,6 +746,7 @@ export function StudentEnrollment() {
                       value={formData.extensionName}
                       onChange={(e) => handleInputChange('extensionName', e.target.value)}
                       placeholder="Jr., Sr., III, etc."
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -774,12 +870,34 @@ export function StudentEnrollment() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="birthPlace">Birth Place *</Label>
-                    <Input
+                    <select
                       id="birthPlace"
-                      value={formData.birthPlace}
-                      onChange={(e) => handleInputChange('birthPlace', e.target.value)}
-                      placeholder="Enter birth place"
-                    />
+                      value={isBirthPlaceOther ? "__OTHER__" : (formData.birthPlace || "")}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "__OTHER__") {
+                          handleInputChange("birthPlace", "");
+                        } else {
+                          handleInputChange("birthPlace", v);
+                        }
+                      }}
+                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                    >
+                      <option value="">Select birth place</option>
+                      {NCR_CITIES.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                      <option value="__OTHER__">Other (type manually)</option>
+                    </select>
+                    {isBirthPlaceOther || formData.birthPlace === "" ? (
+                      <Input
+                        value={formData.birthPlace}
+                        onChange={(e) => handleInputChange("birthPlace", e.target.value)}
+                        placeholder="If not in NCR, type your birth place"
+                      />
+                    ) : null}
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="religion">Religion *</Label>
@@ -875,6 +993,7 @@ export function StudentEnrollment() {
                       value={formData.motherGivenName}
                       onChange={(e) => handleInputChange('motherGivenName', e.target.value)}
                       placeholder="Enter mother's given name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -884,6 +1003,7 @@ export function StudentEnrollment() {
                       value={formData.motherMaidenMiddleName}
                       onChange={(e) => handleInputChange('motherMaidenMiddleName', e.target.value)}
                       placeholder="Enter mother's maiden middle name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -893,6 +1013,7 @@ export function StudentEnrollment() {
                       value={formData.motherMaidenLastName}
                       onChange={(e) => handleInputChange('motherMaidenLastName', e.target.value)}
                       placeholder="Enter mother's maiden last name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -911,6 +1032,7 @@ export function StudentEnrollment() {
                       value={formData.motherOccupation}
                       onChange={(e) => handleInputChange('motherOccupation', e.target.value)}
                       placeholder="Enter mother's occupation"
+                      className="uppercase"
                     />
                   </div>
                 </div>
@@ -929,6 +1051,7 @@ export function StudentEnrollment() {
                       value={formData.fatherGivenName}
                       onChange={(e) => handleInputChange('fatherGivenName', e.target.value)}
                       placeholder="Enter father's given name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -938,6 +1061,7 @@ export function StudentEnrollment() {
                       value={formData.fatherMiddleName}
                       onChange={(e) => handleInputChange('fatherMiddleName', e.target.value)}
                       placeholder="Enter father's middle name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -947,6 +1071,7 @@ export function StudentEnrollment() {
                       value={formData.fatherLastName}
                       onChange={(e) => handleInputChange('fatherLastName', e.target.value)}
                       placeholder="Enter father's last name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -965,6 +1090,7 @@ export function StudentEnrollment() {
                       value={formData.fatherOccupation}
                       onChange={(e) => handleInputChange('fatherOccupation', e.target.value)}
                       placeholder="Enter father's occupation"
+                      className="uppercase"
                     />
                   </div>
                 </div>
@@ -997,6 +1123,7 @@ export function StudentEnrollment() {
                           value={formData.guardianGivenName}
                           onChange={(e) => handleInputChange('guardianGivenName', e.target.value)}
                           placeholder="Enter guardian's given name"
+                          className="uppercase"
                         />
                       </div>
                       <div className="space-y-2">
@@ -1006,6 +1133,7 @@ export function StudentEnrollment() {
                           value={formData.guardianMiddleName}
                           onChange={(e) => handleInputChange('guardianMiddleName', e.target.value)}
                           placeholder="Enter guardian's middle name"
+                          className="uppercase"
                         />
                       </div>
                       <div className="space-y-2">
@@ -1015,6 +1143,7 @@ export function StudentEnrollment() {
                           value={formData.guardianLastName}
                           onChange={(e) => handleInputChange('guardianLastName', e.target.value)}
                           placeholder="Enter guardian's last name"
+                          className="uppercase"
                         />
                       </div>
                       <div className="space-y-2">
@@ -1079,6 +1208,7 @@ export function StudentEnrollment() {
                       value={formData.previousSchoolAttended}
                       onChange={(e) => handleInputChange('previousSchoolAttended', e.target.value)}
                       placeholder="Enter previous school name"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1094,7 +1224,7 @@ export function StudentEnrollment() {
                             onChange={(e) => handleInputChange('schoolType', e.target.value)}
                             className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
                           />
-                          <span className="capitalize">{type}</span>
+                          <span className="uppercase">{type}</span>
                         </label>
                       ))}
                     </div>
@@ -1105,7 +1235,7 @@ export function StudentEnrollment() {
                       id="gradeLevelAtPreviousSchool"
                       value={formData.gradeLevelAtPreviousSchool}
                       onChange={(e) => handleInputChange('gradeLevelAtPreviousSchool', e.target.value)}
-                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538] uppercase"
                     >
                       <option value="">Select Grade Level</option>
                       <option value="Grade 10">Grade 10</option>
@@ -1120,6 +1250,7 @@ export function StudentEnrollment() {
                       value={formData.sectionAtPreviousSchool}
                       onChange={(e) => handleInputChange('sectionAtPreviousSchool', e.target.value)}
                       placeholder="Enter section"
+                      className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
@@ -1129,6 +1260,7 @@ export function StudentEnrollment() {
                       value={formData.lastSchoolYearAttended}
                       onChange={(e) => handleInputChange('lastSchoolYearAttended', e.target.value)}
                       placeholder="e.g., 2023-2024"
+                      className="uppercase"
                     />
                   </div>
                 </div>

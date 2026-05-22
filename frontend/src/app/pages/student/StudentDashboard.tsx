@@ -1,7 +1,7 @@
 import { useAuth } from '../../context/AuthContext';
 import { Link } from 'react-router';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
-import { CheckCircle2, Loader2, Wallet } from 'lucide-react';
+import { CheckCircle2, Loader2, Pencil, Wallet, X } from 'lucide-react';
 import { useStudentPortal } from '../../hooks/useStudentPortal';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { useEffect, useState } from 'react';
@@ -20,6 +20,91 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
+type EditableContactFieldKey = 'phone' | 'email' | 'address';
+
+function EditableContactField({
+  label,
+  fieldKey,
+  value,
+  editing,
+  saving,
+  onStartEdit,
+  onCancel,
+  onChange,
+  onSave,
+  inputType = 'text',
+  inputId,
+}: {
+  label: string;
+  fieldKey: EditableContactFieldKey;
+  value: string;
+  editing: boolean;
+  saving: boolean;
+  onStartEdit: (key: EditableContactFieldKey) => void;
+  onCancel: () => void;
+  onChange: (v: string) => void;
+  onSave: () => void;
+  inputType?: 'text' | 'email';
+  inputId: string;
+}) {
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
+      {editing ? (
+        <div className="flex items-center gap-1.5">
+          <Input
+            id={inputId}
+            type={inputType}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className="h-8 text-sm flex-1 min-w-0"
+            autoComplete={fieldKey === 'phone' ? 'tel' : fieldKey === 'email' ? 'email' : 'street-address'}
+            disabled={saving}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onSave();
+              if (e.key === 'Escape') onCancel();
+            }}
+          />
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 shrink-0 text-[#2D5016] hover:bg-green-50"
+            onClick={onSave}
+            disabled={saving}
+            aria-label={`Save ${label}`}
+          >
+            <CheckCircle2 className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 shrink-0 text-gray-500 hover:bg-gray-100"
+            onClick={onCancel}
+            disabled={saving}
+            aria-label={`Cancel editing ${label}`}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 min-h-8">
+          <p className="text-sm font-medium text-gray-900 flex-1 min-w-0 break-words">{value || '—'}</p>
+          <button
+            type="button"
+            onClick={() => onStartEdit(fieldKey)}
+            className="shrink-0 rounded p-1 text-gray-400 hover:text-[#2D5016] hover:bg-green-50 transition-colors"
+            aria-label={`Edit ${label}`}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function appStatusPillClass(status: string) {
   const s = status.toLowerCase();
   if (s.includes('approved') || s.includes('enrolled')) return 'bg-green-100 text-green-800';
@@ -29,10 +114,15 @@ function appStatusPillClass(status: string) {
 }
 
 export function StudentDashboard() {
-  const { user } = useAuth();
+  const { user, patchUser } = useAuth();
   const { data, loading, error, refetch } = useStudentPortal();
   const [voucherInput, setVoucherInput] = useState('');
   const [voucherSaving, setVoucherSaving] = useState(false);
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [contactAddress, setContactAddress] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [editingContactField, setEditingContactField] = useState<EditableContactFieldKey | null>(null);
 
   const hasEnrollment = !!data?.application?.id && String(data?.application?.id ?? '').trim().length > 0;
   const statusCode = String(data?.application?.status_code ?? '').toLowerCase();
@@ -56,6 +146,81 @@ export function StudentDashboard() {
   useEffect(() => {
     if (voucherSaved) setVoucherInput(voucherSaved);
   }, [voucherSaved]);
+
+  useEffect(() => {
+    if (!data?.profile) return;
+    setContactPhone(data.profile.phone || '');
+    setContactEmail(data.profile.email || '');
+    setContactAddress(data.profile.address || '');
+  }, [data?.profile.phone, data?.profile.email, data?.profile.address]);
+
+  const startEditContact = (key: EditableContactFieldKey) => {
+    if (!data?.profile) return;
+    setContactPhone(data.profile.phone || '');
+    setContactEmail(data.profile.email || '');
+    setContactAddress(data.profile.address || '');
+    setEditingContactField(key);
+  };
+
+  const cancelEditContact = () => {
+    if (data?.profile) {
+      setContactPhone(data.profile.phone || '');
+      setContactEmail(data.profile.email || '');
+      setContactAddress(data.profile.address || '');
+    }
+    setEditingContactField(null);
+  };
+
+  const saveContactField = async (field: EditableContactFieldKey) => {
+    const phone = contactPhone.trim();
+    const email = contactEmail.trim();
+    const address = contactAddress.trim();
+    if (field === 'phone' && !phone) {
+      toast.error('Contact number is required.');
+      return;
+    }
+    if (field === 'email' && !email) {
+      toast.error('Email address is required.');
+      return;
+    }
+    const payload =
+      field === 'phone'
+        ? { phone }
+        : field === 'email'
+          ? { email }
+          : { address };
+
+    setProfileSaving(true);
+    try {
+      const res = await apiFetch('/api/student/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const text = await res.text();
+      let json: { success?: boolean; error?: string; message?: string; profile?: { email?: string } } = {};
+      try {
+        json = JSON.parse(text);
+      } catch {
+        toast.error('Invalid server response');
+        return;
+      }
+      if (!res.ok || !json.success) {
+        toast.error(json.error || `Could not save (${res.status})`);
+        return;
+      }
+      toast.success(json.message || 'Saved.');
+      if (json.profile?.email) {
+        patchUser({ email: json.profile.email });
+      }
+      setEditingContactField(null);
+      await refetch();
+    } catch {
+      toast.error('Failed to save');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
 
   const saveVoucher = async () => {
     const v = voucherInput.trim();
@@ -149,9 +314,43 @@ export function StudentDashboard() {
                 <Detail label="Full name" value={data.profile.full_name} />
                 <Detail label="Date of birth" value={data.profile.date_of_birth} />
                 <Detail label="Gender" value={data.profile.gender} />
-                <Detail label="Contact number" value={data.profile.phone} />
-                <Detail label="Email address" value={data.profile.email} />
-                <Detail label="Address" value={data.profile.address} />
+                <EditableContactField
+                  label="Contact number"
+                  fieldKey="phone"
+                  value={contactPhone}
+                  editing={editingContactField === 'phone'}
+                  saving={profileSaving}
+                  onStartEdit={startEditContact}
+                  onCancel={cancelEditContact}
+                  onChange={setContactPhone}
+                  onSave={() => saveContactField('phone')}
+                  inputId="dash-phone"
+                />
+                <EditableContactField
+                  label="Email address"
+                  fieldKey="email"
+                  value={contactEmail}
+                  editing={editingContactField === 'email'}
+                  saving={profileSaving}
+                  onStartEdit={startEditContact}
+                  onCancel={cancelEditContact}
+                  onChange={setContactEmail}
+                  onSave={() => saveContactField('email')}
+                  inputType="email"
+                  inputId="dash-email"
+                />
+                <EditableContactField
+                  label="Address"
+                  fieldKey="address"
+                  value={contactAddress}
+                  editing={editingContactField === 'address'}
+                  saving={profileSaving}
+                  onStartEdit={startEditContact}
+                  onCancel={cancelEditContact}
+                  onChange={setContactAddress}
+                  onSave={() => saveContactField('address')}
+                  inputId="dash-address"
+                />
                 <Detail label="Strand" value={data.profile.strand} />
                 <Detail label="Grade level" value={data.profile.grade_level} />
                 <Detail label="School year" value={data.profile.school_year} />

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="360" viewBox="0 0 280 360">
+  <rect width="280" height="360" fill="#fafafa" stroke="#e2e8f0" stroke-width="2" rx="6"/>
+  <text x="140" y="32" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#8B1538" font-weight="600">Transcript (TOR)</text>
+  <rect x="24" y="50" width="232" height="230" fill="#fff" stroke="#cbd5e1"/>
+  <line x1="24" y1="85" x2="256" y2="85" stroke="#e2e8f0"/>
+  <line x1="24" y1="115" x2="256" y2="115" stroke="#e2e8f0"/>
+  <line x1="24" y1="145" x2="256" y2="145" stroke="#e2e8f0"/>
+  <line x1="90" y1="50" x2="90" y2="280" stroke="#e2e8f0"/>
+  <text x="140" y="310" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#64748b">Transferee only</text>
+</svg>

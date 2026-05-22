@@ -27,6 +27,32 @@ export function getStoredUserId(): string | null {
   }
 }
 
+/** Resolve announcement / public upload URLs (works in Vite dev and XAMPP). */
+export function publicAssetUrl(url: string | null | undefined): string | null {
+  if (url == null || url === '') return null;
+  if (/^https?:\/\//i.test(url)) return url;
+
+  const path = url.startsWith('/') ? url : `/${url}`;
+  const env = import.meta.env as { DEV?: boolean; VITE_PUBLIC_BASE?: string };
+  const configuredBase = (env.VITE_PUBLIC_BASE ?? '').replace(/\/$/, '');
+
+  if (path.startsWith('/IntelliDocs/public/')) {
+    return path;
+  }
+
+  if (path.startsWith('/uploads/')) {
+    const base = configuredBase || '/IntelliDocs/public';
+    return `${base}${path}`;
+  }
+
+  if (path.startsWith('/api/announcement-image')) {
+    const base = configuredBase || (env.DEV ? '' : '/IntelliDocs/public');
+    return base ? `${base}${path}` : path;
+  }
+
+  return path;
+}
+
 export function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   const uid = getStoredUserId();

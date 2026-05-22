@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2D5016;stop-opacity:0.15"/>
+      <stop offset="100%" style="stop-color:#2D5016;stop-opacity:0.35"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="600" fill="url(#bg)"/>
+  <path d="M350 200 L450 200 L420 320 L380 320 Z" fill="#2D5016" opacity="0.15"/>
+  <text x="400" y="340" text-anchor="middle" font-family="Georgia,serif" font-size="28" font-weight="bold" fill="#2D5016">EIM</text>
+  <text x="400" y="380" text-anchor="middle" font-family="system-ui,sans-serif" font-size="16" fill="#64748b">Replace with your strand photo</text>
+  <text x="400" y="410" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#94a3b8">public/strands/eim.jpg</text>
+</svg>

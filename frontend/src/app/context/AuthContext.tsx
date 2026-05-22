@@ -52,6 +52,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<{ ok: boolean; user?: User }>;
   logout: () => void;
   isAuthenticated: boolean;
+  patchUser: (fields: Partial<Pick<User, 'name' | 'email'>>) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -116,8 +117,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const patchUser = (fields: Partial<Pick<User, 'name' | 'email'>>) => {
+    setUser((prev) => (prev ? { ...prev, ...fields } : prev));
+  };
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user, patchUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -150,5 +155,6 @@ export function useAuth() {
         // ignore
       }
     },
+    patchUser: () => {},
   };
 }

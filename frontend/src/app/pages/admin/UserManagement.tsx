@@ -5,10 +5,28 @@ import {
   CardTitle,
   CardDescription,
 } from "../../components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../../components/ui/table";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../../components/ui/alert-dialog";
 import {
   UsersRound,
   UserPlus,
@@ -32,6 +50,12 @@ interface User {
   createdDate: string;
 }
 
+type UserConfirmAction =
+  | { type: "deactivate"; user: User }
+  | { type: "activate"; user: User }
+  | { type: "delete"; user: User }
+  | { type: "saveEdit"; user: User };
+
 export function UserManagement() {
   const [searchTerm, setSearchTerm] = useState("");
   const [showAddUser, setShowAddUser] = useState(false);
@@ -44,6 +68,8 @@ export function UserManagement() {
     role: "Student",
     password: "",
   });
+  const [pendingAction, setPendingAction] = useState<UserConfirmAction | null>(null);
+  const [actionLoading, setActionLoading] = useState(false);
 
   const loadUsers = async () => {
     const res = await apiFetch('/api/admin/users');
@@ -64,7 +90,7 @@ export function UserManagement() {
       email: String(u.email ?? ''),
       role: (u.role ?? 'Student') as User['role'],
       status: (u.status ?? 'Active') as User['status'],
-      lastLogin: String(u.lastLogin ?? 'N/A'),
+      lastLogin: String(u.lastLogin ?? 'Never'),
       createdDate: u.createdDate
         ? new Date(String(u.createdDate)).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
         : 'N/A',
@@ -120,104 +146,138 @@ export function UserManagement() {
     setShowAddUser(false); // Close add user form if open
   };
 
-  const handleSaveEdit = async () => {
+  const performSaveEdit = async (user: User) => {
+    const res = await apiFetch('/api/admin/users', {
+      method: 'PUT',
+      body: JSON.stringify({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+      }),
+    });
+    const text = await res.text();
+    let json: any = {};
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error('Server returned an invalid response');
+    }
+    if (!res.ok || !json.success) {
+      throw new Error(json.error || `Failed to update user (${res.status})`);
+    }
+    toast.success(json.message || `User ${user.name} has been updated successfully`);
+    setEditingUser(null);
+    await loadUsers();
+  };
+
+  const requestSaveEdit = () => {
     if (!editingUser) return;
-    
     if (!editingUser.name || !editingUser.email) {
       toast.error("Please fill in all required fields");
       return;
     }
-
-    try {
-      const res = await apiFetch('/api/admin/users', {
-        method: 'PUT',
-        body: JSON.stringify({
-          id: editingUser.id,
-          name: editingUser.name,
-          email: editingUser.email,
-          role: editingUser.role,
-          status: editingUser.status,
-        }),
-      });
-      const text = await res.text();
-      let json: any = {};
-      try {
-        json = JSON.parse(text);
-      } catch {
-        throw new Error('Server returned an invalid response');
-      }
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || `Failed to update user (${res.status})`);
-      }
-      toast.success(json.message || `User ${editingUser.name} has been updated successfully`);
-      setEditingUser(null);
-      await loadUsers();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to update user');
+    const original = users.find((u) => u.id === editingUser.id);
+    if (original?.status === "Active" && editingUser.status === "Inactive") {
+      setPendingAction({ type: "saveEdit", user: editingUser });
+      return;
     }
+    void performSaveEdit(editingUser).catch((e) => {
+      toast.error(e instanceof Error ? e.message : "Failed to update user");
+    });
   };
 
   const handleCancelEdit = () => {
     setEditingUser(null);
   };
 
-  const handleDeactivateUser = async (user: User) => {
+  const performDeactivateUser = async (user: User) => {
+    const res = await apiFetch('/api/admin/users', {
+      method: 'PUT',
+      body: JSON.stringify({ id: user.id, name: user.name, email: user.email, role: user.role, status: 'Inactive' }),
+    });
+    const text = await res.text();
+    const json = JSON.parse(text);
+    if (!res.ok || !json.success) throw new Error(json.error || `Failed (${res.status})`);
+    toast.success(`User ${user.name} has been deactivated`);
+    await loadUsers();
+  };
+
+  const performActivateUser = async (user: User) => {
+    const res = await apiFetch('/api/admin/users', {
+      method: 'PUT',
+      body: JSON.stringify({ id: user.id, name: user.name, email: user.email, role: user.role, status: 'Active' }),
+    });
+    const text = await res.text();
+    const json = JSON.parse(text);
+    if (!res.ok || !json.success) throw new Error(json.error || `Failed (${res.status})`);
+    toast.success(`User ${user.name} has been activated`);
+    await loadUsers();
+  };
+
+  const performDeleteUser = async (user: User) => {
+    const res = await apiFetch('/api/admin/users', {
+      method: 'DELETE',
+      body: JSON.stringify({ id: user.id }),
+    });
+    const text = await res.text();
+    let json: any = {};
     try {
-      const res = await apiFetch('/api/admin/users', {
-        method: 'PUT',
-        body: JSON.stringify({ id: user.id, name: user.name, email: user.email, role: user.role, status: 'Inactive' }),
-      });
-      const text = await res.text();
-      const json = JSON.parse(text);
-      if (!res.ok || !json.success) throw new Error(json.error || `Failed (${res.status})`);
-      toast.success(`User ${user.name} has been deactivated`);
-      await loadUsers();
+      json = JSON.parse(text);
+    } catch {
+      throw new Error('Server returned an invalid response');
+    }
+    if (!res.ok || !json.success) {
+      throw new Error(json.error || `Failed to delete user (${res.status})`);
+    }
+    toast.success(`User ${user.name} has been deleted`);
+    await loadUsers();
+  };
+
+  const handleConfirmPendingAction = async () => {
+    if (!pendingAction) return;
+    setActionLoading(true);
+    try {
+      if (pendingAction.type === 'deactivate') {
+        await performDeactivateUser(pendingAction.user);
+      } else if (pendingAction.type === 'activate') {
+        await performActivateUser(pendingAction.user);
+      } else if (pendingAction.type === 'delete') {
+        await performDeleteUser(pendingAction.user);
+      } else {
+        await performSaveEdit(pendingAction.user);
+      }
+      setPendingAction(null);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to deactivate user');
+      toast.error(e instanceof Error ? e.message : 'Action failed');
+    } finally {
+      setActionLoading(false);
     }
   };
 
-  const handleActivateUser = async (user: User) => {
-    try {
-      const res = await apiFetch('/api/admin/users', {
-        method: 'PUT',
-        body: JSON.stringify({ id: user.id, name: user.name, email: user.email, role: user.role, status: 'Active' }),
-      });
-      const text = await res.text();
-      const json = JSON.parse(text);
-      if (!res.ok || !json.success) throw new Error(json.error || `Failed (${res.status})`);
-      toast.success(`User ${user.name} has been activated`);
-      await loadUsers();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to activate user');
-    }
-  };
-
-  const handleDeleteUser = async (user: User) => {
-    if (!confirm(`Delete user "${user.name}"? This cannot be undone.`)) {
-      return;
-    }
-    try {
-      const res = await apiFetch('/api/admin/users', {
-        method: 'DELETE',
-        body: JSON.stringify({ id: user.id }),
-      });
-      const text = await res.text();
-      let json: any = {};
-      try {
-        json = JSON.parse(text);
-      } catch {
-        throw new Error('Server returned an invalid response');
-      }
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || `Failed to delete user (${res.status})`);
-      }
-      toast.success(`User ${user.name} has been deleted`);
-      await loadUsers();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to delete user');
-    }
-  };
+  const confirmDialogCopy = pendingAction
+    ? pendingAction.type === 'delete'
+      ? {
+          title: 'Delete user account?',
+          description: `You are about to permanently delete "${pendingAction.user.name}" (${pendingAction.user.email}). This cannot be undone and will remove their access to the system.`,
+          actionLabel: actionLoading ? 'Deleting…' : 'Delete user',
+          actionClass: 'bg-red-600 hover:bg-red-600/90 text-white',
+        }
+      : pendingAction.type === 'deactivate' || pendingAction.type === 'saveEdit'
+        ? {
+            title: 'Deactivate user account?',
+            description: `Deactivate "${pendingAction.user.name}" (${pendingAction.user.email})? They will not be able to log in until the account is activated again.`,
+            actionLabel: actionLoading ? 'Deactivating…' : 'Deactivate user',
+            actionClass: 'bg-yellow-600 hover:bg-yellow-600/90 text-white',
+          }
+        : {
+            title: 'Activate user account?',
+            description: `Activate "${pendingAction.user.name}" (${pendingAction.user.email})? They will be able to log in again.`,
+            actionLabel: actionLoading ? 'Activating…' : 'Activate user',
+            actionClass: 'bg-[#2D5016] hover:bg-[#2D5016]/90 text-white',
+          }
+    : null;
 
   const getRoleBadgeColor = (role: string) => {
     switch (role) {
@@ -408,7 +468,7 @@ export function UserManagement() {
             </div>
             <div className="flex gap-3">
               <Button
-                onClick={handleSaveEdit}
+                onClick={requestSaveEdit}
                 className="bg-blue-600 hover:bg-blue-600/90 text-white"
               >
                 <CheckCircle className="w-4 h-4 mr-2" />
@@ -540,26 +600,38 @@ export function UserManagement() {
               No users found
             </div>
           ) : (
-            <div className="space-y-3">
-              {filteredUsers.map((user) => (
-                <div
-                  key={user.id}
-                  className="p-4 border rounded-lg hover:border-[#8B1538] transition-colors"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="font-semibold text-gray-900">
-                          {user.name}
-                        </h3>
-                        <Badge className={getRoleBadgeColor(user.role)}>
-                          {user.role}
-                        </Badge>
+            <div className="border rounded-lg overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-gray-100 hover:bg-gray-100">
+                    <TableHead className="font-semibold border-r border-gray-200">Name</TableHead>
+                    <TableHead className="font-semibold border-r border-gray-200 min-w-[200px]">Email</TableHead>
+                    <TableHead className="font-semibold border-r border-gray-200 text-center">Role</TableHead>
+                    <TableHead className="font-semibold border-r border-gray-200 text-center">Status</TableHead>
+                    <TableHead className="font-semibold border-r border-gray-200">Last Login</TableHead>
+                    <TableHead className="font-semibold border-r border-gray-200">Created</TableHead>
+                    <TableHead className="font-semibold text-center min-w-[220px]">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredUsers.map((user, index) => (
+                    <TableRow
+                      key={user.id}
+                      className={index % 2 === 0 ? "bg-white" : "bg-gray-50/80"}
+                    >
+                      <TableCell className="font-medium text-gray-900 border-r border-gray-200">
+                        {user.name}
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-700 border-r border-gray-200 whitespace-normal">
+                        {user.email}
+                      </TableCell>
+                      <TableCell className="text-center border-r border-gray-200">
+                        <Badge className={getRoleBadgeColor(user.role)}>{user.role}</Badge>
+                      </TableCell>
+                      <TableCell className="text-center border-r border-gray-200">
                         <Badge
                           className={
-                            user.status === "Active"
-                              ? "bg-green-600"
-                              : "bg-gray-600"
+                            user.status === "Active" ? "bg-green-600" : "bg-gray-600"
                           }
                         >
                           {user.status === "Active" ? (
@@ -569,66 +641,87 @@ export function UserManagement() {
                           )}
                           {user.status}
                         </Badge>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-600">
-                        <div>
-                          <p className="text-xs text-gray-500">Email</p>
-                          <p className="font-medium">{user.email}</p>
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-600 border-r border-gray-200">
+                        {user.lastLogin}
+                      </TableCell>
+                      <TableCell className="text-sm text-gray-600 border-r border-gray-200">
+                        {user.createdDate}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleEditUser(user)}
+                          >
+                            <Edit className="w-4 h-4 mr-1" />
+                            Edit
+                          </Button>
+                          {user.status === "Active" ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="border-yellow-600 text-yellow-600 hover:bg-yellow-600 hover:text-white"
+                              onClick={() => setPendingAction({ type: 'deactivate', user })}
+                            >
+                              Deactivate
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="border-green-600 text-green-600 hover:bg-green-600 hover:text-white"
+                              onClick={() => setPendingAction({ type: 'activate', user })}
+                            >
+                              Activate
+                            </Button>
+                          )}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="border-red-600 text-red-600 hover:bg-red-600 hover:text-white"
+                            onClick={() => setPendingAction({ type: 'delete', user })}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
                         </div>
-                        <div>
-                          <p className="text-xs text-gray-500">Last Login</p>
-                          <p className="font-medium">{user.lastLogin}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-gray-500">Created</p>
-                          <p className="font-medium">{user.createdDate}</p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 ml-4">
-                      <Button 
-                        variant="outline" 
-                        size="sm"
-                        onClick={() => handleEditUser(user)}
-                      >
-                        <Edit className="w-4 h-4 mr-2" />
-                        Edit
-                      </Button>
-                      {user.status === "Active" ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="border-yellow-600 text-yellow-600 hover:bg-yellow-600 hover:text-white"
-                          onClick={() => handleDeactivateUser(user)}
-                        >
-                          Deactivate
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="border-green-600 text-green-600 hover:bg-green-600 hover:text-white"
-                          onClick={() => handleActivateUser(user)}
-                        >
-                          Activate
-                        </Button>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="border-red-600 text-red-600 hover:bg-red-600 hover:text-white"
-                        onClick={() => handleDeleteUser(user)}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </div>
           )}
         </CardContent>
       </Card>
+
+      <AlertDialog
+        open={pendingAction !== null}
+        onOpenChange={(open) => {
+          if (!open && !actionLoading) setPendingAction(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmDialogCopy?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{confirmDialogCopy?.description}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={actionLoading}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={confirmDialogCopy?.actionClass}
+              disabled={actionLoading}
+              onClick={(e) => {
+                e.preventDefault();
+                void handleConfirmPendingAction();
+              }}
+            >
+              {confirmDialogCopy?.actionLabel}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

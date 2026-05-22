@@ -5,7 +5,7 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import schoolLogo from "../../../assets/logo.png";
-import homePageImage from "../../../assets/homepage.jpg";
+import homePageImage from "../../../assets/homepage-Bxdbuq6s.png";
 
 export function Login() {
   const [email, setEmail] = useState('');

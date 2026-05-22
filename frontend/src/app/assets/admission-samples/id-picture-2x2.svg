@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="360" viewBox="0 0 280 360">
+  <rect width="280" height="360" fill="#fafafa" stroke="#e2e8f0" stroke-width="2" rx="6"/>
+  <rect x="100" y="80" width="80" height="100" fill="#e2e8f0" stroke="#94a3b8" stroke-width="2"/>
+  <text x="140" y="220" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#64748b">2�2 ID photo</text>
+  <text x="140" y="300" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#64748b">Sample: ID picture layout</text>
+</svg>

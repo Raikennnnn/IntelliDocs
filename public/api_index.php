@@ -31,6 +31,12 @@ if ($route === 'document-file' || $route === 'document-file/') {
     exit;
 }
 
+if ($route === 'announcement-image' || $route === 'announcement-image/') {
+    require_once __DIR__ . '/../config/database.php';
+    require_once __DIR__ . '/../api/announcement_image.php';
+    exit;
+}
+
 header('Content-Type: application/json');
 
 require_once __DIR__ . '/../config/database.php';
@@ -67,6 +73,22 @@ switch ($route) {
     case 'registrar/application':
     case 'registrar/application/':
         require_once __DIR__ . '/../api/registrar_application_detail.php';
+        break;
+    case 'ai/verify-document':
+    case 'ai/verify-document/':
+        require_once __DIR__ . '/../api/ai_verify_document.php';
+        break;
+    case 'announcements':
+    case 'announcements/':
+        require_once __DIR__ . '/../api/announcements.php';
+        break;
+    case 'registrar/announcements':
+    case 'registrar/announcements/':
+        require_once __DIR__ . '/../api/registrar_announcements.php';
+        break;
+    case 'registrar/announcements/image':
+    case 'registrar/announcements/image/':
+        require_once __DIR__ . '/../api/registrar_announcement_image.php';
         break;
     case 'admin/overview':
     case 'admin/overview/':
