@@ -88,6 +88,17 @@ Edit each file:
 - `frontend/.env.local`: only change `VITE_API_BASE` if your project folder
   isn't named `IntelliDocs` or you're not using XAMPP.
 
+Optional `env` overrides for the credentials feature (sensible defaults are baked in):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MAIL_FROM_NAME` | `Nuestra Señora De Guia Academy` | "From" name on welcome / OTP / reminder emails |
+| `MAIL_FROM_ADDRESS` | `no-reply@intellidocs.local` | "From" address on outgoing email |
+| `BREVO_API_KEY` | empty | Brevo transactional API key (leave blank to fall back to PHP `mail()`) |
+| `APP_PUBLIC_URL` | empty | Host portion used in welcome-email login links |
+| `AUTH_LOGIN_FAILURE_THRESHOLD` | `5` | Failed attempts in the window before throttling |
+| `AUTH_LOGIN_FAILURE_WINDOW_MINUTES` | `15` | Minutes the failure counter spans |
+
 ### 5. Database
 
 Start MariaDB/MySQL (via XAMPP control panel or your service of choice).  Then in phpMyAdmin or via CLI:
@@ -96,11 +107,24 @@ Start MariaDB/MySQL (via XAMPP control panel or your service of choice).  Then i
    ```sql
    CREATE DATABASE intellidocs_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
    ```
-2. Import the schema:
+2. Import the base schema:
    ```bash
    mysql -u root intellidocs_db < database_setup.sql
    ```
    Or in phpMyAdmin: select `intellidocs_db` -> Import -> upload `database_setup.sql`.
+3. Apply incremental migrations *in order* (each is idempotent — safe to re-run):
+   ```bash
+   mysql -u root intellidocs_db < database_migration_credentials.sql
+   ```
+   Skip this and the registrar's "Issue Credentials" flow will return HTTP 503
+   `schema_not_migrated`.  The auth path silently degrades when these columns
+   are absent, so existing email-only logins keep working — but new students
+   cannot have credentials issued until the migration runs.
+
+   If you see other `database_migration_*.sql` files in the repo root (e.g.
+   `database_migration_logging.sql`, `database_migration_email_queue.sql`,
+   `database_migration_student_portal.sql`), apply them in the order documented
+   at the top of `database_migration_credentials.sql` before running this one.
 
 ## Running it
 
@@ -175,6 +199,20 @@ These files **do not** belong in git (and are gitignored):
 - `ai/uploads/*` (user uploads), `uploads/documents/*` (CI4 uploads)
 
 ## Common issues
+
+**Smoke test after setup (5 minutes):**
+Before debugging anything, log in as the seeded admin (`admin@nsdga.com` / `admin123`)
+and walk these three checks:
+1. `Admin → User Management` loads four rows (admin, registrar, student1, you can see Names).
+   If "Failed to load users", check the activity log row for the actual SQL error:
+   ```sql
+   SELECT details_json FROM activity_logs WHERE action='admin_users_list' AND status='failed' ORDER BY id DESC LIMIT 1;
+   ```
+2. `Admin → Students` loads the directory page (empty if nobody has enrolled yet).
+3. As a student, submit an enrollment.  As the registrar, click `Approve` on the
+   application — they should be redirected to the change-password screen on first login.
+   If approval errors with HTTP 503 `schema_not_migrated`, the credentials migration
+   from step 5.3 didn't run.
 
 **`npm run dev` errors with "Cannot find module"**
 `node_modules` got corrupted.  Run:
