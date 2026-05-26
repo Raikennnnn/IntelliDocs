@@ -10,6 +10,12 @@ export type EnrollmentStep = {
 export type StudentPortalData = {
   profile: {
     full_name: string;
+    /** Filled in once the enrollment application is submitted; empty before. */
+    first_name: string;
+    middle_name: string;
+    last_name: string;
+    /** Generation suffix (Jr., III, etc.) when provided in the enrollment form. */
+    extension_name: string;
     date_of_birth: string;
     gender: string;
     phone: string;

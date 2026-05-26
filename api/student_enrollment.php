@@ -102,10 +102,66 @@ if ($method === 'GET') {
         $stmt->execute([':user_id' => $userId]);
         $row = $stmt->fetch();
 
+        $syCurrent = getEnrollmentSchoolYear($pdo);
+
+        // Helper: parse "11", "Grade 11", "G11" into the integer 11. Returns
+        // 0 when the value is not a recognizable Senior High grade level.
+        $parseGradeLevel = static function (?string $raw): int {
+            if ($raw === null) return 0;
+            if (preg_match('/(\d{1,2})/', $raw, $m)) {
+                $n = (int)$m[1];
+                return ($n >= 7 && $n <= 12) ? $n : 0;
+            }
+            return 0;
+        };
+
+        // Look up the most recent APPROVED enrollment for this student. Used
+        // to expose `prior_approved` and to enforce the graduate block: a
+        // student whose last approved enrollment was Grade 12 cannot enroll
+        // again (they have completed Senior High).
+        $priorStmt = $pdo->prepare(
+            "SELECT id, status, grade_level, strand, school_year, updated_at
+             FROM enrollments
+             WHERE user_id = :user_id
+               AND LOWER(status) = 'approved'
+             ORDER BY id DESC
+             LIMIT 1"
+        );
+        $priorStmt->execute([':user_id' => $userId]);
+        $priorApprovedRow = $priorStmt->fetch() ?: null;
+
+        $priorApproved = null;
+        $isGraduate = false;
+        if ($priorApprovedRow) {
+            $priorGrade = $parseGradeLevel((string)($priorApprovedRow['grade_level'] ?? ''));
+            $priorApproved = [
+                'id' => (int)$priorApprovedRow['id'],
+                'grade_level' => (string)($priorApprovedRow['grade_level'] ?? ''),
+                'grade_level_number' => $priorGrade,
+                'strand' => (string)($priorApprovedRow['strand'] ?? ''),
+                'school_year' => (string)($priorApprovedRow['school_year'] ?? ''),
+                'updated_at' => (string)($priorApprovedRow['updated_at'] ?? ''),
+            ];
+            // Senior High terminates at Grade 12. Once a student has been
+            // approved for Grade 12 they have completed the SHS program and
+            // cannot submit another enrollment from the student portal.
+            if ($priorGrade >= 12) {
+                $isGraduate = true;
+            }
+        }
+
         if (!$row) {
             echo json_encode([
                 'success' => true,
                 'enrollment' => null,
+                'school_year_current' => $syCurrent,
+                'prior_approved' => $priorApproved,
+                'is_graduate' => $isGraduate,
+                // No row at all means the student has never enrolled. They are
+                // eligible to enroll iff an enrollment SY is open and they are
+                // not a graduate (the latter cannot happen here since there is
+                // no prior row, but we keep the flag explicit for the client).
+                're_enrollment_eligible' => $syCurrent !== null && !$isGraduate,
             ]);
             appLogEvent($pdo, 'student_enrollment_load', 'student', 'success', $userId, 'enrollment', null, ['found' => false]);
             exit;
@@ -116,25 +172,44 @@ if ($method === 'GET') {
             $steps = [];
         }
 
-        $syCurrent = getEnrollmentSchoolYear($pdo);
+        $rowSchoolYear = (string)($row['school_year'] ?? '');
+        $rowStatus = (string)($row['status'] ?? 'pending');
+
+        // The student's latest row may still belong to a previous SY (e.g.
+        // they were approved for 2026-2027 and the admin has now opened
+        // 2027-2028 for enrollment). In that case we expose `re_enrollment_eligible`
+        // so the client renders the new-SY enrollment CTA on top of the
+        // existing "you are enrolled in <prior SY>" summary.
+        $latestIsPriorSy = $syCurrent !== null && $rowSchoolYear !== '' && $rowSchoolYear !== $syCurrent;
+        $reEnrollmentEligible = $syCurrent !== null
+            && !$isGraduate
+            && (
+                $latestIsPriorSy
+                || strtolower(trim($rowStatus)) === 'rejected'
+            );
+
         echo json_encode([
             'success' => true,
             'enrollment' => [
                 'id' => (int)$row['id'],
-                'status' => (string)($row['status'] ?? 'pending'),
+                'status' => $rowStatus,
                 'grade_level' => (string)($row['grade_level'] ?? ''),
                 'strand' => (string)($row['strand'] ?? ''),
-                'school_year' => (string)($row['school_year'] ?? ''),
+                'school_year' => $rowSchoolYear,
                 'updated_at' => (string)($row['updated_at'] ?? ''),
                 'current_step' => (int)($steps['current_step'] ?? 1),
                 'form_data' => $steps['form_data'] ?? new stdClass(),
                 'school_year_current' => $syCurrent,
                 'can_edit' => !(
-                    isLockedStatus((string)($row['status'] ?? '')) &&
+                    isLockedStatus($rowStatus) &&
                     $syCurrent !== null &&
-                    (string)($row['school_year'] ?? '') === $syCurrent
+                    $rowSchoolYear === $syCurrent
                 ),
             ],
+            'school_year_current' => $syCurrent,
+            'prior_approved' => $priorApproved,
+            'is_graduate' => $isGraduate,
+            're_enrollment_eligible' => $reEnrollmentEligible,
         ]);
         appLogEvent($pdo, 'student_enrollment_load', 'student', 'success', $userId, 'enrollment', (string)$row['id'], ['found' => true]);
         exit;
@@ -247,9 +322,50 @@ if ($method === 'POST') {
     }
 
     try {
-        $existingStmt = $pdo->prepare('SELECT id FROM enrollments WHERE user_id = :user_id ORDER BY id DESC LIMIT 1');
+        // Graduate guard: a student whose last approved enrollment was at
+        // Grade 12 has completed Senior High. Reject any new submission /
+        // draft from the student portal so they can't re-enroll.
+        $gradStmt = $pdo->prepare(
+            "SELECT grade_level FROM enrollments
+             WHERE user_id = :user_id AND LOWER(status) = 'approved'
+             ORDER BY id DESC LIMIT 1"
+        );
+        $gradStmt->execute([':user_id' => $userId]);
+        $gradRow = $gradStmt->fetch() ?: null;
+        if ($gradRow) {
+            $priorGradeRaw = (string)($gradRow['grade_level'] ?? '');
+            $priorGrade = preg_match('/(\d{1,2})/', $priorGradeRaw, $m) ? (int)$m[1] : 0;
+            if ($priorGrade >= 12) {
+                appLogEvent($pdo, 'student_enrollment_blocked', 'student', 'failed', $userId, 'enrollment', null, [
+                    'reason' => 'graduate',
+                    'last_grade' => $priorGradeRaw,
+                ]);
+                http_response_code(409);
+                echo json_encode([
+                    'success' => false,
+                    'error' => 'You have already completed Grade 12. Re-enrollment is not available.',
+                ]);
+                exit;
+            }
+        }
+
+        // Find the latest row for this user. We only edit it in place when
+        // it belongs to the *current* enrollment school year — otherwise the
+        // SY has rolled (e.g. previous-year approved enrollment) and we must
+        // INSERT a fresh row so the historical record is preserved.
+        $existingStmt = $pdo->prepare('SELECT id, status, school_year FROM enrollments WHERE user_id = :user_id ORDER BY id DESC LIMIT 1');
         $existingStmt->execute([':user_id' => $userId]);
-        $existing = $existingStmt->fetch();
+        $existingRowFull = $existingStmt->fetch();
+        $existing = null;
+        if ($existingRowFull) {
+            $existingRowSy = (string)($existingRowFull['school_year'] ?? '');
+            // The row is editable only when it is for the current SY. When
+            // it is for a previous SY (regardless of approved/rejected/draft),
+            // we treat it as historical and INSERT a new row instead.
+            if ($existingRowSy === $schoolYear || $existingRowSy === '') {
+                $existing = ['id' => (int)$existingRowFull['id']];
+            }
+        }
         if ($existing) {
             $lockStmt = $pdo->prepare('SELECT status, school_year FROM enrollments WHERE id = :id LIMIT 1');
             $lockStmt->execute([':id' => (int)$existing['id']]);
@@ -379,6 +495,10 @@ if ($method === 'POST') {
         }
 
         $syncMap = [
+            'first_name' => trim((string)($formData['givenName'] ?? '')),
+            'middle_name' => trim((string)($formData['middleName'] ?? '')),
+            'last_name' => trim((string)($formData['lastName'] ?? '')),
+            'extension_name' => trim((string)($formData['extensionName'] ?? '')),
             'date_of_birth' => (string)($formData['birthDate'] ?? ''),
             'gender' => (string)($formData['gender'] ?? ''),
             'phone' => (string)($formData['contactNumber'] ?? ''),

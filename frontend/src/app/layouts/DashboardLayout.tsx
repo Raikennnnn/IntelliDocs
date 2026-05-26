@@ -111,6 +111,7 @@ export const studentNavigation = [
 export const registrarNavigation = [
   { name: 'Dashboard', path: '/registrar/dashboard', icon: Home },
   { name: 'Applications', path: '/registrar/applications', icon: ClipboardList },
+  { name: 'Students', path: '/registrar/students', icon: Users },
   { name: 'Reports', path: '/registrar/reports', icon: BarChart3 },
   { name: 'Announcements', path: '/registrar/announcements', icon: Bell },
 ];
@@ -119,6 +120,7 @@ export const adminNavigation = [
   { name: 'Dashboard', path: '/admin/dashboard', icon: Home },
   { name: 'School Year', path: '/admin/school-year', icon: Calendar },
   { name: 'User Management', path: '/admin/user-management', icon: UsersRound },
+  { name: 'Students', path: '/admin/students', icon: GraduationCap },
   { name: 'Reports', path: '/admin/reports', icon: BarChart3 },
   { name: 'Activity Logs', path: '/admin/activity-logs', icon: Activity },
   { name: 'System Settings', path: '/admin/system-settings', icon: Settings },

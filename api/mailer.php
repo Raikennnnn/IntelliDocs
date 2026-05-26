@@ -43,7 +43,7 @@ function sendViaBrevo(string $recipientEmail, string $subject, string $bodyText)
 {
     $apiKey = (string)(getenv('BREVO_API_KEY') ?: '');
     $fromEmail = (string)(getenv('MAIL_FROM_ADDRESS') ?: '');
-    $fromName = (string)(getenv('MAIL_FROM_NAME') ?: 'IntelliDocs');
+    $fromName = (string)(getenv('MAIL_FROM_NAME') ?: 'Nuestra Señora De Guia Academy');
 
     if ($apiKey === '' || $fromEmail === '') {
         return [false, 'BREVO_API_KEY or MAIL_FROM_ADDRESS missing'];
@@ -88,7 +88,7 @@ function sendViaBrevo(string $recipientEmail, string $subject, string $bodyText)
 function sendViaPhpMail(string $recipientEmail, string $subject, string $bodyText): array
 {
     $fromEmail = (string)(getenv('MAIL_FROM_ADDRESS') ?: 'no-reply@intellidocs.local');
-    $fromName = (string)(getenv('MAIL_FROM_NAME') ?: 'IntelliDocs');
+    $fromName = (string)(getenv('MAIL_FROM_NAME') ?: 'Nuestra Señora De Guia Academy');
     $headers = [
         'From: ' . $fromName . ' <' . $fromEmail . '>',
         'Content-Type: text/plain; charset=UTF-8',
@@ -163,5 +163,5 @@ function processPendingEmailQueue(PDO $pdo, int $limit = 20): array
 
 function buildOtpEmailBody(string $otp): string
 {
-    return "Your IntelliDocs OTP is: {$otp}\n\nThis code expires in 10 minutes.\nIf you did not request this, ignore this email.";
+    return "Your Nuestra Señora De Guia Academy verification code is: {$otp}\n\nThis code expires in 10 minutes.\nIf you did not request this, ignore this email.";
 }

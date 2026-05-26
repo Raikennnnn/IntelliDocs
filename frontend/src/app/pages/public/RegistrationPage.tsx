@@ -5,7 +5,7 @@ import { useNavigate, Link } from "react-router";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
-import { Mail, Lock, User, Eye, EyeOff, ArrowLeft, CheckCircle } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 import schoolLogo from "../../../assets/logo.png";
 
@@ -15,7 +15,6 @@ export function RegistrationPage() {
   const [step, setStep] = useState<'register' | 'otp'>('register');
   const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
-    fullName: '',
     email: '',
     password: '',
     confirmPassword: '',
@@ -60,7 +59,7 @@ export function RegistrationPage() {
     e.preventDefault();
 
     // Validation
-    if (!formData.fullName || !formData.email || !formData.password || !formData.confirmPassword) {
+    if (!formData.email || !formData.password || !formData.confirmPassword) {
       toast.error('Please fill in all fields');
       return;
     }
@@ -86,7 +85,9 @@ export function RegistrationPage() {
           username: formData.email.split('@')[0],
           email: formData.email,
           password: formData.password,
-          full_name: formData.fullName
+          // Full name is collected later via the enrollment application form;
+          // sending an empty string lets the backend skip the legacy validation.
+          full_name: ''
         }),
       });
 
@@ -208,26 +209,6 @@ export function RegistrationPage() {
 
               {/* Registration Form */}
               <form onSubmit={handleRegister} className="space-y-5" autoComplete="off">
-                <div>
-                  <Label htmlFor="fullName" className="text-gray-700 mb-2 block">
-                    Enter your full name <span className="text-[#8B1538]">*</span>
-                  </Label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                    <Input
-                      id="fullName"
-                      type="text"
-                      name="fullName"
-                      autoComplete="off"
-                      value={formData.fullName}
-                      onChange={(e) => handleInputChange('fullName', e.target.value)}
-                      placeholder="John Doe"
-                      className="pl-10 h-12"
-                      required
-                    />
-                  </div>
-                </div>
-
                 <div>
                   <Label htmlFor="email" className="text-gray-700 mb-2 block">
                     Enter your email <span className="text-[#8B1538]">*</span>

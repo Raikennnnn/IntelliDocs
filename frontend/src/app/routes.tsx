@@ -12,6 +12,7 @@ import { StudentDashboard } from './pages/student/StudentDashboard';
 import { StudentEnrollment } from './pages/student/StudentEnrollment';
 import { ApplicationStatus } from './pages/student/ApplicationStatus';
 import { StudentProfile } from './pages/student/StudentProfile';
+import { ChangePassword } from './pages/student/ChangePassword';
 
 // Registrar pages
 import { RegistrarDashboard } from './pages/registrar/RegistrarDashboard';
@@ -20,10 +21,12 @@ import { ReviewDocuments } from './pages/registrar/ReviewDocuments';
 import { AIVerification } from './pages/registrar/AIVerification';
 import { Reports } from './pages/registrar/Reports';
 import { ActivityLogs as RegistrarActivityLogs } from './pages/registrar/ActivityLogs';
+import { Students as RegistrarStudents } from './pages/registrar/Students';
 
 // Admin pages
 import { AdminDashboard } from './pages/admin/AdminDashboard';
 import { UserManagement } from './pages/admin/UserManagement';
+import { Students as AdminStudents } from './pages/admin/Students';
 import { Reports as AdminReports } from './pages/admin/Reports';
 import { ActivityLogs as AdminActivityLogs } from './pages/admin/ActivityLogs';
 import { SystemSettings } from './pages/admin/SystemSettings';
@@ -129,6 +132,20 @@ export const router = createBrowserRouter([
     ),
     errorElement: <ErrorBoundary />,
   },
+  {
+    // Forced-first-login password change (Requirements 7.2, 7.3).
+    // Rendered without `RouteWithLayout` so the user is not exposed to the
+    // dashboard chrome before they have rotated the temporary password.
+    // `ProtectedRoute` special-cases this exact path so the First_Login_Guard
+    // does not redirect away from it.
+    path: '/student/change-password',
+    element: (
+      <ProtectedRoute allowedRoles={['student']}>
+        <ChangePassword />
+      </ProtectedRoute>
+    ),
+    errorElement: <ErrorBoundary />,
+  },
   { path: '/dashboard', element: <Navigate to="/student/dashboard" replace /> },
   { path: '/enrollment', element: <Navigate to="/student/enrollment" replace /> },
   { path: '/application-status', element: <Navigate to="/student/application-status" replace /> },
@@ -152,6 +169,17 @@ export const router = createBrowserRouter([
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
           <Applications />
+        </RouteWithLayout>
+      </ProtectedRoute>
+    ),
+    errorElement: <ErrorBoundary />,
+  },
+  {
+    path: '/registrar/students',
+    element: (
+      <ProtectedRoute allowedRoles={['registrar']}>
+        <RouteWithLayout navigation={registrarNavigation}>
+          <RegistrarStudents />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -241,6 +269,17 @@ export const router = createBrowserRouter([
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
           <UserManagement />
+        </RouteWithLayout>
+      </ProtectedRoute>
+    ),
+    errorElement: <ErrorBoundary />,
+  },
+  {
+    path: '/admin/students',
+    element: (
+      <ProtectedRoute allowedRoles={['admin']}>
+        <RouteWithLayout navigation={adminNavigation}>
+          <AdminStudents />
         </RouteWithLayout>
       </ProtectedRoute>
     ),

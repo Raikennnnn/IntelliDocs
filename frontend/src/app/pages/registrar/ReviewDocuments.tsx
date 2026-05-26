@@ -291,6 +291,12 @@ export function ReviewDocuments() {
   const [aiDocStateById, setAiDocStateById] = useState<
     Record<string, { state: "pending" | "running" | "done" | "error"; error?: string }>
   >({});
+  // Bumped by the "Re-run AI" button to trigger the verification effect again.
+  const [aiRerunNonce, setAiRerunNonce] = useState(0);
+  // Tracks an in-flight approve/reject so we can disable the buttons against double-submits.
+  const [decisionSubmitting, setDecisionSubmitting] = useState<null | "approve" | "reject">(null);
+  // Tracks per-document review-toggle in-flight; document id (string) → boolean.
+  const [reviewSubmittingByDocId, setReviewSubmittingByDocId] = useState<Record<string, boolean>>({});
 
   const mapDocType = (doc: any): AiDocType => {
     const label = String(doc?.requirementLabel ?? doc?.type ?? doc?.name ?? doc?.fileName ?? "").toLowerCase();
@@ -423,22 +429,28 @@ export function ReviewDocuments() {
 
   const handleApprove = async () => {
     if (!application?.enrollmentId) return;
-    const res = await apiFetch('/api/registrar/application', {
-      method: 'POST',
-      body: JSON.stringify({
-        action: 'approve',
-        enrollment_id: application.enrollmentId,
-        remarks,
-      }),
-    });
-    const text = await res.text();
-    const data = JSON.parse(text);
-    if (!res.ok || !data.success) {
-      toast.error(data.error || `Failed to approve (${res.status})`);
-      return;
+    if (decisionSubmitting !== null) return;
+    setDecisionSubmitting("approve");
+    try {
+      const res = await apiFetch('/api/registrar/application', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'approve',
+          enrollment_id: application.enrollmentId,
+          remarks,
+        }),
+      });
+      const text = await res.text();
+      const data = JSON.parse(text);
+      if (!res.ok || !data.success) {
+        toast.error(data.error || `Failed to approve (${res.status})`);
+        return;
+      }
+      toast.success(data.message || `Application ${application.id} approved`);
+      loadApplication();
+    } finally {
+      setDecisionSubmitting(null);
     }
-    toast.success(data.message || `Application ${application.id} approved`);
-    loadApplication();
   };
 
   const handleReject = async () => {
@@ -447,22 +459,28 @@ export function ReviewDocuments() {
       return;
     }
     if (!application?.enrollmentId) return;
-    const res = await apiFetch('/api/registrar/application', {
-      method: 'POST',
-      body: JSON.stringify({
-        action: 'reject',
-        enrollment_id: application.enrollmentId,
-        remarks,
-      }),
-    });
-    const text = await res.text();
-    const data = JSON.parse(text);
-    if (!res.ok || !data.success) {
-      toast.error(data.error || `Failed to reject (${res.status})`);
-      return;
+    if (decisionSubmitting !== null) return;
+    setDecisionSubmitting("reject");
+    try {
+      const res = await apiFetch('/api/registrar/application', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'reject',
+          enrollment_id: application.enrollmentId,
+          remarks,
+        }),
+      });
+      const text = await res.text();
+      const data = JSON.parse(text);
+      if (!res.ok || !data.success) {
+        toast.error(data.error || `Failed to reject (${res.status})`);
+        return;
+      }
+      toast.success(data.message || `Application ${application.id} rejected`);
+      loadApplication();
+    } finally {
+      setDecisionSubmitting(null);
     }
-    toast.success(data.message || `Application ${application.id} rejected`);
-    loadApplication();
   };
 
   const handleSaveRemarks = async () => {
@@ -482,6 +500,63 @@ export function ReviewDocuments() {
       return;
     }
     toast.success(data.message || "Remarks saved successfully");
+  };
+
+  /**
+   * Toggle the registrar's manual "reviewed" flag on a document. Independent of AI status.
+   * Optimistic: flips the in-memory document immediately, rolls back on server error.
+   */
+  const toggleDocumentReviewed = async (documentId: number | string, nextReviewed: boolean) => {
+    const idStr = String(documentId);
+    if (reviewSubmittingByDocId[idStr]) return;
+    setReviewSubmittingByDocId((prev) => ({ ...prev, [idStr]: true }));
+
+    // Optimistic local update so the UI feels instant.
+    const previous = application;
+    setApplication((prev: any) => {
+      if (!prev || !Array.isArray(prev.documents)) return prev;
+      return {
+        ...prev,
+        documents: prev.documents.map((d: any) =>
+          String(d.id) === idStr ? { ...d, registrarReviewed: nextReviewed } : d,
+        ),
+        documentsReviewed:
+          (prev.documentsReviewed ?? 0) + (nextReviewed ? 1 : -1),
+      };
+    });
+    setSelectedDocument((sel: any) =>
+      sel && String(sel.id) === idStr ? { ...sel, registrarReviewed: nextReviewed } : sel,
+    );
+
+    try {
+      const res = await apiFetch('/api/registrar/document-review', {
+        method: 'POST',
+        body: JSON.stringify({ document_id: Number(documentId), reviewed: nextReviewed }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        // Roll back optimistic update.
+        setApplication(previous);
+        setSelectedDocument((sel: any) =>
+          sel && String(sel.id) === idStr ? { ...sel, registrarReviewed: !nextReviewed } : sel,
+        );
+        toast.error(data.error || `Failed to update review status (${res.status})`);
+        return;
+      }
+      toast.success(nextReviewed ? "Marked as reviewed" : "Reviewed flag cleared");
+    } catch (e) {
+      setApplication(previous);
+      setSelectedDocument((sel: any) =>
+        sel && String(sel.id) === idStr ? { ...sel, registrarReviewed: !nextReviewed } : sel,
+      );
+      toast.error(e instanceof Error ? e.message : "Failed to update review status");
+    } finally {
+      setReviewSubmittingByDocId((prev) => {
+        const next = { ...prev };
+        delete next[idStr];
+        return next;
+      });
+    }
   };
 
   const getDocumentStatusColor = (status: string) => {
@@ -807,8 +882,9 @@ export function ReviewDocuments() {
       cancelled = true;
     };
     // Intentionally depend on applicationId + application.documents snapshot only.
+    // aiRerunNonce is bumped by the "Re-run AI" button to force a re-run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applicationId, application?.documents]);
+  }, [applicationId, application?.documents, aiRerunNonce]);
 
   if (loading) {
     return (
@@ -925,7 +1001,7 @@ export function ReviewDocuments() {
               <h3 className="text-lg font-semibold mb-4">Basic Information</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
                 <div>
-                  <p className="text-gray-600">Given Name</p>
+                  <p className="text-gray-600">First Name</p>
                   <p className="font-medium">{application.givenName}</p>
                 </div>
                 <div>
@@ -1187,6 +1263,29 @@ export function ReviewDocuments() {
           {/* Documents Upload Tab */}
           <TabsContent value="documents" className="p-6">
             <div className="space-y-3">
+              {(() => {
+                const docs = (application.documents ?? []) as any[];
+                const total = docs.length;
+                const reviewed = docs.filter((d) => d?.registrarReviewed).length;
+                if (total === 0) return null;
+                const pct = total > 0 ? Math.round((reviewed / total) * 100) : 0;
+                return (
+                  <div className="rounded-lg border bg-gray-50 p-3">
+                    <div className="flex items-center justify-between text-sm mb-1.5">
+                      <span className="font-medium text-gray-800">Registrar review progress</span>
+                      <span className="text-gray-700 font-semibold tabular-nums">
+                        {reviewed}/{total} reviewed
+                      </span>
+                    </div>
+                    <div className="bg-white rounded-full h-2 overflow-hidden border">
+                      <div
+                        className="bg-emerald-600 h-full rounded-full transition-all"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="flex items-center justify-between gap-3">
                 <div className="text-sm text-gray-600">
                   {aiRunning ? (
@@ -1210,6 +1309,7 @@ export function ReviewDocuments() {
                     setAiResultsByDocId({});
                     setAiDocStateById({});
                     setAiServiceError(null);
+                    setAiRerunNonce((n) => n + 1);
                   }}
                   disabled={aiRunning}
                 >
@@ -1243,6 +1343,12 @@ export function ReviewDocuments() {
                           <Badge className={getDocumentStatusColor(doc.status)}>
                             {doc.status}
                           </Badge>
+                          {doc.registrarReviewed ? (
+                            <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              Reviewed
+                            </Badge>
+                          ) : null}
                           {aiBadge(ai)}
                           {!ai ? aiProgressBadge(key) : null}
                           {!isPhoto && ai ? tamperBadge(ai) : null}
@@ -1394,29 +1500,93 @@ export function ReviewDocuments() {
 
             <div className="border-t pt-6">
               <h3 className="text-lg font-semibold mb-4">Application Decision</h3>
-              <Alert className="mb-4">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
-                  Review all information and documents carefully before making a final decision.
-                </AlertDescription>
-              </Alert>
-              <div className="flex gap-3">
-                <Button
-                  variant="outline"
-                  className="border-red-600 text-red-600 hover:bg-red-600 hover:text-white"
-                  onClick={handleReject}
+              {application.status === "Approved" || application.status === "Rejected" ? (
+                <div
+                  className={
+                    "rounded-lg border p-4 flex items-start gap-3 " +
+                    (application.status === "Approved"
+                      ? "border-green-300 bg-green-50"
+                      : "border-red-300 bg-red-50")
+                  }
                 >
-                  <XCircle className="w-4 h-4 mr-2" />
-                  Reject Application
-                </Button>
-                <Button
-                  className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
-                  onClick={handleApprove}
-                >
-                  <CheckCircle className="w-4 h-4 mr-2" />
-                  Approve Application
-                </Button>
-              </div>
+                  {application.status === "Approved" ? (
+                    <CheckCircle className="w-5 h-5 text-green-700 mt-0.5 shrink-0" />
+                  ) : (
+                    <XCircle className="w-5 h-5 text-red-700 mt-0.5 shrink-0" />
+                  )}
+                  <div className="flex-1">
+                    <p
+                      className={
+                        "font-semibold " +
+                        (application.status === "Approved" ? "text-green-800" : "text-red-800")
+                      }
+                    >
+                      Application {application.status.toLowerCase()}
+                    </p>
+                    {application.registrarRemarks ? (
+                      <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">
+                        <span className="font-medium">Remarks:</span> {application.registrarRemarks}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-gray-600 mt-1 italic">
+                        No remarks were recorded with this decision.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                (() => {
+                  const docs = (application.documents ?? []) as any[];
+                  const totalDocs = docs.length;
+                  const reviewedDocs = docs.filter((d) => d?.registrarReviewed).length;
+                  const allReviewed = totalDocs > 0 && reviewedDocs === totalDocs;
+                  const blocked = !allReviewed;
+                  const remaining = Math.max(0, totalDocs - reviewedDocs);
+                  return (
+                    <>
+                      <Alert className={"mb-4 " + (blocked ? "border-amber-300 bg-amber-50" : "")}>
+                        <AlertCircle className={"h-4 w-4 " + (blocked ? "text-amber-700" : "")} />
+                        <AlertDescription className={blocked ? "text-amber-900" : ""}>
+                          {totalDocs === 0 ? (
+                            "No documents uploaded yet. The applicant must upload required documents before a decision can be made."
+                          ) : blocked ? (
+                            <>
+                              <span className="font-medium">
+                                Review {remaining} more document{remaining === 1 ? "" : "s"} before approving or rejecting.
+                              </span>{" "}
+                              Open each document with View and click <span className="font-semibold">Mark as reviewed</span>.{" "}
+                              Progress: {reviewedDocs}/{totalDocs}.
+                            </>
+                          ) : (
+                            "All documents have been reviewed. You can now approve or reject the application."
+                          )}
+                        </AlertDescription>
+                      </Alert>
+                      <div className="flex gap-3">
+                        <Button
+                          variant="outline"
+                          className="border-red-600 text-red-600 hover:bg-red-600 hover:text-white disabled:hover:bg-transparent disabled:hover:text-red-600"
+                          onClick={handleReject}
+                          disabled={decisionSubmitting !== null || blocked}
+                          title={blocked ? `Review all ${totalDocs} document${totalDocs === 1 ? "" : "s"} first` : undefined}
+                        >
+                          <XCircle className="w-4 h-4 mr-2" />
+                          {decisionSubmitting === "reject" ? "Rejecting…" : "Reject Application"}
+                        </Button>
+                        <Button
+                          className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white disabled:bg-[#2D5016]/40 disabled:hover:bg-[#2D5016]/40"
+                          onClick={handleApprove}
+                          disabled={decisionSubmitting !== null || blocked}
+                          title={blocked ? `Review all ${totalDocs} document${totalDocs === 1 ? "" : "s"} first` : undefined}
+                        >
+                          <CheckCircle className="w-4 h-4 mr-2" />
+                          {decisionSubmitting === "approve" ? "Approving…" : "Approve Application"}
+                        </Button>
+                      </div>
+                    </>
+                  );
+                })()
+              )}
             </div>
           </TabsContent>
         </Tabs>
@@ -1490,6 +1660,42 @@ export function ReviewDocuments() {
                       return (
                         <div className="text-xs text-gray-600">
                           OCR readability: <span className="font-semibold">{pct}%</span>
+                        </div>
+                      );
+                    })()}
+                    {(() => {
+                      const id = String(selectedDocument.id ?? "");
+                      const reviewed = !!selectedDocument.registrarReviewed;
+                      const submitting = !!reviewSubmittingByDocId[id];
+                      return (
+                        <div className="mt-3 flex flex-wrap items-center gap-3">
+                          {reviewed ? (
+                            <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
+                              <CheckCircle className="w-3.5 h-3.5 mr-1" />
+                              Reviewed by registrar
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="border-gray-300 text-gray-600">
+                              Not yet reviewed
+                            </Badge>
+                          )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant={reviewed ? "outline" : "default"}
+                            disabled={submitting || !selectedDocument.id}
+                            onClick={() => toggleDocumentReviewed(selectedDocument.id, !reviewed)}
+                            className={reviewed ? "" : "bg-emerald-600 hover:bg-emerald-700 text-white"}
+                          >
+                            <CheckCircle className="w-4 h-4 mr-2" />
+                            {submitting
+                              ? reviewed
+                                ? "Removing…"
+                                : "Marking…"
+                              : reviewed
+                                ? "Mark as unreviewed"
+                                : "Mark as reviewed"}
+                          </Button>
                         </div>
                       );
                     })()}

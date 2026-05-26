@@ -66,6 +66,10 @@ switch ($route) {
     case 'registrar/applications/':
         require_once __DIR__ . '/../api/registrar_applications.php';
         break;
+    case 'registrar/students':
+    case 'registrar/students/':
+        require_once __DIR__ . '/../api/registrar_students.php';
+        break;
     case 'registrar/overview':
     case 'registrar/overview/':
         require_once __DIR__ . '/../api/registrar_overview.php';
@@ -73,6 +77,10 @@ switch ($route) {
     case 'registrar/application':
     case 'registrar/application/':
         require_once __DIR__ . '/../api/registrar_application_detail.php';
+        break;
+    case 'registrar/document-review':
+    case 'registrar/document-review/':
+        require_once __DIR__ . '/../api/registrar_document_review.php';
         break;
     case 'ai/verify-document':
     case 'ai/verify-document/':
@@ -97,6 +105,10 @@ switch ($route) {
     case 'admin/users':
     case 'admin/users/':
         require_once __DIR__ . '/../api/admin_users.php';
+        break;
+    case 'admin/students':
+    case 'admin/students/':
+        require_once __DIR__ . '/../api/admin_students.php';
         break;
     case 'admin/reports':
     case 'admin/reports/':

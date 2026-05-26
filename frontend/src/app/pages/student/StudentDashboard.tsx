@@ -311,7 +311,12 @@ export function StudentDashboard() {
             </CardHeader>
             <CardContent className="pt-6">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                <Detail label="Full name" value={data.profile.full_name} />
+                <Detail
+                  label="First name"
+                  value={data.profile.first_name || data.profile.full_name}
+                />
+                <Detail label="Middle name" value={data.profile.middle_name} />
+                <Detail label="Last name" value={data.profile.last_name} />
                 <Detail label="Date of birth" value={data.profile.date_of_birth} />
                 <Detail label="Gender" value={data.profile.gender} />
                 <EditableContactField

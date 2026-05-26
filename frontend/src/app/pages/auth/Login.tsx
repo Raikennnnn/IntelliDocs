@@ -8,7 +8,7 @@ import schoolLogo from "../../../assets/logo.png";
 import homePageImage from "../../../assets/homepage-Bxdbuq6s.png";
 
 export function Login() {
-  const [email, setEmail] = useState('');
+  const [credential, setCredential] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const { login } = useAuth();
@@ -19,11 +19,20 @@ export function Login() {
     setError('');
 
     try {
-      const { ok, user: loggedIn } = await login(email, password);
-      if (!ok) {
-        setError('Invalid email or password');
+      const result = await login(credential, password);
+      if (!result.ok) {
+        // Distinguish throttle response (account_locked / throttled) from a
+        // generic credential failure. The backend returns 401 with
+        // `{ error: "account_locked", code: "throttled" }` once the
+        // per-identifier failure threshold is hit (design Property 15).
+        if (result.errorCode === 'throttled' || result.errorCode === 'account_locked') {
+          setError('Too many failed attempts. Please try again in a few minutes.');
+        } else {
+          setError('Invalid email or password');
+        }
         return;
       }
+      const loggedIn = result.user;
       if (!loggedIn) {
         setError('Login succeeded but user data was missing. Try again.');
         return;
@@ -103,19 +112,19 @@ export function Login() {
                 </Alert>
               )}
 
-              {/* Email */}
+              {/* Email or School Username */}
               <div className="space-y-2">
                 <label className="block font-medium text-sm text-black">
-                  Email
+                  Email or School Username
                 </label>
                 <Input
-                  type="email"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  type="text"
+                  autoComplete="username"
+                  value={credential}
+                  onChange={(e) => setCredential(e.target.value)}
                   required
                   className="w-full h-12 bg-[#F9FAFB] border-[#D1D5DC] border rounded-lg px-3 text-sm placeholder:text-[#6B7280] focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
-                  placeholder="Enter your email"
+                  placeholder="Enter your email or school username"
                 />
               </div>
 

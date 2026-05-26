@@ -381,8 +381,73 @@ try {
         ? studentEnrollmentDisplayStatus($enrollmentStatusNorm)
         : 'Not submitted';
 
+    /**
+     * Prefer the structured `users.first_name|middle_name|last_name|extension_name`
+     * columns when they are populated (added by the credentials migration and
+     * backfilled at enrollment-submission time). Fall back to whatever the
+     * student typed in the latest enrollment form when the columns are NULL or
+     * missing entirely (older schemas pre-migration).
+     */
+    $hasFirstNameCol = columnExists($pdo, 'users', 'first_name');
+    $hasMiddleNameCol = columnExists($pdo, 'users', 'middle_name');
+    $hasLastNameCol = columnExists($pdo, 'users', 'last_name');
+    $hasExtensionNameCol = columnExists($pdo, 'users', 'extension_name');
+
+    $userFirstName = $hasFirstNameCol ? trim((string)($user['first_name'] ?? '')) : '';
+    $userMiddleName = $hasMiddleNameCol ? trim((string)($user['middle_name'] ?? '')) : '';
+    $userLastName = $hasLastNameCol ? trim((string)($user['last_name'] ?? '')) : '';
+    $userExtensionName = $hasExtensionNameCol ? trim((string)($user['extension_name'] ?? '')) : '';
+
+    $formFirstName = trim((string)($enrollmentFormData['givenName'] ?? ''));
+    $formMiddleName = trim((string)($enrollmentFormData['middleName'] ?? ''));
+    $formLastName = trim((string)($enrollmentFormData['lastName'] ?? ''));
+    $formExtensionName = trim((string)($enrollmentFormData['extensionName'] ?? ''));
+
+    $firstName = $userFirstName !== '' ? $userFirstName : $formFirstName;
+    $middleName = $userMiddleName !== '' ? $userMiddleName : $formMiddleName;
+    $lastName = $userLastName !== '' ? $userLastName : $formLastName;
+    $extensionName = $userExtensionName !== '' ? $userExtensionName : $formExtensionName;
+
+    $usersFullName = trim((string)($user['full_name'] ?? ''));
+    $hasEnrollmentName = $firstName !== '' || $middleName !== '' || $lastName !== '';
+    if ($hasEnrollmentName) {
+        // Compose a display string from the parts. Skip blanks gracefully.
+        $composed = trim(preg_replace('/\s+/', ' ', sprintf(
+            '%s %s %s %s',
+            $firstName,
+            $middleName,
+            $lastName,
+            $extensionName
+        )));
+        $displayFullName = $composed !== '' ? $composed : $usersFullName;
+    } else {
+        $displayFullName = $usersFullName;
+    }
+
+    $hasSchoolUsernameCol = columnExists($pdo, 'users', 'school_username');
+    $hasMustChangePasswordCol = columnExists($pdo, 'users', 'must_change_password');
+
+    $schoolUsername = null;
+    if ($hasSchoolUsernameCol) {
+        $rawSchoolUsername = $user['school_username'] ?? null;
+        if ($rawSchoolUsername !== null && trim((string)$rawSchoolUsername) !== '') {
+            $schoolUsername = (string)$rawSchoolUsername;
+        }
+    }
+
+    $mustChangePassword = false;
+    if ($hasMustChangePasswordCol) {
+        $mustChangePassword = (bool)((int)($user['must_change_password'] ?? 0));
+    }
+
     $profile = [
-        'full_name' => (string)($user['full_name'] ?? ''),
+        'full_name' => $displayFullName,
+        // Components for UIs that prefer to show first/middle/last separately.
+        // Empty strings until the enrollment form is filled in.
+        'first_name' => $firstName,
+        'middle_name' => $middleName,
+        'last_name' => $lastName,
+        'extension_name' => $extensionName,
         'date_of_birth' => (string)($user['date_of_birth'] ?? ''),
         'gender' => (string)($user['gender'] ?? ''),
         'phone' => (string)($user['phone'] ?? ''),
@@ -394,6 +459,8 @@ try {
         // IMPORTANT: brand-new users must NOT be treated as "pending" (which locks enrollment).
         // Only set a real status when an enrollment row exists.
         'application_status' => $applicationStatusDisplay,
+        'school_username' => $schoolUsername,
+        'must_change_password' => $mustChangePassword,
     ];
 
     $guardian = [
@@ -482,6 +549,8 @@ try {
             'steps' => $steps,
         ],
         'application' => $application,
+        'school_username' => $schoolUsername,
+        'must_change_password' => $mustChangePassword,
     ]);
 } catch (Throwable $e) {
     http_response_code(500);

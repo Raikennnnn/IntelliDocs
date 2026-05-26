@@ -34,6 +34,8 @@ require_once __DIR__ . '/logging.php';
 
 require_once __DIR__ . '/announcements_common.php';
 
+require_once __DIR__ . '/public_privacy.php';
+
 
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
@@ -104,7 +106,12 @@ try {
 
 
 
-    echo json_encode(['success' => true, 'announcements' => $items]);
+    // Defense-in-depth: strip any user name fields before echoing on this
+    // unauthenticated endpoint (Requirements 8.1, 8.2). The current SELECT
+    // is already on an explicit allow-list, so this is a no-op today, but
+    // future query changes won't accidentally leak names.
+
+    echo json_encode(stripPrivateNameFields(['success' => true, 'announcements' => $items]));
 
     appLogEvent($pdo, 'announcements_public', 'public', 'success', null, 'endpoint', 'announcements', ['count' => count($items), 'scope' => $scope]);
 

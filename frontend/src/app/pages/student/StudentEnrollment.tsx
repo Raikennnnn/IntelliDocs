@@ -31,6 +31,28 @@ import { Alert, AlertDescription } from "../../components/ui/alert";
 import { apiFetch } from "../../lib/api";
 import { useEnrollmentAllowed } from "../../context/SchoolYearContext";
 
+/**
+ * `RequiredLabel` renders a form label and a consistently-styled red
+ * asterisk to mark the field as required. Use this anywhere we previously
+ * wrote `<Label>Field *</Label>` so the asterisk color cannot drift between
+ * fields (the original markup mixed `*` glyphs in the default text color
+ * with `<span className="text-red-500">*</span>` spans, producing the
+ * black-vs-red inconsistency seen in the Personal Information section).
+ *
+ * Spreads any other props (htmlFor, className, etc.) onto the underlying
+ * `<Label>` so it remains a drop-in replacement.
+ */
+function RequiredLabel({
+  children,
+  ...rest
+}: React.ComponentProps<typeof Label> & { children: React.ReactNode }) {
+  return (
+    <Label {...rest}>
+      {children} <span className="text-red-500" aria-hidden="true">*</span>
+    </Label>
+  );
+}
+
 /** YYYY-MM-DD in local calendar (avoids UTC shifting the day on `<input type="date">`). */
 function formatLocalDateYmd(d: Date): string {
   const y = d.getFullYear();
@@ -151,6 +173,24 @@ export function StudentEnrollment() {
   const [isSaving, setIsSaving] = useState(false);
   const [isEnrollmentLocked, setIsEnrollmentLocked] = useState(false);
   const [enrollmentId, setEnrollmentId] = useState<number | null>(null);
+  // Status-card state: drives the post-submission UI on this page so the
+  // student sees the actual decision (Enrolled / Rejected / Under review)
+  // instead of a generic "Processing" message after the registrar acts.
+  const [enrollmentStatusRaw, setEnrollmentStatusRaw] = useState<string>('');
+  const [enrollmentSchoolYear, setEnrollmentSchoolYear] = useState<string>('');
+  const [enrollmentRemarks, setEnrollmentRemarks] = useState<string>('');
+  const [enrollmentGradeLevel, setEnrollmentGradeLevel] = useState<string>('');
+  const [enrollmentStrand, setEnrollmentStrand] = useState<string>('');
+  const [schoolYearCurrent, setSchoolYearCurrent] = useState<string | null>(null);
+  const [priorApproved, setPriorApproved] = useState<{
+    grade_level: string;
+    grade_level_number: number;
+    strand: string;
+    school_year: string;
+  } | null>(null);
+  const [isGraduate, setIsGraduate] = useState(false);
+  const [reEnrollmentEligible, setReEnrollmentEligible] = useState(false);
+  const [showNewEnrollmentForm, setShowNewEnrollmentForm] = useState(false);
   const [formData, setFormData] = useState<EnrollmentFormData>({
     enrollmentStatus: '',
     givenName: '',
@@ -250,7 +290,21 @@ export function StudentEnrollment() {
             current_step?: number;
             form_data?: Partial<EnrollmentFormData>;
             can_edit?: boolean;
+            status?: string;
+            school_year?: string;
+            grade_level?: string;
+            strand?: string;
+            registrar_remarks?: string;
           } | null;
+          school_year_current?: string | null;
+          prior_approved?: {
+            grade_level?: string;
+            grade_level_number?: number;
+            strand?: string;
+            school_year?: string;
+          } | null;
+          is_graduate?: boolean;
+          re_enrollment_eligible?: boolean;
           error?: string;
         };
         if (!res.ok || !json.success) {
@@ -273,6 +327,28 @@ export function StudentEnrollment() {
         if (json.enrollment?.current_step && json.enrollment.current_step >= 1 && json.enrollment.current_step <= 6) {
           setCurrentStep(json.enrollment.current_step);
         }
+
+        // Surface status / SY context on the page so the locked-out branch
+        // can show the right message (Enrolled vs Rejected vs Under review)
+        // and the new-SY re-enrollment CTA can render when applicable.
+        setEnrollmentStatusRaw((json.enrollment?.status ?? '').toString());
+        setEnrollmentSchoolYear((json.enrollment?.school_year ?? '').toString());
+        setEnrollmentGradeLevel((json.enrollment?.grade_level ?? '').toString());
+        setEnrollmentStrand((json.enrollment?.strand ?? '').toString());
+        setEnrollmentRemarks((json.enrollment?.registrar_remarks ?? '').toString());
+        setSchoolYearCurrent(json.school_year_current ?? null);
+        setPriorApproved(
+          json.prior_approved
+            ? {
+                grade_level: String(json.prior_approved.grade_level ?? ''),
+                grade_level_number: Number(json.prior_approved.grade_level_number ?? 0) || 0,
+                strand: String(json.prior_approved.strand ?? ''),
+                school_year: String(json.prior_approved.school_year ?? ''),
+              }
+            : null
+        );
+        setIsGraduate(Boolean(json.is_graduate));
+        setReEnrollmentEligible(Boolean(json.re_enrollment_eligible));
 
         const docsRes = await apiFetch('/api/documents');
         const docsText = await docsRes.text();
@@ -507,11 +583,11 @@ export function StudentEnrollment() {
     }
 
     if (formData.emergencyContact === 'mother' && !hasMother) {
-      toast.error("Emergency contact is Mother, but mother's given name was not provided.");
+      toast.error("Emergency contact is Mother, but mother's first name was not provided.");
       return false;
     }
     if (formData.emergencyContact === 'father' && !hasFather) {
-      toast.error("Emergency contact is Father, but father's given name was not provided.");
+      toast.error("Emergency contact is Father, but father's first name was not provided.");
       return false;
     }
     if (formData.emergencyContact === 'guardian') {
@@ -520,7 +596,7 @@ export function StudentEnrollment() {
         return false;
       }
       if (!guardianName) {
-        toast.error("Emergency contact is Guardian, but guardian's given name was not provided.");
+        toast.error("Emergency contact is Guardian, but guardian's first name was not provided.");
         return false;
       }
     }
@@ -580,17 +656,129 @@ export function StudentEnrollment() {
     { number: 6, name: 'Review & Submit', icon: FileCheck },
   ];
 
-  if (enrollmentAllowed && isEnrollmentLocked) {
+  // Decide what to render before the form: the form is shown only when
+  // (a) enrollment is allowed (school year open) AND
+  // (b) the student is not in a locked state for the current SY AND
+  // (c) the student is not a graduate.
+  // When (b) is locked, show a status card driven by the actual enrollment
+  // status (Enrolled / Rejected / Under review). When the SY has rolled
+  // and the student is eligible to re-enroll, surface a CTA on top of the
+  // status card and (on click) start a fresh enrollment for the new SY.
+  const status = (enrollmentStatusRaw || '').toLowerCase().trim();
+  const isApproved = status === 'approved';
+  const isRejected = status === 'rejected';
+  const isPending = status === 'pending' || status === 'under_review' || status === 'under review' || status === 'review';
+
+  // The "show form" override lets a re-enrollment-eligible student click
+  // through to the blank form. Without it, the locked branch wins because
+  // the latest row in the DB is still the previous SY's approved row.
+  const lockedView = enrollmentAllowed && isEnrollmentLocked && !showNewEnrollmentForm;
+
+  if (isGraduate && !lockedView) {
     return (
       <div className="min-h-[min(520px,calc(100vh-8rem))] flex flex-col items-center justify-center px-6 py-16 bg-gray-50">
         <Card className="w-full max-w-md border border-gray-200 shadow-sm">
           <CardContent className="pt-12 pb-12 px-8 text-center">
-            <Loader2 className="h-12 w-12 animate-spin text-[#2D5016] mx-auto mb-6" aria-hidden />
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">Processing</h2>
+            <GraduationCap className="h-12 w-12 text-[#2D5016] mx-auto mb-6" aria-hidden />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">You have completed Senior High</h2>
             <p className="text-sm text-gray-600 leading-relaxed">
-              Your enrollment has been submitted and is being processed. The Registrar&apos;s office will review your
-              application.
+              Your records show you were approved for Grade 12{priorApproved?.school_year ? ` (SY ${priorApproved.school_year})` : ''}.
+              Re-enrollment from the student portal is no longer available. For transcripts or
+              certifications, please contact the registrar's office.
             </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (lockedView) {
+    const showReEnrollCta = reEnrollmentEligible && schoolYearCurrent;
+    const headerLine = isApproved
+      ? `Enrolled — SY ${enrollmentSchoolYear || '—'}`
+      : isRejected
+        ? `Application rejected — SY ${enrollmentSchoolYear || '—'}`
+        : `Application under review — SY ${enrollmentSchoolYear || '—'}`;
+    const Icon = isApproved ? CheckCircle : isRejected ? AlertCircle : Loader2;
+    const iconClass = isApproved
+      ? 'h-12 w-12 text-[#2D5016] mx-auto mb-6'
+      : isRejected
+        ? 'h-12 w-12 text-[#8B1538] mx-auto mb-6'
+        : 'h-12 w-12 animate-spin text-[#2D5016] mx-auto mb-6';
+
+    return (
+      <div className="min-h-[min(520px,calc(100vh-8rem))] flex flex-col items-center justify-center px-6 py-16 bg-gray-50">
+        <Card className="w-full max-w-xl border border-gray-200 shadow-sm">
+          <CardContent className="pt-12 pb-12 px-8 text-center">
+            <Icon className={iconClass} aria-hidden />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">{headerLine}</h2>
+
+            {isApproved && (
+              <p className="text-sm text-gray-600 leading-relaxed">
+                {`You are enrolled${enrollmentGradeLevel ? ` in Grade ${enrollmentGradeLevel.replace(/[^0-9]/g, '') || enrollmentGradeLevel}` : ''}${enrollmentStrand ? ` ${enrollmentStrand}` : ''} for school year ${enrollmentSchoolYear || ''}.`}
+              </p>
+            )}
+
+            {isRejected && (
+              <>
+                <p className="text-sm text-gray-600 leading-relaxed">
+                  Your enrollment application for SY {enrollmentSchoolYear || ''} was not approved.
+                </p>
+                {enrollmentRemarks && (
+                  <p className="text-sm text-gray-700 mt-3 bg-gray-50 border border-gray-200 rounded-md px-3 py-2 text-left whitespace-pre-wrap">
+                    <span className="block text-xs font-medium text-gray-500 mb-1">Registrar's remarks</span>
+                    {enrollmentRemarks}
+                  </p>
+                )}
+              </>
+            )}
+
+            {isPending && (
+              <p className="text-sm text-gray-600 leading-relaxed">
+                Your enrollment has been submitted and is being processed. The Registrar&apos;s office will review your application.
+              </p>
+            )}
+
+            {showReEnrollCta && (
+              <div className="mt-8 border-t border-gray-200 pt-6">
+                <p className="text-sm text-gray-700 mb-3">
+                  Enrollment for school year <span className="font-semibold">{schoolYearCurrent}</span> is now open.
+                </p>
+                <Button
+                  type="button"
+                  className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
+                  onClick={() => {
+                    // Suggest the next grade level when the prior approved
+                    // record was for Grade 11, so the student doesn't have
+                    // to reselect it. Strand is intentionally not pre-filled
+                    // because students may switch strands when promoting.
+                    const nextGrade =
+                      priorApproved?.grade_level_number === 11 ? '12' :
+                      priorApproved?.grade_level_number === 12 ? '12' : // unreachable (graduate guard)
+                      '';
+                    setShowNewEnrollmentForm(true);
+                    setIsEnrollmentLocked(false);
+                    localStorage.removeItem('studentEnrollmentLocked');
+                    setCurrentStep(1);
+                    if (nextGrade) {
+                      setFormData(prev => ({
+                        ...prev,
+                        gradeLevel: nextGrade as '11' | '12',
+                        // Clear identity-irrelevant fields that should be
+                        // re-confirmed for the new SY (status of "old"
+                        // student is reasonable to default to).
+                        enrollmentStatus: 'old',
+                      }));
+                    }
+                  }}
+                >
+                  Enroll for SY {schoolYearCurrent}
+                </Button>
+                <p className="text-xs text-gray-500 mt-2">
+                  Your previous enrollment record will be kept on file.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -677,7 +865,7 @@ export function StudentEnrollment() {
                 
                 {/* Enrollment Status */}
                 <div className="mb-6">
-                  <Label className="mb-3 block">Enrollment Status *</Label>
+                  <RequiredLabel className="mb-3 block">Enrollment Status</RequiredLabel>
                   <div className="flex gap-4">
                     {['old', 'new', 'transferee'].map((status) => (
                       <label key={status} className="flex items-center gap-2 cursor-pointer">
@@ -697,17 +885,17 @@ export function StudentEnrollment() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="givenName">Given Name *</Label>
+                    <RequiredLabel htmlFor="givenName">First Name</RequiredLabel>
                     <Input
                       id="givenName"
                       value={formData.givenName}
                       onChange={(e) => handleInputChange('givenName', e.target.value)}
-                      placeholder="Enter given name"
+                      placeholder="Enter first name"
                       className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="middleName">Middle Name <span className="text-red-500">*</span></Label>
+                    <RequiredLabel htmlFor="middleName">Middle Name</RequiredLabel>
                     <Input
                       id="middleName"
                       value={formData.middleName}
@@ -718,7 +906,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="middleInitial">Middle Initial <span className="text-red-500">*</span></Label>
+                    <RequiredLabel htmlFor="middleInitial">Middle Initial</RequiredLabel>
                     <Input
                       id="middleInitial"
                       value={formData.middleInitial}
@@ -730,7 +918,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="lastName">Last Name *</Label>
+                    <RequiredLabel htmlFor="lastName">Last Name</RequiredLabel>
                     <Input
                       id="lastName"
                       value={formData.lastName}
@@ -750,7 +938,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="gender">Gender *</Label>
+                    <RequiredLabel htmlFor="gender">Gender</RequiredLabel>
                     <select
                       id="gender"
                       value={formData.gender}
@@ -763,7 +951,7 @@ export function StudentEnrollment() {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="contactNumber">Contact Number *</Label>
+                    <RequiredLabel htmlFor="contactNumber">Contact Number</RequiredLabel>
                     <Input
                       id="contactNumber"
                       value={formData.contactNumber}
@@ -772,7 +960,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="email">Email Address *</Label>
+                    <RequiredLabel htmlFor="email">Email Address</RequiredLabel>
                     <Input
                       id="email"
                       type="email"
@@ -782,7 +970,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="lrn">LRN (Learner Reference Number) *</Label>
+                    <RequiredLabel htmlFor="lrn">LRN (Learner Reference Number)</RequiredLabel>
                     <Input
                       id="lrn"
                       value={formData.lrn}
@@ -810,7 +998,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="street">Street <span className="text-red-500">*</span></Label>
+                    <RequiredLabel htmlFor="street">Street</RequiredLabel>
                     <Input
                       id="street"
                       value={formData.street}
@@ -829,7 +1017,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="barangay">Barangay <span className="text-red-500">*</span></Label>
+                    <RequiredLabel htmlFor="barangay">Barangay</RequiredLabel>
                     <Input
                       id="barangay"
                       value={formData.barangay}
@@ -839,7 +1027,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="municipality">Municipality <span className="text-red-500">*</span></Label>
+                    <RequiredLabel htmlFor="municipality">Municipality</RequiredLabel>
                     <Input
                       id="municipality"
                       value={formData.municipality}
@@ -858,7 +1046,7 @@ export function StudentEnrollment() {
                 <h3 className="text-xl font-semibold mb-4">Birth Information & Academic Details</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="birthDate">Birth Date *</Label>
+                    <RequiredLabel htmlFor="birthDate">Birth Date</RequiredLabel>
                     <Input
                       id="birthDate"
                       type="date"
@@ -869,7 +1057,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="birthPlace">Birth Place *</Label>
+                    <RequiredLabel htmlFor="birthPlace">Birth Place</RequiredLabel>
                     <select
                       id="birthPlace"
                       value={isBirthPlaceOther ? "__OTHER__" : (formData.birthPlace || "")}
@@ -900,7 +1088,7 @@ export function StudentEnrollment() {
                     ) : null}
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="religion">Religion *</Label>
+                    <RequiredLabel htmlFor="religion">Religion</RequiredLabel>
                     <select
                       id="religion"
                       value={formData.religion}
@@ -922,7 +1110,7 @@ export function StudentEnrollment() {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Grade Level to Enroll In *</Label>
+                    <RequiredLabel>Grade Level to Enroll In</RequiredLabel>
                     <div className="flex gap-4 pt-2">
                       {['11', '12'].map((grade) => (
                         <label key={grade} className="flex items-center gap-2 cursor-pointer">
@@ -940,7 +1128,7 @@ export function StudentEnrollment() {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="strand">Strand *</Label>
+                    <RequiredLabel htmlFor="strand">Strand</RequiredLabel>
                     <select
                       id="strand"
                       value={formData.strand}
@@ -956,7 +1144,7 @@ export function StudentEnrollment() {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="preferredSchedule">Preferred Schedule *</Label>
+                    <RequiredLabel htmlFor="preferredSchedule">Preferred Schedule</RequiredLabel>
                     <select
                       id="preferredSchedule"
                       value={formData.preferredSchedule}
@@ -987,12 +1175,12 @@ export function StudentEnrollment() {
                 <h2 className="text-2xl font-semibold mb-6">Mother's Information</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="motherGivenName">Mother's Given Name</Label>
+                    <Label htmlFor="motherGivenName">Mother's First Name</Label>
                     <Input
                       id="motherGivenName"
                       value={formData.motherGivenName}
                       onChange={(e) => handleInputChange('motherGivenName', e.target.value)}
-                      placeholder="Enter mother's given name"
+                      placeholder="Enter mother's first name"
                       className="uppercase"
                     />
                   </div>
@@ -1045,12 +1233,12 @@ export function StudentEnrollment() {
                 <h2 className="text-2xl font-semibold mb-6">Father's Information</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="fatherGivenName">Father's Given Name</Label>
+                    <Label htmlFor="fatherGivenName">Father's First Name</Label>
                     <Input
                       id="fatherGivenName"
                       value={formData.fatherGivenName}
                       onChange={(e) => handleInputChange('fatherGivenName', e.target.value)}
-                      placeholder="Enter father's given name"
+                      placeholder="Enter father's first name"
                       className="uppercase"
                     />
                   </div>
@@ -1117,12 +1305,12 @@ export function StudentEnrollment() {
                     <h2 className="text-2xl font-semibold mb-6">Guardian's Information</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <Label htmlFor="guardianGivenName">Guardian's Given Name</Label>
+                        <Label htmlFor="guardianGivenName">Guardian's First Name</Label>
                         <Input
                           id="guardianGivenName"
                           value={formData.guardianGivenName}
                           onChange={(e) => handleInputChange('guardianGivenName', e.target.value)}
-                          placeholder="Enter guardian's given name"
+                          placeholder="Enter guardian's first name"
                           className="uppercase"
                         />
                       </div>
@@ -1434,7 +1622,7 @@ export function StudentEnrollment() {
               <CardContent className="p-8">
                 <h2 className="text-2xl font-semibold mb-6">Accounting</h2>
                 <div className="space-y-4">
-                  <Label className="mb-3 block">Mode of Payment *</Label>
+                  <RequiredLabel className="mb-3 block">Mode of Payment</RequiredLabel>
                   <div className="space-y-2">
                     {[
                       { value: 'qvr', label: 'Grade 10 Public - Qualified Voucher Recipient (QVR)' },

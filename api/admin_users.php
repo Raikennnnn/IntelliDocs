@@ -23,6 +23,15 @@ function columnExists(PDO $pdo, string $table, string $column): bool
     return (bool)$stmt->fetchColumn();
 }
 
+if (!function_exists('tableExists')) {
+    function tableExists(PDO $pdo, string $table): bool
+    {
+        $stmt = $pdo->prepare('SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :t LIMIT 1');
+        $stmt->execute([':t' => $table]);
+        return (bool)$stmt->fetchColumn();
+    }
+}
+
 function ensureUserStatusColumn(PDO $pdo): void
 {
     if (!columnExists($pdo, 'users', 'status')) {
@@ -217,9 +226,36 @@ try {
     ensureUserLastLoginColumn($pdo);
     $roleCase = "CASE WHEN au_r.user_id IS NOT NULL THEN 'admin' WHEN ru_r.user_id IS NOT NULL THEN 'registrar' ELSE 'student' END";
     $lastLoginExpr = userLastLoginSelectSql('u');
+
+    // Optional credential / structured-name columns. Older snapshots may
+    // not have them; columnExists() guards every reference so the SELECT
+    // stays valid on un-migrated environments.
+    $hasFirstName = columnExists($pdo, 'users', 'first_name');
+    $hasLastName = columnExists($pdo, 'users', 'last_name');
+    $hasUsername = columnExists($pdo, 'users', 'username');
+    $selFirstName = $hasFirstName ? 'u.first_name' : "'' AS first_name";
+    $selLastName = $hasLastName ? 'u.last_name' : "'' AS last_name";
+    $selUsername = $hasUsername ? 'u.username' : "'' AS username";
+
+    // Student name fallback chain. For each user we pull the most recent
+    // enrollment row's form_data via a correlated subquery — simpler and
+    // more portable than a derived-table JOIN, and it sidesteps
+    // ONLY_FULL_GROUP_BY pitfalls on stricter MySQL builds. The column is
+    // selected only when the enrollments table exists.
+    $hasEnrollments = tableExists($pdo, 'enrollments');
+    $enrollmentNameSelect = $hasEnrollments
+        ? "(SELECT e2.enrollment_steps
+            FROM enrollments e2
+            WHERE e2.user_id = u.id
+            ORDER BY e2.id DESC
+            LIMIT 1) AS enrollment_form_json"
+        : "'' AS enrollment_form_json";
+
     $rows = $pdo->query(
         $hasStatus
             ? "SELECT u.id, u.full_name, u.email, u.status, u.created_at, {$roleCase} AS role,
+                      {$selFirstName}, {$selLastName}, {$selUsername},
+                      {$enrollmentNameSelect},
                       {$lastLoginExpr} AS last_login_at
                FROM users u
                LEFT JOIN admin_users au_r ON au_r.user_id = u.id
@@ -227,6 +263,8 @@ try {
                LEFT JOIN student_users su_r ON su_r.user_id = u.id
                ORDER BY u.created_at DESC, u.id DESC"
             : "SELECT u.id, u.full_name, u.email, u.created_at, {$roleCase} AS role,
+                      {$selFirstName}, {$selLastName}, {$selUsername},
+                      {$enrollmentNameSelect},
                       {$lastLoginExpr} AS last_login_at
                FROM users u
                LEFT JOIN admin_users au_r ON au_r.user_id = u.id
@@ -240,9 +278,44 @@ try {
         $displayRole = $role === 'admin' ? 'Admin' : ($role === 'registrar' ? 'Registrar' : 'Student');
         $statusRaw = $hasStatus ? strtolower((string)($row['status'] ?? 'active')) : 'active';
         $displayStatus = $statusRaw === 'inactive' ? 'Inactive' : 'Active';
+
+        // Display-name resolution. Order:
+        //   1. users.full_name when populated (legacy / explicitly set)
+        //   2. first_name + last_name from users (set by the credentials
+        //      flow at registrar approve time, or backfilled at enrollment)
+        //   3. enrollment_steps.form_data givenName + lastName (the field
+        //      names the React enrollment form actually writes)
+        //   4. users.username when present (sensible for admin/registrar)
+        //   5. empty string (renders the email-only row gracefully).
+        $fullName = trim((string)($row['full_name'] ?? ''));
+        if ($fullName === '') {
+            $first = trim((string)($row['first_name'] ?? ''));
+            $last = trim((string)($row['last_name'] ?? ''));
+            if ($first !== '' || $last !== '') {
+                $fullName = trim($first . ' ' . $last);
+            }
+        }
+        if ($fullName === '' && $role === 'student' && !empty($row['enrollment_form_json'])) {
+            $decoded = json_decode((string)$row['enrollment_form_json'], true);
+            if (is_array($decoded) && isset($decoded['form_data']) && is_array($decoded['form_data'])) {
+                $fd = $decoded['form_data'];
+                $first = trim((string)($fd['givenName'] ?? ''));
+                $last = trim((string)($fd['lastName'] ?? ''));
+                if ($first !== '' || $last !== '') {
+                    $fullName = trim($first . ' ' . $last);
+                }
+            }
+        }
+        if ($fullName === '') {
+            $username = trim((string)($row['username'] ?? ''));
+            if ($username !== '') {
+                $fullName = $username;
+            }
+        }
+
         return [
             'id' => (string)($row['id'] ?? ''),
-            'name' => (string)($row['full_name'] ?? ''),
+            'name' => $fullName,
             'email' => (string)($row['email'] ?? ''),
             'role' => $displayRole,
             'status' => $displayStatus,
@@ -257,7 +330,7 @@ try {
     ]);
     appLogEvent($pdo, 'admin_users_list', 'admin', 'success', $actorId, 'endpoint', 'admin/users', ['count' => count($users)]);
 } catch (Throwable $e) {
-    appLogEvent($pdo, $method === 'DELETE' ? 'admin_delete_user' : 'admin_users_list', 'admin', 'failed', $actorId, 'endpoint', 'admin/users', ['reason' => 'server_error']);
+    appLogEvent($pdo, $method === 'DELETE' ? 'admin_delete_user' : 'admin_users_list', 'admin', 'failed', $actorId, 'endpoint', 'admin/users', ['reason' => 'server_error', 'message' => $e->getMessage()]);
     http_response_code(500);
     echo json_encode(['success' => false, 'error' => $method === 'DELETE' ? 'Failed to delete user' : 'Failed to load users']);
 }

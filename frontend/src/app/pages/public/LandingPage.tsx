@@ -9,28 +9,7 @@ import { AnnouncementCarousel, type CarouselAnnouncement } from '../../component
 type LandingAnnouncement = CarouselAnnouncement;
 
 export function LandingPage() {
-  const fallbackAnnouncements = [
-    {
-      date: 'May 10, 2026',
-      badge: 'Announcement',
-      title: 'Enrollment for SY 2026–2027 is now open',
-      body: 'Submit your application and upload the required documents through the student portal.',
-    },
-    {
-      date: 'May 15, 2026',
-      badge: 'Event',
-      title: 'Senior High Orientation (Incoming Grade 11)',
-      body: 'Orientation will be held in the school auditorium. Attendance is encouraged for students and guardians.',
-    },
-    {
-      date: 'May 20, 2026',
-      badge: 'Reminder',
-      title: 'Document verification schedule',
-      body: 'Registrars will prioritize applications with complete uploads. Please ensure files are clear and readable.',
-    },
-  ] as const;
-
-  const [announcements, setAnnouncements] = useState<LandingAnnouncement[]>([...fallbackAnnouncements]);
+  const [announcements, setAnnouncements] = useState<LandingAnnouncement[]>([]);
 
   useEffect(() => {
     void (async () => {
@@ -46,11 +25,9 @@ export function LandingPage() {
           body: String(a.body ?? ''),
           imageUrl: a.imageUrl ? String(a.imageUrl) : null,
         }));
-        if (mapped.length > 0) {
-          setAnnouncements(mapped);
-        }
+        setAnnouncements(mapped);
       } catch {
-        // keep fallbackAnnouncements
+        // Leave the carousel empty when the API is unreachable.
       }
     })();
   }, []);
