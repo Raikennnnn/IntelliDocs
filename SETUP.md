@@ -12,6 +12,35 @@ This project has three runtimes that must run together:
 The setup is path-independent: nothing in the code assumes
 `C:\xampp\htdocs\IntelliDocs`, so you can clone anywhere.
 
+## Quick start (one command)
+
+If you have the [Prerequisites](#prerequisites) installed, run the bundled
+setup script and it will walk every step below. The script is idempotent:
+re-running it on a partially-set-up machine fills in only what is missing,
+and never overwrites your `env` file (use `-Force` / `--force` to do that).
+
+**Windows (PowerShell):**
+
+```powershell
+.\setup.ps1
+```
+
+**macOS / Linux / WSL:**
+
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+The script prompts for your MySQL password once (read silently — never logged
+or echoed). At the end you get a summary table and a "Next steps" block telling
+you which servers to start.
+
+If a step fails, the rest still runs, the failure is highlighted in red, and
+the script exits with a non-zero code so CI / wrapper scripts notice. The
+manual instructions below are a drop-in fallback for any step you'd rather do
+by hand.
+
 ## Prerequisites
 
 Install once per machine:
