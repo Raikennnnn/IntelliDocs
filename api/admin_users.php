@@ -74,6 +74,9 @@ if (getUserRole($pdo, $actorId) !== 'admin') {
     exit;
 }
 
+require_once __DIR__ . '/security_guard.php';
+runAuthenticatedSecurityGuards($pdo, $actorId, 'admin/users');
+
 try {
     if ($method === 'DELETE') {
         $rawBody = file_get_contents('php://input');

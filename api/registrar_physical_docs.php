@@ -64,6 +64,9 @@ if (!in_array($role, ['registrar', 'admin'], true)) {
     exit;
 }
 
+require_once __DIR__ . '/security_guard.php';
+runAuthenticatedSecurityGuards($pdo, $actorId, 'registrar/physical-docs');
+
 // -----------------------------------------------------------------------------
 // Schema guard. The migration creates the table; without it we degrade to a
 // 503 so the UI can render an explanatory banner rather than throwing.

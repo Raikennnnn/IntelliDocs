@@ -76,6 +76,9 @@ if (!in_array($actorRole, ['registrar', 'admin'], true)) {
     exit;
 }
 
+require_once __DIR__ . '/security_guard.php';
+runAuthenticatedSecurityGuards($pdo, $actorId, 'registrar/applications');
+
 if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
     echo json_encode(['success' => true, 'applications' => []]);
     appLogEvent($pdo, 'registrar_applications', 'registrar', 'success', $actorId, 'endpoint', 'registrar/applications', ['count' => 0]);

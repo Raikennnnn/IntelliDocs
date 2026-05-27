@@ -38,17 +38,18 @@ CREATE TABLE student_users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Default Admin / IT account (password: admin123)
--- Password hash generated using PHP password_hash('admin123', PASSWORD_BCRYPT)
+-- Password hash generated with PHP: password_hash('admin123', PASSWORD_BCRYPT)
 INSERT INTO users (username, email, password, full_name)
-SELECT 'admin_it', 'admin@nsdga.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'Admin / IT'
+SELECT 'admin_it', 'admin@nsdga.com', '$2y$10$lzhXyjf7nNDrRU3nOxO.ber.rCZ.V0Ep74bQSyvGfLKIMmmSl7PTW', 'Admin / IT'
 WHERE NOT EXISTS (
   SELECT 1 FROM users WHERE email = 'admin@nsdga.com'
 );
 INSERT INTO admin_users (user_id, username) SELECT id, username FROM users WHERE email = 'admin@nsdga.com' AND NOT EXISTS (SELECT 1 FROM admin_users WHERE user_id = users.id);
 
 -- Default Registrar account (password: registrar123)
+-- Password hash generated with PHP: password_hash('registrar123', PASSWORD_BCRYPT)
 INSERT INTO users (username, email, password, full_name)
-SELECT 'registrar', 'registrar@nsdga.com', '$2y$10$Yy2PXytfSc6j2QqOlF0ClOwe5.m592UpNXYzBIXaLPJryoUkju4dG', 'Registrar'
+SELECT 'registrar', 'registrar@nsdga.com', '$2y$10$Jf09hgsKhOb9Dn5ymrN9QelhUj1QRk.BNN10SQy3sA3ZT31U4ke82', 'Registrar'
 WHERE NOT EXISTS (
   SELECT 1 FROM users WHERE username = 'registrar' OR email = 'registrar@nsdga.com'
 );
@@ -135,11 +136,12 @@ CREATE TABLE IF NOT EXISTS email_queue (
   INDEX idx_email_queue_created_at (created_at)
 );
 
--- Test student
+-- Test student (password: student123)
+-- Password hash generated with PHP: password_hash('student123', PASSWORD_BCRYPT)
 INSERT INTO users (username, email, password, full_name) VALUES (
   'student1', 
   'student1@example.com',
-  '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
+  '$2y$10$AAHdB/moPR0bZ/aAbL7t2.lC5wfXlnYPbtIdtzQxm3ajD4DFqvl2S',
   'John Doe'
 );
 INSERT INTO student_users (user_id, username) SELECT id, username FROM users WHERE username = 'student1' AND NOT EXISTS (SELECT 1 FROM student_users WHERE user_id = users.id);

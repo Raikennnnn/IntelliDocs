@@ -225,6 +225,9 @@ if (getUserRole($pdo, $userId) !== 'student') {
     exit;
 }
 
+require_once __DIR__ . '/security_guard.php';
+runAuthenticatedSecurityGuards($pdo, $userId, 'student/me');
+
 if (!tableExists($pdo, 'users')) {
     http_response_code(500);
     echo json_encode(['success' => false, 'error' => 'Users table not found']);

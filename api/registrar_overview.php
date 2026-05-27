@@ -48,6 +48,9 @@ if (!in_array($actorRole, ['registrar', 'admin'], true)) {
     exit;
 }
 
+require_once __DIR__ . '/security_guard.php';
+runAuthenticatedSecurityGuards($pdo, $actorId, 'registrar/overview');
+
 $overallQuota = 4000;
 
 try {

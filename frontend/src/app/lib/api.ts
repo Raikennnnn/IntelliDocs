@@ -67,5 +67,27 @@ export function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     ...init,
     credentials: 'include',
     headers,
+  }).then(async (response) => {
+    // Auto-handle idle-session expiry from the server. The security guard
+    // returns HTTP 401 with `{ code: "session_expired" }` once a user has
+    // been idle past SESSION_IDLE_TIMEOUT_MINUTES. We clear the local
+    // session and bounce to /login so the next render can't keep firing
+    // 401s with a stale X-User-Id. We clone the response before reading
+    // to keep the original stream available for the caller.
+    if (response.status === 401) {
+      try {
+        const cloned = response.clone();
+        const data = await cloned.json().catch(() => null) as { code?: string } | null;
+        if (data && data.code === 'session_expired') {
+          try { localStorage.removeItem('user'); } catch { /* ignore */ }
+          if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+            window.location.assign('/login?reason=session_expired');
+          }
+        }
+      } catch {
+        // ignore parse errors; fall through with the original response
+      }
+    }
+    return response;
   });
 }

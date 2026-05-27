@@ -85,6 +85,41 @@ phpunit
 # Composer
 #-------------------------
 vendor/
+composer.phar
+Composer-Setup.exe
+
+#-------------------------
+# Python (AI service)
+#-------------------------
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+ai/uploads/*
+!ai/uploads/.gitkeep
+
+#-------------------------
+# Node / Frontend
+#-------------------------
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.env
+frontend/.env.local
+
+#-------------------------
+# Project-level secrets
+#-------------------------
+# CodeIgniter looks for `.env`, but this project also has a plain `env` file.
+env
+!env.example
+.env.example~
+
+#-------------------------
+# Generated SQL helpers (machine-specific)
+#-------------------------
+database_setup.infinityfree.sql
+_fix_engine.py
 
 #-------------------------
 # IDE / Development Files

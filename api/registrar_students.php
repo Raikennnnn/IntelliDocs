@@ -53,6 +53,9 @@ if (!in_array($role, ['registrar', 'admin'], true)) {
     exit;
 }
 
+require_once __DIR__ . '/security_guard.php';
+runAuthenticatedSecurityGuards($pdo, $actorId, 'registrar/students');
+
 if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
     http_response_code(503);
     echo json_encode(['success' => false, 'error' => 'schema_not_ready', 'details' => ['missing' => 'enrollments or users table']]);
