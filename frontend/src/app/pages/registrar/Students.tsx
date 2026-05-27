@@ -521,13 +521,6 @@ export function Students() {
       // Sniff the bytes once before deciding how to render them.
       const buf = await res.arrayBuffer();
       const kind = sniffDocKind(buf, doc.fileName, doc.mimeType);
-      // eslint-disable-next-line no-console
-      console.log("[viewDocument]", {
-        id: doc.id,
-        bufBytes: buf.byteLength,
-        sniffedKind: kind,
-        mimeFromDb: doc.mimeType,
-      });
 
       // Render strategy:
       // - Images: use FileReader.readAsDataURL — the browser's canonical
@@ -542,16 +535,10 @@ export function Students() {
         const blob = new Blob([buf], { type: mime });
         url = await new Promise<string>((resolve, reject) => {
           const fr = new FileReader();
-          fr.onerror = () => {
-            // eslint-disable-next-line no-console
-            console.error("[viewDocument] FileReader onerror", fr.error);
-            reject(new Error("FileReader failed to read the document bytes"));
-          };
+          fr.onerror = () => reject(new Error("FileReader failed to read the document bytes"));
           fr.onload = () => {
             const result = fr.result;
             if (typeof result === "string" && result.startsWith("data:")) {
-              // eslint-disable-next-line no-console
-              console.log("[viewDocument] data URL ready, length=", result.length);
               resolve(result);
             } else {
               reject(new Error("FileReader did not return a data URL"));
@@ -1285,18 +1272,9 @@ export function Students() {
                   style={{ width: `${viewerZoom * 100}%`, maxWidth: "none" }}
                   className="block bg-white shadow-sm rounded"
                   draggable={false}
-                  onLoad={() => {
-                    // eslint-disable-next-line no-console
-                    console.log("[viewDocument] <img> loaded successfully");
-                  }}
-                  onError={(e) => {
-                    // eslint-disable-next-line no-console
-                    console.error("[viewDocument] <img> onError fired", e, {
-                      srcLen: viewerObjectUrl?.length,
-                      srcPrefix: viewerObjectUrl?.slice(0, 40),
-                    });
-                    setViewerError("Could not render this image. Try reopening the View dialog.");
-                  }}
+                  onError={() =>
+                    setViewerError("Could not render this image. Try reopening the View dialog.")
+                  }
                 />
               </div>
             )}
