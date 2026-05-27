@@ -507,7 +507,10 @@ export function Students() {
     setViewerError(null);
     setViewerKind("other");
     setViewerZoom(1);
-    setViewerObjectUrl(null);
+    // Keep `viewerObjectUrl` pointing at the prior blob (if any) until the
+    // new bytes are ready. The `viewerLoading` flag hides the <img> branch
+    // in the meantime, so the registrar sees a spinner — never an empty
+    // src that some browsers cache as a permanent failure.
 
     try {
       const res = await apiFetch(`/api/document-file?id=${doc.id}`);
