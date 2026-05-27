@@ -14,6 +14,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
@@ -295,6 +296,11 @@ export function ReviewDocuments() {
   const [aiRerunNonce, setAiRerunNonce] = useState(0);
   // Tracks an in-flight approve/reject so we can disable the buttons against double-submits.
   const [decisionSubmitting, setDecisionSubmitting] = useState<null | "approve" | "reject">(null);
+  // Open confirmation dialog for the approve / reject decision. The big
+  // buttons in the review tab now open this dialog instead of firing the
+  // action directly, so an accidental click never commits a final decision.
+  // The dialog itself contains the remarks textarea (rejection only).
+  const [decisionDialog, setDecisionDialog] = useState<null | "approve" | "reject">(null);
   // Tracks per-document review-toggle in-flight; document id (string) → boolean.
   const [reviewSubmittingByDocId, setReviewSubmittingByDocId] = useState<Record<string, boolean>>({});
 
@@ -447,6 +453,7 @@ export function ReviewDocuments() {
         return;
       }
       toast.success(data.message || `Application ${application.id} approved`);
+      setDecisionDialog(null);
       loadApplication();
     } finally {
       setDecisionSubmitting(null);
@@ -477,6 +484,7 @@ export function ReviewDocuments() {
         return;
       }
       toast.success(data.message || `Application ${application.id} rejected`);
+      setDecisionDialog(null);
       loadApplication();
     } finally {
       setDecisionSubmitting(null);
@@ -1436,26 +1444,12 @@ export function ReviewDocuments() {
 
           {/* Review & Decision Tab */}
           <TabsContent value="review" className="p-6 space-y-6">
-            <div>
-              <h3 className="text-lg font-semibold mb-4">Registrar Remarks</h3>
-              <div className="space-y-2">
-                <Label htmlFor="remarks">Remarks / Notes</Label>
-                <textarea
-                  id="remarks"
-                  value={remarks}
-                  onChange={(e) => setRemarks(e.target.value)}
-                  placeholder="Enter your remarks here..."
-                  className="w-full min-h-[120px] px-3 py-2 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
-                />
-              </div>
-              <Button
-                variant="outline"
-                onClick={handleSaveRemarks}
-                className="mt-4 border-[#8B1538] text-[#8B1538] hover:bg-[#8B1538] hover:text-white"
-              >
-                Save Remarks
-              </Button>
-            </div>
+            {/* Note: registrar remarks moved into the Reject confirmation
+                dialog (see below). Approve does not need remarks; reject
+                does, and the dialog enforces that requirement. This keeps
+                the review tab focused on the AI summary and decision
+                buttons rather than a textarea that's only relevant to one
+                of the two outcomes. */}
 
             <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
               <div className="flex items-start gap-3">
@@ -1566,7 +1560,7 @@ export function ReviewDocuments() {
                         <Button
                           variant="outline"
                           className="border-red-600 text-red-600 hover:bg-red-600 hover:text-white disabled:hover:bg-transparent disabled:hover:text-red-600"
-                          onClick={handleReject}
+                          onClick={() => setDecisionDialog("reject")}
                           disabled={decisionSubmitting !== null || blocked}
                           title={blocked ? `Review all ${totalDocs} document${totalDocs === 1 ? "" : "s"} first` : undefined}
                         >
@@ -1575,7 +1569,7 @@ export function ReviewDocuments() {
                         </Button>
                         <Button
                           className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white disabled:bg-[#2D5016]/40 disabled:hover:bg-[#2D5016]/40"
-                          onClick={handleApprove}
+                          onClick={() => setDecisionDialog("approve")}
                           disabled={decisionSubmitting !== null || blocked}
                           title={blocked ? `Review all ${totalDocs} document${totalDocs === 1 ? "" : "s"} first` : undefined}
                         >
@@ -1591,6 +1585,84 @@ export function ReviewDocuments() {
           </TabsContent>
         </Tabs>
       </Card>
+
+      {/* Approve / Reject confirmation dialog. The big buttons in the
+          review tab open this rather than firing the decision directly,
+          which prevents an accidental click from committing a final
+          outcome. The dialog also hosts the rejection-only Remarks
+          textarea so we don't show it during normal viewing. */}
+      <Dialog
+        open={decisionDialog !== null}
+        onOpenChange={(open) => {
+          if (!open && decisionSubmitting === null) {
+            setDecisionDialog(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {decisionDialog === "approve"
+                ? "Approve this application?"
+                : "Reject this application?"}
+            </DialogTitle>
+            <DialogDescription>
+              {decisionDialog === "approve"
+                ? "This will issue school credentials and email them to the student. The decision is final."
+                : "This will close the application as rejected. Please write a short reason — the student will see it in their portal."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {decisionDialog === "reject" && (
+            <div className="space-y-2">
+              <Label htmlFor="reject-remarks">
+                Reason for rejection <span className="text-red-500" aria-hidden="true">*</span>
+              </Label>
+              <textarea
+                id="reject-remarks"
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                placeholder="e.g. Missing PSA birth certificate; please re-upload a clearer copy."
+                className="w-full min-h-[120px] px-3 py-2 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+              />
+              {!remarks.trim() && (
+                <p className="text-xs text-gray-500">
+                  Remarks are required when rejecting an application.
+                </p>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              onClick={() => setDecisionDialog(null)}
+              disabled={decisionSubmitting !== null}
+            >
+              Cancel
+            </Button>
+            {decisionDialog === "approve" ? (
+              <Button
+                className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
+                onClick={handleApprove}
+                disabled={decisionSubmitting !== null}
+              >
+                <CheckCircle className="w-4 h-4 mr-2" />
+                {decisionSubmitting === "approve" ? "Approving…" : "Confirm approval"}
+              </Button>
+            ) : (
+              <Button
+                className="bg-red-600 hover:bg-red-600/90 text-white"
+                onClick={handleReject}
+                disabled={decisionSubmitting !== null || !remarks.trim()}
+              >
+                <XCircle className="w-4 h-4 mr-2" />
+                {decisionSubmitting === "reject" ? "Rejecting…" : "Confirm rejection"}
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Document View Dialog */}
       <Dialog
