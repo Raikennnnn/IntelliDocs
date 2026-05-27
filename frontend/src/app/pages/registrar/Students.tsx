@@ -520,30 +520,60 @@ export function Students() {
       }
       const buf = await res.arrayBuffer();
       const kind = sniffDocKind(buf, doc.fileName, doc.mimeType);
-      // Build a typed Blob so the browser picks the right preview engine
-      // (Chrome's PDF viewer for PDFs, native image renderer for images).
-      const blobType =
-        kind === "pdf"
-          ? "application/pdf"
-          : kind === "image"
-            ? (doc.mimeType || "image/jpeg")
+      // Render strategy:
+      // - Images: convert the bytes to a base64 data: URL. This avoids
+      //   every blob: URL edge case we hit (revocation timing, browser
+      //   cache invalidating the blob during dialog animations, the
+      //   sandboxed-iframe mismatch, etc.). Data URLs are slightly larger
+      //   in memory but for student documents (typically <2 MB) the
+      //   difference is invisible to the user.
+      // - PDFs: a blob: URL is still preferable so the iframe gets the
+      //   browser's PDF viewer with paging/zoom built-in. Data URLs work
+      //   for PDFs too but performance is worse on large files.
+      let url: string;
+      if (kind === "image") {
+        const mime = doc.mimeType || "image/jpeg";
+        // Build a base64 string in chunks to avoid hitting the ~120k arg
+        // limit some browsers enforce on String.fromCharCode for large
+        // images. 0x8000 chunks handle up to ~16 MB images comfortably.
+        const bytes = new Uint8Array(buf);
+        let binary = "";
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(
+            null,
+            // Subarray is a cheap view, no copy.
+            bytes.subarray(i, i + chunkSize) as unknown as number[]
+          );
+        }
+        url = `data:${mime};base64,${btoa(binary)}`;
+      } else {
+        const blobType =
+          kind === "pdf"
+            ? "application/pdf"
             : (doc.mimeType || "application/octet-stream");
-      const blob = new Blob([buf], { type: blobType });
-      const url = URL.createObjectURL(blob);
+        const blob = new Blob([buf], { type: blobType });
+        url = URL.createObjectURL(blob);
+      }
       // Set the kind first, then the URL on the next microtask so React
       // commits both in the same render cycle. Otherwise the JSX could
       // briefly evaluate (kind=other, url=blob:...) and render the
       // "preview not available" branch before the kind catches up.
       setViewerKind(kind);
       setViewerObjectUrl(url);
-      // Now revoke the previously-displayed URL (if any). Doing it here,
-      // after the new URL is committed, prevents the brief gap where the
-      // <img> would see neither URL.
-      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      // Now revoke the previously-displayed blob URL (if any). Doing it
+      // here, after the new URL is committed, prevents the brief gap
+      // where the <img> would see neither URL. Data: URLs do not need
+      // revoking; only blob:s do.
+      if (previousUrl && previousUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(previousUrl);
+      }
     } catch (e) {
       // Restore the prior URL if the fetch failed, so the dialog isn't
       // stuck on an empty preview.
-      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      if (previousUrl && previousUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(previousUrl);
+      }
       setViewerError(e instanceof Error ? e.message : "Failed to load document");
     } finally {
       setViewerLoading(false);
@@ -557,7 +587,10 @@ export function Students() {
     setViewerKind("other");
     setViewerZoom(1);
     setViewerObjectUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
+      // Only blob: URLs need revoking. Data URLs are GC'd with the string
+      // itself so attempting URL.revokeObjectURL on them is harmless but
+      // pointless. Branching keeps the intent explicit.
+      if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
       return null;
     });
   }
