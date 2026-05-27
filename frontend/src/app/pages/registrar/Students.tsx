@@ -496,17 +496,18 @@ export function Students() {
       toast.error("Document is not available for preview");
       return;
     }
-    // Open the dialog immediately so the registrar sees a loading state
-    // rather than waiting for the network round-trip with no feedback.
+    // Snapshot any prior URL so we can revoke it AFTER the new one is in
+    // place, not before. Revoking-then-setting created a render where the
+    // <img> briefly saw an empty src; some browsers cache that empty
+    // request and refuse to redraw when src is updated milliseconds later,
+    // showing a broken-image icon even though the bytes are valid.
+    const previousUrl = viewerObjectUrl;
     setViewerDoc({ id: doc.id, fileName: doc.fileName, mimeType: doc.mimeType, type: doc.type });
     setViewerLoading(true);
     setViewerError(null);
     setViewerKind("other");
     setViewerZoom(1);
-    setViewerObjectUrl((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
-    });
+    setViewerObjectUrl(null);
 
     try {
       const res = await apiFetch(`/api/document-file?id=${doc.id}`);
@@ -526,9 +527,20 @@ export function Students() {
             : (doc.mimeType || "application/octet-stream");
       const blob = new Blob([buf], { type: blobType });
       const url = URL.createObjectURL(blob);
-      setViewerObjectUrl(url);
+      // Set the kind first, then the URL on the next microtask so React
+      // commits both in the same render cycle. Otherwise the JSX could
+      // briefly evaluate (kind=other, url=blob:...) and render the
+      // "preview not available" branch before the kind catches up.
       setViewerKind(kind);
+      setViewerObjectUrl(url);
+      // Now revoke the previously-displayed URL (if any). Doing it here,
+      // after the new URL is committed, prevents the brief gap where the
+      // <img> would see neither URL.
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
     } catch (e) {
+      // Restore the prior URL if the fetch failed, so the dialog isn't
+      // stuck on an empty preview.
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
       setViewerError(e instanceof Error ? e.message : "Failed to load document");
     } finally {
       setViewerLoading(false);
@@ -1135,7 +1147,7 @@ export function Students() {
           if (!open) closeViewer();
         }}
       >
-        <DialogContent className="max-w-5xl w-[95vw] max-h-[92vh] flex flex-col p-0 gap-0">
+        <DialogContent className="!max-w-5xl !w-[95vw] !max-h-[92vh] flex flex-col !p-0 !gap-0 sm:!max-w-5xl">
           <DialogHeader className="px-6 py-4 border-b">
             <DialogTitle className="text-base font-semibold truncate">
               {viewerDoc?.fileName || "Document"}
@@ -1218,11 +1230,15 @@ export function Students() {
                     aspect ratio is preserved. The parent's overflow-auto
                     provides scroll bars when the image exceeds the dialog. */}
                 <img
+                  key={viewerObjectUrl}
                   src={viewerObjectUrl}
                   alt={viewerDoc?.fileName || "Document preview"}
                   style={{ width: `${viewerZoom * 100}%`, maxWidth: "none" }}
                   className="block bg-white shadow-sm rounded"
                   draggable={false}
+                  onError={() =>
+                    setViewerError("Could not render this image. Try reopening the View dialog.")
+                  }
                 />
               </div>
             )}
