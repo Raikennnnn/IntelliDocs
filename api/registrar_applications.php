@@ -83,15 +83,35 @@ if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
 }
 
 $docUsesEnrollmentId = tableExists($pdo, 'documents')
-    && columnExists($pdo, 'documents', 'enrollment_id')
-    && columnExists($pdo, 'documents', 'ai_status');
+    && columnExists($pdo, 'documents', 'enrollment_id');
 $docUsesStudentId = tableExists($pdo, 'documents')
     && tableExists($pdo, 'students')
-    && columnExists($pdo, 'documents', 'student_id')
+    && columnExists($pdo, 'documents', 'student_id');
+$hasReviewedFlag = tableExists($pdo, 'documents')
+    && columnExists($pdo, 'documents', 'registrar_reviewed');
+$hasAiStatus = tableExists($pdo, 'documents')
     && columnExists($pdo, 'documents', 'ai_status');
 
+// Prefer the registrar's manual reviewed flag when the column exists; fall back to the
+// AI verified count for un-migrated environments so this endpoint never crashes.
+if ($hasReviewedFlag) {
+    $verifiedClause = 'SUM(CASE WHEN registrar_reviewed = 1 THEN 1 ELSE 0 END)';
+    $verifiedClauseAliased = 'SUM(CASE WHEN d.registrar_reviewed = 1 THEN 1 ELSE 0 END)';
+} elseif ($hasAiStatus) {
+    $verifiedClause = "SUM(CASE WHEN ai_status = 'verified' THEN 1 ELSE 0 END)";
+    $verifiedClauseAliased = "SUM(CASE WHEN d.ai_status = 'verified' THEN 1 ELSE 0 END)";
+} else {
+    $verifiedClause = '0';
+    $verifiedClauseAliased = '0';
+}
+
 try {
-    $sql = '
+    // Applications page only shows in-flight applications. Once an
+    // enrollment is approved (and certainly once it is enrolled), the
+    // student moves to the dedicated Students page; surfacing them here
+    // would clutter the registrar's review queue with already-decided
+    // cases. Rejected applications stay so the registrar can audit them.
+    $sql = "
         SELECT
             e.*,
             e.id AS enrollment_id,
@@ -101,8 +121,9 @@ try {
             u.id AS user_id
         FROM enrollments e
         INNER JOIN users u ON u.id = e.user_id
+        WHERE LOWER(e.status) IN ('pending', 'under_review', 'under review', 'review', 'rejected', 'draft')
         ORDER BY e.id DESC
-    ';
+    ";
 
     $rows = $pdo->query($sql)->fetchAll() ?: [];
     $applications = [];
@@ -115,12 +136,11 @@ try {
 
         if ($docUsesEnrollmentId) {
             $countStmt = $pdo->prepare(
-                'SELECT COUNT(*) AS total_docs, SUM(CASE WHEN ai_status = :verified THEN 1 ELSE 0 END) AS verified_docs
+                'SELECT COUNT(*) AS total_docs, ' . $verifiedClause . ' AS verified_docs
                  FROM documents
                  WHERE enrollment_id = :enrollment_id'
             );
             $countStmt->execute([
-                ':verified' => 'verified',
                 ':enrollment_id' => $enrollmentId,
             ]);
             $count = $countStmt->fetch() ?: [];
@@ -130,13 +150,12 @@ try {
             $countStmt = $pdo->prepare(
                 'SELECT
                     COUNT(d.id) AS total_docs,
-                    SUM(CASE WHEN d.ai_status = :verified THEN 1 ELSE 0 END) AS verified_docs
+                    ' . $verifiedClauseAliased . ' AS verified_docs
                  FROM students s
                  LEFT JOIN documents d ON d.student_id = s.id
                  WHERE s.user_id = :user_id'
             );
             $countStmt->execute([
-                ':verified' => 'verified',
                 ':user_id' => $userId,
             ]);
             $count = $countStmt->fetch() ?: [];

@@ -224,7 +224,7 @@ try {
             {$selectReligion}
         FROM enrollments e
         INNER JOIN users u ON u.id = e.user_id
-        WHERE LOWER(e.status) = 'approved'
+        WHERE LOWER(e.status) IN ('approved', 'enrolled')
     ";
     $params = [];
     if ($singleUserId > 0) {
@@ -259,7 +259,11 @@ try {
             'schoolUsername' => isset($row['school_username']) && $row['school_username'] !== null ? (string)$row['school_username'] : null,
             'mustChangePassword' => (int)($row['must_change_password'] ?? 0) === 1,
             'lastLoginAt' => $row['last_login_at'] ?? null,
-            'status' => 'Enrolled',
+            // Raw status from `enrollments.status` so the UI can render the
+            // right badge: "approved" = pending physical-doc collection,
+            // "enrolled" = registrar received every required physical doc.
+            'enrollmentStatus' => strtolower(trim((string)($row['enrollment_status'] ?? 'approved'))),
+            'status' => strtolower(trim((string)($row['enrollment_status'] ?? 'approved'))) === 'enrolled' ? 'Enrolled' : 'Pending physical docs',
             'strand' => $strand,
             'gradeLevel' => $grade,
             'schoolYear' => (string)($row['school_year'] ?? ''),

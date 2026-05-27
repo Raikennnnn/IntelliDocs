@@ -12,6 +12,8 @@ import {
   Loader2,
   GraduationCap,
   Eye,
+  ClipboardCheck,
+  Send,
 } from "lucide-react";
 import { apiFetch } from "../../lib/api";
 import { Card } from "../../components/ui/card";
@@ -41,7 +43,11 @@ type Student = {
   schoolUsername: string | null;
   mustChangePassword: boolean;
   lastLoginAt: string | null;
+  /** Display label ("Pending physical docs" or "Enrolled"). */
   status: string;
+  /** Raw enrollments.status — "approved" or "enrolled". Drives badges and
+   *  controls whether the physical-doc checklist is editable. */
+  enrollmentStatus?: string;
   strand: string;
   gradeLevel: string;
   schoolYear?: string;
@@ -64,6 +70,30 @@ type Student = {
     registrarReviewed: boolean;
     uploadedAt: string | null;
   }>;
+};
+
+/** One row of the registrar's physical-document checklist for an
+ *  approved enrollment. The shape mirrors the GET /api/registrar/physical-docs
+ *  response in api/registrar_physical_docs.php. */
+type PhysicalDocItem = {
+  id: number | null;
+  key: string;
+  label: string;
+  required: boolean;
+  transfereeOnly: boolean;
+  received: boolean;
+  receivedAt: string | null;
+  receivedBy: number | null;
+  notes: string | null;
+};
+
+type PhysicalDocsState = {
+  items: PhysicalDocItem[];
+  enrollmentStatus: "approved" | "enrolled" | string;
+  allRequiredChecked: boolean;
+  canMarkEnrolled: boolean;
+  loading: boolean;
+  error: string | null;
 };
 
 type Features = { credentials: boolean };
@@ -109,6 +139,20 @@ export function Students() {
   const [detail, setDetail] = useState<Student | null>(null);
   const [resending, setResending] = useState(false);
   const [issuing, setIssuing] = useState(false);
+  // Physical-document checklist for the currently-open student. Lazy-loaded
+  // once the side panel opens for an approved/enrolled student so we don't
+  // pay the round-trip for unopened rows.
+  const [physical, setPhysical] = useState<PhysicalDocsState>({
+    items: [],
+    enrollmentStatus: "approved",
+    allRequiredChecked: false,
+    canMarkEnrolled: false,
+    loading: false,
+    error: null,
+  });
+  const [physicalSubmittingKey, setPhysicalSubmittingKey] = useState<string | null>(null);
+  const [markingEnrolled, setMarkingEnrolled] = useState(false);
+  const [sendingReminder, setSendingReminder] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,18 +225,209 @@ export function Students() {
     setOpenStudentId(s.userId);
     setDetail(null);
     setDetailLoading(true);
+    // Reset the physical-docs panel for the new student. Don't fetch yet —
+    // we wait until the student detail comes back so we know the
+    // enrollmentId, and we only fetch when the student is approved/enrolled
+    // (the endpoint returns 409 otherwise).
+    setPhysical({
+      items: [],
+      enrollmentStatus: "approved",
+      allRequiredChecked: false,
+      canMarkEnrolled: false,
+      loading: false,
+      error: null,
+    });
     try {
       const res = await apiFetch(`/api/registrar/students?user_id=${s.userId}`);
       const json = await res.json();
       if (!res.ok || !json?.success) {
         throw new Error(json?.error || `Failed to load student (${res.status})`);
       }
-      setDetail(json.student as Student);
+      const fetched = json.student as Student;
+      setDetail(fetched);
+      // The Students page only lists approved/enrolled students, so any
+      // student we open is eligible for the checklist. Belt-and-suspenders:
+      // bail if for some reason the row's enrollmentStatus is something
+      // unexpected (legacy data, manual DB tweaks, etc.).
+      const status = (fetched.enrollmentStatus || "").toLowerCase();
+      if (status === "approved" || status === "enrolled") {
+        loadPhysicalDocs(fetched.enrollmentId);
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to load student detail");
       setDetail(s); // fall back to summary row
     } finally {
       setDetailLoading(false);
+    }
+  }
+
+  async function loadPhysicalDocs(enrollmentId: number) {
+    if (!enrollmentId) return;
+    setPhysical((p) => ({ ...p, loading: true, error: null }));
+    try {
+      const res = await apiFetch(`/api/registrar/physical-docs?enrollment_id=${enrollmentId}`);
+      const text = await res.text();
+      let json: any = {};
+      try { json = JSON.parse(text); } catch { /* keep empty */ }
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.error || `Failed to load checklist (${res.status})`);
+      }
+      setPhysical({
+        items: Array.isArray(json.items) ? (json.items as PhysicalDocItem[]) : [],
+        enrollmentStatus: String(json.enrollmentStatus ?? "approved"),
+        allRequiredChecked: Boolean(json.allRequiredChecked),
+        canMarkEnrolled: Boolean(json.canMarkEnrolled),
+        loading: false,
+        error: null,
+      });
+    } catch (e) {
+      setPhysical((p) => ({
+        ...p,
+        loading: false,
+        error: e instanceof Error ? e.message : "Failed to load checklist",
+      }));
+    }
+  }
+
+  async function togglePhysicalDoc(item: PhysicalDocItem) {
+    if (!detail) return;
+    if (physical.enrollmentStatus === "enrolled") return; // checklist locked
+    if (physicalSubmittingKey !== null) return;
+    setPhysicalSubmittingKey(item.key);
+    // Optimistic update so the checkbox feels responsive — if the request
+    // fails we replace state with the authoritative server response below.
+    const optimistic = !item.received;
+    setPhysical((p) => ({
+      ...p,
+      items: p.items.map((it) =>
+        it.key === item.key ? { ...it, received: optimistic } : it
+      ),
+    }));
+    try {
+      const res = await apiFetch("/api/registrar/physical-docs", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "toggle",
+          enrollment_id: detail.enrollmentId,
+          requirement_key: item.key,
+          received: optimistic,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.error || `Toggle failed (${res.status})`);
+      }
+      // Snap to authoritative server state.
+      setPhysical((p) => ({
+        ...p,
+        items: Array.isArray(json.items) ? (json.items as PhysicalDocItem[]) : p.items,
+        enrollmentStatus: String(json.enrollmentStatus ?? p.enrollmentStatus),
+        allRequiredChecked: Boolean(json.allRequiredChecked),
+        canMarkEnrolled: Boolean(json.canMarkEnrolled),
+      }));
+    } catch (e) {
+      // Roll back the optimistic flip and surface the error.
+      setPhysical((p) => ({
+        ...p,
+        items: p.items.map((it) =>
+          it.key === item.key ? { ...it, received: item.received } : it
+        ),
+      }));
+      toast.error(e instanceof Error ? e.message : "Failed to toggle");
+    } finally {
+      setPhysicalSubmittingKey(null);
+    }
+  }
+
+  async function markEnrolled() {
+    if (!detail) return;
+    if (!physical.canMarkEnrolled) return;
+    if (markingEnrolled) return;
+
+    const ok = window.confirm(
+      `Mark ${displayName(detail)} as fully enrolled?\n\n` +
+        "Confirms every required physical document has been received. " +
+        "The student's status will change from \"Pending physical docs\" to \"Enrolled\". " +
+        "You can still edit the checklist by reverting status from the database, but normal use is one-way."
+    );
+    if (!ok) return;
+
+    setMarkingEnrolled(true);
+    try {
+      const res = await apiFetch("/api/registrar/physical-docs", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "mark_enrolled",
+          enrollment_id: detail.enrollmentId,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.error || `Failed to mark enrolled (${res.status})`);
+      }
+      setPhysical((p) => ({
+        ...p,
+        items: Array.isArray(json.items) ? (json.items as PhysicalDocItem[]) : p.items,
+        enrollmentStatus: String(json.enrollmentStatus ?? "enrolled"),
+        allRequiredChecked: Boolean(json.allRequiredChecked),
+        canMarkEnrolled: Boolean(json.canMarkEnrolled),
+      }));
+      // Reflect the new status in the detail panel + the row in the list
+      // so the badge updates without a page reload.
+      setDetail((d) => (d ? { ...d, enrollmentStatus: "enrolled", status: "Enrolled" } : d));
+      setStudents((rows) =>
+        rows.map((r) =>
+          r.userId === detail.userId
+            ? { ...r, enrollmentStatus: "enrolled", status: "Enrolled" }
+            : r
+        )
+      );
+      toast.success(`${displayName(detail)} is now fully enrolled.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to mark enrolled");
+    } finally {
+      setMarkingEnrolled(false);
+    }
+  }
+
+  async function sendPhysicalReminder() {
+    if (!detail) return;
+    const missing = physical.items.filter((i) => i.required && !i.received).map((i) => i.label);
+    if (missing.length === 0) {
+      toast.message("Nothing to remind — all required documents are checked.");
+      return;
+    }
+    if (!detail.email) {
+      toast.error("Student does not have a personal email on file.");
+      return;
+    }
+    const ok = window.confirm(
+      `Email ${detail.email} a reminder for ${missing.length} missing document${
+        missing.length === 1 ? "" : "s"
+      }?\n\n- ${missing.join("\n- ")}`
+    );
+    if (!ok) return;
+
+    setSendingReminder(true);
+    try {
+      const res = await apiFetch("/api/registrar/physical-docs", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "send_reminder",
+          enrollment_id: detail.enrollmentId,
+        }),
+      });
+      const json = await res.json();
+      if (json?.delivery === "sent") {
+        toast.success(`Reminder sent to ${detail.email}.`);
+      } else {
+        const msg = json?.error || "Failed to deliver reminder";
+        toast.error(msg);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to send reminder");
+    } finally {
+      setSendingReminder(false);
     }
   }
 
@@ -409,10 +644,17 @@ export function Students() {
                                       <p className="text-xs text-gray-500 truncate">{s.email || "no email"}</p>
                                     </div>
                                     <div className="col-span-6 md:col-span-3">
-                                      <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
-                                        <CheckCircle className="w-3 h-3 mr-1" />
-                                        Enrolled
-                                      </Badge>
+                                      {(s.enrollmentStatus || "approved").toLowerCase() === "enrolled" ? (
+                                        <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
+                                          <CheckCircle className="w-3 h-3 mr-1" />
+                                          Enrolled
+                                        </Badge>
+                                      ) : (
+                                        <Badge className="bg-amber-500 text-white hover:bg-amber-600">
+                                          <ClipboardCheck className="w-3 h-3 mr-1" />
+                                          Pending physical docs
+                                        </Badge>
+                                      )}
                                     </div>
                                     <div className="col-span-6 md:col-span-3 text-sm tabular-nums text-gray-700">
                                       {s.schoolUsername ? (
@@ -457,6 +699,15 @@ export function Students() {
           if (!open) {
             setOpenStudentId(null);
             setDetail(null);
+            // Reset checklist state so the next student opens fresh.
+            setPhysical({
+              items: [],
+              enrollmentStatus: "approved",
+              allRequiredChecked: false,
+              canMarkEnrolled: false,
+              loading: false,
+              error: null,
+            });
           }
         }}
       >
@@ -603,6 +854,126 @@ export function Students() {
                       </li>
                     ))}
                   </ul>
+                )}
+              </Section>
+
+              {/* Physical document checklist (approved students only). The
+                  checklist is locked once the registrar marks the student
+                  as enrolled — flipping the boolean back is intentionally
+                  not exposed here to keep the workflow one-way under
+                  normal use. */}
+              <Section title="Physical document checklist">
+                {physical.loading ? (
+                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading checklist…
+                  </div>
+                ) : physical.error ? (
+                  <Alert variant="destructive">
+                    <AlertDescription>{physical.error}</AlertDescription>
+                  </Alert>
+                ) : physical.items.length === 0 ? (
+                  <p className="text-sm text-gray-500 italic">
+                    No checklist items configured for this enrollment.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-xs text-gray-600 mb-2">
+                      Tick each item as the student hands over the physical copy. Once every
+                      required item is checked, you can mark the student as fully enrolled.
+                    </p>
+                    <ul className="space-y-2">
+                      {physical.items.map((item) => {
+                        const submitting = physicalSubmittingKey === item.key;
+                        const locked =
+                          physical.enrollmentStatus === "enrolled" || submitting;
+                        return (
+                          <li
+                            key={item.key}
+                            className={`flex items-start gap-3 p-2 rounded-md border ${
+                              item.received
+                                ? "border-emerald-200 bg-emerald-50"
+                                : "border-gray-200 bg-white"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={item.received}
+                              disabled={locked}
+                              onChange={() => togglePhysicalDoc(item)}
+                              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-[#8B1538] focus:ring-[#8B1538]"
+                              aria-label={item.label}
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p
+                                className={`text-sm ${
+                                  item.received ? "text-emerald-900 line-through" : "text-gray-900"
+                                }`}
+                              >
+                                {item.label}
+                                {!item.required && (
+                                  <span className="ml-2 text-xs text-gray-500">(optional)</span>
+                                )}
+                              </p>
+                              {item.received && item.receivedAt && (
+                                <p className="text-xs text-emerald-700/80 mt-0.5">
+                                  Received {formatDateTime(item.receivedAt)}
+                                </p>
+                              )}
+                            </div>
+                            {submitting && <Loader2 className="w-4 h-4 animate-spin text-gray-400" />}
+                          </li>
+                        );
+                      })}
+                    </ul>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {physical.enrollmentStatus === "enrolled" ? (
+                        <Badge className="bg-emerald-600 text-white">
+                          <CheckCircle className="w-3 h-3 mr-1" />
+                          Fully enrolled
+                        </Badge>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={markEnrolled}
+                          disabled={!physical.canMarkEnrolled || markingEnrolled}
+                          className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white disabled:bg-[#2D5016]/40 disabled:hover:bg-[#2D5016]/40"
+                          title={
+                            physical.canMarkEnrolled
+                              ? undefined
+                              : "Tick every required physical document first."
+                          }
+                        >
+                          <CheckCircle className="w-4 h-4 mr-2" />
+                          {markingEnrolled ? "Marking…" : "Mark as enrolled"}
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={sendPhysicalReminder}
+                        disabled={
+                          sendingReminder ||
+                          physical.enrollmentStatus === "enrolled" ||
+                          physical.allRequiredChecked ||
+                          !detail.email
+                        }
+                        title={
+                          physical.allRequiredChecked
+                            ? "Nothing to remind — all required documents are checked."
+                            : !detail.email
+                              ? "No personal email on file."
+                              : undefined
+                        }
+                      >
+                        <Send className="w-4 h-4 mr-2" />
+                        {sendingReminder ? "Sending…" : "Email missing-doc reminder"}
+                      </Button>
+                    </div>
+                  </>
                 )}
               </Section>
 

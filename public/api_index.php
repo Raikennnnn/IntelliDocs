@@ -70,6 +70,10 @@ switch ($route) {
     case 'registrar/students/':
         require_once __DIR__ . '/../api/registrar_students.php';
         break;
+    case 'registrar/physical-docs':
+    case 'registrar/physical-docs/':
+        require_once __DIR__ . '/../api/registrar_physical_docs.php';
+        break;
     case 'registrar/overview':
     case 'registrar/overview/':
         require_once __DIR__ . '/../api/registrar_overview.php';

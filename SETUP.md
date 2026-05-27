@@ -144,11 +144,15 @@ Start MariaDB/MySQL (via XAMPP control panel or your service of choice).  Then i
 3. Apply incremental migrations *in order* (each is idempotent — safe to re-run):
    ```bash
    mysql -u root intellidocs_db < database_migration_credentials.sql
+   mysql -u root intellidocs_db < database_migration_physical_docs.sql
    ```
-   Skip this and the registrar's "Issue Credentials" flow will return HTTP 503
-   `schema_not_migrated`.  The auth path silently degrades when these columns
-   are absent, so existing email-only logins keep working — but new students
-   cannot have credentials issued until the migration runs.
+   Skip the credentials migration and the registrar's "Issue Credentials" flow
+   will return HTTP 503 `schema_not_migrated`.  Skip the physical-docs
+   migration and the in-person enrollment checklist will return the same
+   503 in the registrar's Students panel.  The auth path silently degrades
+   when these columns are absent, so existing email-only logins keep working
+   — but new students cannot have credentials issued or be marked as
+   enrolled until the migrations run.
 
    If you see other `database_migration_*.sql` files in the repo root (e.g.
    `database_migration_logging.sql`, `database_migration_email_queue.sql`,
