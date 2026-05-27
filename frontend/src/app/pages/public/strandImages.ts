@@ -1,10 +1,10 @@
 import type { StrandSlug } from './strandInfoData';
-import humssPlaceholder from '../../assets/strands/humss.svg';
-import abmPlaceholder from '../../assets/strands/abm.svg';
-import stemPlaceholder from '../../assets/strands/stem.svg';
-import ictPlaceholder from '../../assets/strands/ict.svg';
-import eimPlaceholder from '../../assets/strands/eim.svg';
-import bppFbsPlaceholder from '../../assets/strands/bpp-fbs.svg';
+import humssPlaceholder from '../../assets/strands/humss.jpg';
+import abmPlaceholder from '../../assets/strands/abm.jpg';
+import stemPlaceholder from '../../assets/strands/stem.jpg';
+import ictPlaceholder from '../../assets/strands/ict.jpg';
+import eimPlaceholder from '../../assets/strands/eim.jpg';
+import bppFbsPlaceholder from '../../assets/strands/bpp-fbs.jpg';
 
 /** Bundled placeholders shown until a file exists in public/strands/ */
 export const STRAND_PLACEHOLDER_IMAGES: Record<StrandSlug, string> = {
