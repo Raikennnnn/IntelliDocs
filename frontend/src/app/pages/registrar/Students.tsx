@@ -14,6 +14,7 @@ import {
   Eye,
   ClipboardCheck,
   Send,
+  ExternalLink,
 } from "lucide-react";
 import { apiFetch } from "../../lib/api";
 import { Card } from "../../components/ui/card";
@@ -153,6 +154,9 @@ export function Students() {
   const [physicalSubmittingKey, setPhysicalSubmittingKey] = useState<string | null>(null);
   const [markingEnrolled, setMarkingEnrolled] = useState(false);
   const [sendingReminder, setSendingReminder] = useState(false);
+  // Tracks which submitted-document row is currently being fetched for
+  // preview, so we can disable the row's button while bytes are in flight.
+  const [openingDocId, setOpeningDocId] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -428,6 +432,45 @@ export function Students() {
       toast.error(e instanceof Error ? e.message : "Failed to send reminder");
     } finally {
       setSendingReminder(false);
+    }
+  }
+
+  /**
+   * Fetch a submitted document via the authenticated /api/document-file
+   * endpoint, build an object URL from the bytes, and open it in a new tab.
+   *
+   * We can't use a plain `<a href="/api/document-file?id=..." target="_blank">`
+   * because that endpoint requires the X-User-Id header which apiFetch adds —
+   * a normal anchor would hit it without auth and 401.
+   */
+  async function openDocument(doc: { id: number; fileName?: string; mimeType?: string }) {
+    if (!doc?.id) {
+      toast.error("Document is not available for preview");
+      return;
+    }
+    if (openingDocId === doc.id) return;
+    setOpeningDocId(doc.id);
+    try {
+      const res = await apiFetch(`/api/document-file?id=${doc.id}`);
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Failed to open document (${res.status}) ${err}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank", "noopener,noreferrer");
+      // Browsers may block window.open if it isn't a direct user gesture
+      // and the popup blocker is aggressive. Fall back to navigating the
+      // current tab so the registrar still sees the file.
+      if (!win) {
+        window.location.href = url;
+      }
+      // Revoke after a short delay so the new tab has time to read it.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to open document");
+    } finally {
+      setOpeningDocId(null);
     }
   }
 
@@ -851,6 +894,22 @@ export function Students() {
                             {(doc.type || "Document").replace(/\s+/g, " ")} · uploaded {formatDate(doc.uploadedAt)}
                           </p>
                         </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0"
+                          onClick={() => openDocument(doc)}
+                          disabled={openingDocId === doc.id}
+                          title="Open the file the student uploaded online"
+                        >
+                          {openingDocId === doc.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <ExternalLink className="w-4 h-4" />
+                          )}
+                          <span className="ml-1.5 hidden sm:inline">Open</span>
+                        </Button>
                       </li>
                     ))}
                   </ul>

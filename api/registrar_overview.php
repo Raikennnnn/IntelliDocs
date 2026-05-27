@@ -60,13 +60,19 @@ try {
     $byStrand = [];
 
     if (tableExists($pdo, 'enrollments')) {
+        // total_applications: in-flight queue items only — once an enrollment
+        // is approved (or fully enrolled) it leaves the registrar's review
+        // queue and stops counting toward this stat. Rejected rows are also
+        // excluded since the registrar can no longer act on them.
+        // total_enrolled: every student already approved or enrolled, since
+        // both states represent a student who has secured a seat.
         $summarySql = "
             SELECT
-                COUNT(*) AS total_applications,
-                SUM(CASE WHEN LOWER(status) = 'approved' THEN 1 ELSE 0 END) AS total_enrolled,
+                SUM(CASE WHEN LOWER(status) IN ('pending', 'under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS total_applications,
+                SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS total_enrolled,
                 SUM(CASE WHEN LOWER(status) = 'pending' THEN 1 ELSE 0 END) AS pending_count,
                 SUM(CASE WHEN LOWER(status) IN ('under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS review_count,
-                SUM(CASE WHEN LOWER(status) = 'approved' THEN 1 ELSE 0 END) AS approved_count,
+                SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS approved_count,
                 SUM(CASE WHEN LOWER(status) = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
             FROM enrollments
         ";
@@ -78,14 +84,16 @@ try {
         $approved = (int)($summary['approved_count'] ?? 0);
         $rejected = (int)($summary['rejected_count'] ?? 0);
 
+        // Per-strand stats use the same semantics: only in-flight rows count
+        // as applications, and approved + enrolled both count as enrolled.
         $strandSql = "
             SELECT
                 COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified') AS strand_name,
-                COUNT(*) AS total_applications,
-                SUM(CASE WHEN LOWER(status) = 'approved' THEN 1 ELSE 0 END) AS enrolled_students
+                SUM(CASE WHEN LOWER(status) IN ('pending', 'under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS total_applications,
+                SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS enrolled_students
             FROM enrollments
             GROUP BY COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified')
-            ORDER BY total_applications DESC, strand_name ASC
+            ORDER BY enrolled_students DESC, strand_name ASC
         ";
         $strandRows = $pdo->query($strandSql)->fetchAll() ?: [];
         foreach ($strandRows as $row) {

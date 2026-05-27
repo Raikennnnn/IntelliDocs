@@ -74,18 +74,6 @@ export function RegistrarDashboard() {
     Unspecified: { fullName: 'No strand specified', bg: 'bg-gray-100', icon: 'text-gray-600' },
   }), []);
 
-  const getProgressColor = (percentage: number) => {
-    if (percentage >= 90) return 'bg-red-600';
-    if (percentage >= 75) return 'bg-orange-500';
-    return 'bg-[#2D5016]';
-  };
-
-  const getStatusColor = (remaining: number) => {
-    if (remaining <= 5) return 'text-red-600';
-    if (remaining <= 15) return 'text-orange-600';
-    return 'text-[#2D5016]';
-  };
-
   return (
     <div className="space-y-6">
       <div>
@@ -161,12 +149,19 @@ export function RegistrarDashboard() {
       {/* Per-Strand Overview */}
       <div>
         <h3 className="text-xl font-semibold text-gray-900 mb-4">Strand Enrollment Overview</h3>
+        <p className="text-xs text-gray-500 mb-3">
+          The {overallQuota.toLocaleString()}-seat capacity is school-wide; per-strand cards show this
+          strand's slice of the total enrolled students.
+        </p>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {strands.map((strand) => {
-            const remainingSlots = Math.max(0, overallQuota - strand.enrolledStudents);
-            const percentageFilled = overallQuota > 0 ? (strand.enrolledStudents / overallQuota) * 100 : 0;
+            // Share-of-school metric: what fraction of the school's enrolled
+            // population is in this strand. NOT a per-strand quota — there
+            // isn't one. Stays bounded by the overall enrolled total.
+            const shareOfEnrolled =
+              totalEnrolled > 0 ? (strand.enrolledStudents / totalEnrolled) * 100 : 0;
             const meta = strandMeta[strand.name as keyof typeof strandMeta] ?? strandMeta.Unspecified;
-            
+
             return (
               <Card key={strand.name} className="border-2 hover:shadow-lg transition-shadow">
                 <CardHeader className="pb-3">
@@ -183,54 +178,34 @@ export function RegistrarDashboard() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Stats Grid */}
+                  {/* Stats Grid: only the two numbers that are actually
+                      per-strand. The school-wide quota / remaining seats is
+                      shown once at the top of the dashboard. */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="bg-gray-50 p-3 rounded-lg">
-                      <p className="text-xs text-gray-600 mb-1">Total Applications</p>
+                      <p className="text-xs text-gray-600 mb-1">Pending applications</p>
                       <p className="text-2xl font-bold text-gray-900">{strand.totalApplications}</p>
                     </div>
                     <div className="bg-green-50 p-3 rounded-lg">
-                      <p className="text-xs text-gray-600 mb-1">Enrolled Students</p>
+                      <p className="text-xs text-gray-600 mb-1">Enrolled students</p>
                       <p className="text-2xl font-bold text-[#2D5016]">{strand.enrolledStudents}</p>
-                    </div>
-                    <div className="bg-blue-50 p-3 rounded-lg">
-                      <p className="text-xs text-gray-600 mb-1">Quota</p>
-                      <p className="text-2xl font-bold text-blue-900">{overallQuota}</p>
-                    </div>
-                    <div className={`${remainingSlots <= 5 ? 'bg-red-50' : remainingSlots <= 15 ? 'bg-orange-50' : 'bg-gray-50'} p-3 rounded-lg`}>
-                      <p className="text-xs text-gray-600 mb-1">Remaining Slots</p>
-                      <p className={`text-2xl font-bold ${getStatusColor(remainingSlots)}`}>
-                        {remainingSlots}
-                      </p>
                     </div>
                   </div>
 
-                  {/* Progress Bar */}
+                  {/* Share of enrolled students. */}
                   <div>
                     <div className="flex justify-between items-center mb-2">
-                      <span className="text-sm font-medium text-gray-700">Capacity</span>
+                      <span className="text-sm font-medium text-gray-700">Share of enrolled students</span>
                       <span className="text-sm font-bold text-gray-900">
-                        {percentageFilled.toFixed(1)}%
+                        {shareOfEnrolled.toFixed(1)}%
                       </span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                      <div 
-                        className={`h-3 rounded-full transition-all ${getProgressColor(percentageFilled)}`}
-                        style={{ width: `${percentageFilled}%` }}
+                      <div
+                        className="h-3 rounded-full transition-all bg-[#2D5016]"
+                        style={{ width: `${Math.min(100, shareOfEnrolled)}%` }}
                       />
                     </div>
-                    {percentageFilled >= 90 && (
-                      <p className="text-xs text-red-600 font-medium mt-2 flex items-center gap-1">
-                        <AlertCircle className="w-3 h-3" />
-                        Nearly full - Limited slots remaining
-                      </p>
-                    )}
-                    {percentageFilled >= 75 && percentageFilled < 90 && (
-                      <p className="text-xs text-orange-600 font-medium mt-2 flex items-center gap-1">
-                        <AlertCircle className="w-3 h-3" />
-                        Approaching capacity
-                      </p>
-                    )}
                   </div>
                 </CardContent>
               </Card>
