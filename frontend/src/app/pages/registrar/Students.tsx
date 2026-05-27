@@ -14,7 +14,8 @@ import {
   Eye,
   ClipboardCheck,
   Send,
-  ExternalLink,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { apiFetch } from "../../lib/api";
 import { Card } from "../../components/ui/card";
@@ -29,6 +30,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "../../components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "../../components/ui/dialog";
 import { toast } from "sonner";
 
 type Student = {
@@ -154,9 +162,20 @@ export function Students() {
   const [physicalSubmittingKey, setPhysicalSubmittingKey] = useState<string | null>(null);
   const [markingEnrolled, setMarkingEnrolled] = useState(false);
   const [sendingReminder, setSendingReminder] = useState(false);
-  // Tracks which submitted-document row is currently being fetched for
-  // preview, so we can disable the row's button while bytes are in flight.
-  const [openingDocId, setOpeningDocId] = useState<number | null>(null);
+  // In-app document viewer state. We open a dialog inside this page rather
+  // than dropping the file in a fresh browser tab — keeps the registrar in
+  // context and lets us add scroll + zoom controls for image documents.
+  const [viewerDoc, setViewerDoc] = useState<
+    | { id: number; fileName?: string; mimeType?: string; type?: string }
+    | null
+  >(null);
+  const [viewerLoading, setViewerLoading] = useState(false);
+  const [viewerError, setViewerError] = useState<string | null>(null);
+  const [viewerObjectUrl, setViewerObjectUrl] = useState<string | null>(null);
+  const [viewerKind, setViewerKind] = useState<"image" | "pdf" | "other">("other");
+  // Image-only zoom factor (1 = 100%). PDFs use the iframe's built-in
+  // zoom controls so we leave this slider hidden for PDF previews.
+  const [viewerZoom, setViewerZoom] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -436,42 +455,96 @@ export function Students() {
   }
 
   /**
-   * Fetch a submitted document via the authenticated /api/document-file
-   * endpoint, build an object URL from the bytes, and open it in a new tab.
-   *
-   * We can't use a plain `<a href="/api/document-file?id=..." target="_blank">`
-   * because that endpoint requires the X-User-Id header which apiFetch adds —
-   * a normal anchor would hit it without auth and 401.
+   * Lightweight binary sniff so we don't render a JSON error page or HTML
+   * via <img>. Reads the first few bytes and returns a coarse kind. Mirrors
+   * (a small subset of) the helper in pages/registrar/ReviewDocuments.tsx —
+   * duplicated here intentionally so this page does not depend on that
+   * file's internals.
    */
-  async function openDocument(doc: { id: number; fileName?: string; mimeType?: string }) {
+  function sniffDocKind(buf: ArrayBuffer, fileName?: string, mimeType?: string): "image" | "pdf" | "other" {
+    const u = new Uint8Array(buf.byteLength ? buf.slice(0, 8) : new ArrayBuffer(0));
+    if (u.length >= 4) {
+      // %PDF
+      if (u[0] === 0x25 && u[1] === 0x50 && u[2] === 0x44 && u[3] === 0x46) return "pdf";
+      // PNG
+      if (u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4e && u[3] === 0x47) return "image";
+      // JPEG
+      if (u[0] === 0xff && u[1] === 0xd8 && u[2] === 0xff) return "image";
+      // GIF8
+      if (u[0] === 0x47 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x38) return "image";
+      // WEBP (RIFF....WEBP)
+      if (u[0] === 0x52 && u[1] === 0x49 && u[2] === 0x46 && u[3] === 0x46) return "image";
+    }
+    // Fallback to mime/extension when the first bytes are inconclusive.
+    const mt = (mimeType || "").toLowerCase();
+    if (mt.startsWith("image/")) return "image";
+    if (mt === "application/pdf") return "pdf";
+    const ext = (fileName || "").toLowerCase().split(".").pop() || "";
+    if (["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext)) return "image";
+    if (ext === "pdf") return "pdf";
+    return "other";
+  }
+
+  /**
+   * Fetch a submitted document via the authenticated /api/document-file
+   * endpoint and open it in the in-app viewer dialog. We can't use a plain
+   * `<a href>` because the endpoint requires the X-User-Id header that
+   * apiFetch adds; a normal anchor would 401.
+   */
+  async function viewDocument(doc: { id: number; fileName?: string; mimeType?: string; type?: string }) {
     if (!doc?.id) {
       toast.error("Document is not available for preview");
       return;
     }
-    if (openingDocId === doc.id) return;
-    setOpeningDocId(doc.id);
+    // Open the dialog immediately so the registrar sees a loading state
+    // rather than waiting for the network round-trip with no feedback.
+    setViewerDoc({ id: doc.id, fileName: doc.fileName, mimeType: doc.mimeType, type: doc.type });
+    setViewerLoading(true);
+    setViewerError(null);
+    setViewerKind("other");
+    setViewerZoom(1);
+    setViewerObjectUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+
     try {
       const res = await apiFetch(`/api/document-file?id=${doc.id}`);
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Failed to open document (${res.status}) ${err}`);
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Failed to load document (${res.status}) ${errText}`.trim());
       }
-      const blob = await res.blob();
+      const buf = await res.arrayBuffer();
+      const kind = sniffDocKind(buf, doc.fileName, doc.mimeType);
+      // Build a typed Blob so the browser picks the right preview engine
+      // (Chrome's PDF viewer for PDFs, native image renderer for images).
+      const blobType =
+        kind === "pdf"
+          ? "application/pdf"
+          : kind === "image"
+            ? (doc.mimeType || "image/jpeg")
+            : (doc.mimeType || "application/octet-stream");
+      const blob = new Blob([buf], { type: blobType });
       const url = URL.createObjectURL(blob);
-      const win = window.open(url, "_blank", "noopener,noreferrer");
-      // Browsers may block window.open if it isn't a direct user gesture
-      // and the popup blocker is aggressive. Fall back to navigating the
-      // current tab so the registrar still sees the file.
-      if (!win) {
-        window.location.href = url;
-      }
-      // Revoke after a short delay so the new tab has time to read it.
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setViewerObjectUrl(url);
+      setViewerKind(kind);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to open document");
+      setViewerError(e instanceof Error ? e.message : "Failed to load document");
     } finally {
-      setOpeningDocId(null);
+      setViewerLoading(false);
     }
+  }
+
+  function closeViewer() {
+    setViewerDoc(null);
+    setViewerLoading(false);
+    setViewerError(null);
+    setViewerKind("other");
+    setViewerZoom(1);
+    setViewerObjectUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
   }
 
   async function resendWelcome() {
@@ -899,16 +972,16 @@ export function Students() {
                           size="sm"
                           variant="outline"
                           className="shrink-0"
-                          onClick={() => openDocument(doc)}
-                          disabled={openingDocId === doc.id}
-                          title="Open the file the student uploaded online"
+                          onClick={() => viewDocument(doc)}
+                          disabled={viewerLoading && viewerDoc?.id === doc.id}
+                          title="Preview the file the student uploaded online"
                         >
-                          {openingDocId === doc.id ? (
+                          {viewerLoading && viewerDoc?.id === doc.id ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
                           ) : (
-                            <ExternalLink className="w-4 h-4" />
+                            <Eye className="w-4 h-4" />
                           )}
-                          <span className="ml-1.5 hidden sm:inline">Open</span>
+                          <span className="ml-1.5 hidden sm:inline">View</span>
                         </Button>
                       </li>
                     ))}
@@ -1051,6 +1124,126 @@ export function Students() {
           )}
         </SheetContent>
       </Sheet>
+
+      {/* Document viewer dialog. Shown when the registrar clicks View on a
+          submitted-document row. The container scrolls naturally and image
+          documents get an explicit zoom slider; PDFs use the browser's
+          built-in viewer (which already provides zoom + scroll). */}
+      <Dialog
+        open={viewerDoc !== null}
+        onOpenChange={(open) => {
+          if (!open) closeViewer();
+        }}
+      >
+        <DialogContent className="max-w-5xl w-[95vw] max-h-[92vh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-6 py-4 border-b">
+            <DialogTitle className="text-base font-semibold truncate">
+              {viewerDoc?.fileName || "Document"}
+            </DialogTitle>
+            {viewerDoc?.type && (
+              <DialogDescription className="text-xs text-gray-500">
+                {viewerDoc.type}
+              </DialogDescription>
+            )}
+          </DialogHeader>
+
+          {/* Toolbar: zoom controls only meaningful for image documents.
+              For PDFs we leave it minimal since the iframe ships its own. */}
+          {viewerKind === "image" && !viewerLoading && !viewerError && viewerObjectUrl && (
+            <div className="px-6 py-2 border-b bg-gray-50 flex items-center gap-3">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setViewerZoom((z) => Math.max(0.5, +(z - 0.25).toFixed(2)))}
+                disabled={viewerZoom <= 0.5}
+                aria-label="Zoom out"
+              >
+                <ZoomOut className="w-4 h-4" />
+              </Button>
+              <input
+                type="range"
+                min={0.5}
+                max={3}
+                step={0.05}
+                value={viewerZoom}
+                onChange={(e) => setViewerZoom(Number(e.target.value))}
+                className="flex-1 max-w-xs accent-[#8B1538]"
+                aria-label="Zoom level"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setViewerZoom((z) => Math.min(3, +(z + 0.25).toFixed(2)))}
+                disabled={viewerZoom >= 3}
+                aria-label="Zoom in"
+              >
+                <ZoomIn className="w-4 h-4" />
+              </Button>
+              <span className="text-xs text-gray-600 tabular-nums w-14 text-right">
+                {Math.round(viewerZoom * 100)}%
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setViewerZoom(1)}
+                disabled={viewerZoom === 1}
+              >
+                Reset
+              </Button>
+            </div>
+          )}
+
+          {/* Scrollable preview area. overflow-auto lets the registrar pan
+              an image that has been zoomed past the dialog width. */}
+          <div className="flex-1 min-h-0 overflow-auto bg-gray-100">
+            {viewerLoading && (
+              <div className="flex flex-col items-center gap-2 py-16 text-gray-600">
+                <Loader2 className="w-8 h-8 animate-spin" />
+                <span className="text-sm">Loading preview…</span>
+              </div>
+            )}
+
+            {!viewerLoading && viewerError && (
+              <Alert variant="destructive" className="m-6">
+                <AlertDescription>{viewerError}</AlertDescription>
+              </Alert>
+            )}
+
+            {!viewerLoading && !viewerError && viewerObjectUrl && viewerKind === "image" && (
+              <div className="flex items-start justify-center p-4">
+                {/* Width is driven by zoom; we never set a height so the
+                    aspect ratio is preserved. The parent's overflow-auto
+                    provides scroll bars when the image exceeds the dialog. */}
+                <img
+                  src={viewerObjectUrl}
+                  alt={viewerDoc?.fileName || "Document preview"}
+                  style={{ width: `${viewerZoom * 100}%`, maxWidth: "none" }}
+                  className="block bg-white shadow-sm rounded"
+                  draggable={false}
+                />
+              </div>
+            )}
+
+            {!viewerLoading && !viewerError && viewerObjectUrl && viewerKind === "pdf" && (
+              <iframe
+                title={viewerDoc?.fileName || "Document preview"}
+                src={viewerObjectUrl}
+                className="w-full h-full min-h-[70vh] border-0 bg-white"
+              />
+            )}
+
+            {!viewerLoading && !viewerError && viewerObjectUrl && viewerKind === "other" && (
+              <div className="p-12 text-center text-sm text-gray-600">
+                Preview is not available for this file type. Use the registrar review screen
+                to download the file.
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
