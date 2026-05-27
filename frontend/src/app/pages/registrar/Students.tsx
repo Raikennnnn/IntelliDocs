@@ -518,35 +518,34 @@ export function Students() {
         const errText = await res.text().catch(() => "");
         throw new Error(`Failed to load document (${res.status}) ${errText}`.trim());
       }
+      // Sniff the bytes once before deciding how to render them.
       const buf = await res.arrayBuffer();
       const kind = sniffDocKind(buf, doc.fileName, doc.mimeType);
+
       // Render strategy:
-      // - Images: convert the bytes to a base64 data: URL. This avoids
-      //   every blob: URL edge case we hit (revocation timing, browser
-      //   cache invalidating the blob during dialog animations, the
-      //   sandboxed-iframe mismatch, etc.). Data URLs are slightly larger
-      //   in memory but for student documents (typically <2 MB) the
-      //   difference is invisible to the user.
-      // - PDFs: a blob: URL is still preferable so the iframe gets the
-      //   browser's PDF viewer with paging/zoom built-in. Data URLs work
-      //   for PDFs too but performance is worse on large files.
+      // - Images: use FileReader.readAsDataURL — the browser's canonical
+      //   "bytes -> data: URL" path. We tried base64 via btoa() and blob:
+      //   URLs first; both had edge cases (Latin-1 chunking, blob URL
+      //   revocation timing). FileReader is boring and reliable.
+      // - PDFs: keep the blob: URL so the iframe gets Chrome's built-in
+      //   PDF viewer with paging/zoom controls.
       let url: string;
       if (kind === "image") {
-        const mime = doc.mimeType || "image/jpeg";
-        // Build a base64 string in chunks to avoid hitting the ~120k arg
-        // limit some browsers enforce on String.fromCharCode for large
-        // images. 0x8000 chunks handle up to ~16 MB images comfortably.
-        const bytes = new Uint8Array(buf);
-        let binary = "";
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          binary += String.fromCharCode.apply(
-            null,
-            // Subarray is a cheap view, no copy.
-            bytes.subarray(i, i + chunkSize) as unknown as number[]
-          );
-        }
-        url = `data:${mime};base64,${btoa(binary)}`;
+        const mime = doc.mimeType || "image/png";
+        const blob = new Blob([buf], { type: mime });
+        url = await new Promise<string>((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onerror = () => reject(new Error("FileReader failed to read the document bytes"));
+          fr.onload = () => {
+            const result = fr.result;
+            if (typeof result === "string" && result.startsWith("data:")) {
+              resolve(result);
+            } else {
+              reject(new Error("FileReader did not return a data URL"));
+            }
+          };
+          fr.readAsDataURL(blob);
+        });
       } else {
         const blobType =
           kind === "pdf"
@@ -555,6 +554,7 @@ export function Students() {
         const blob = new Blob([buf], { type: blobType });
         url = URL.createObjectURL(blob);
       }
+
       // Set the kind first, then the URL on the next microtask so React
       // commits both in the same render cycle. Otherwise the JSX could
       // briefly evaluate (kind=other, url=blob:...) and render the
