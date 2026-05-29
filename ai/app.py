@@ -32,6 +32,21 @@ def _resolve_tesseract_exe() -> str | None:
         ):
             if os.path.isfile(_te):
                 return _te
+    else:
+        # Linux / macOS: apt and brew install to predictable locations.
+        # Railway / Render / generic Debian containers ship tesseract under
+        # /usr/bin (apt) or /usr/local/bin (manual or brew). shutil.which
+        # already covers these when /usr/bin is on PATH, but we list them
+        # explicitly so a stripped PATH (rare on minimal containers) still
+        # finds the binary.
+        for _te in (
+            "/usr/bin/tesseract",
+            "/usr/local/bin/tesseract",
+            "/opt/homebrew/bin/tesseract",
+            "/nix/var/nix/profiles/default/bin/tesseract",
+        ):
+            if os.path.isfile(_te):
+                return _te
     return None
 
 
@@ -90,7 +105,9 @@ def health():
         payload["tesseract"] = _tesseract_exe
     elif _ocr_engine == "none" and _easyocr_reader is None:
         payload["hint"] = (
-            "Install Tesseract OCR for Windows (UB Mannheim build), or set TESSERACT_CMD to the full path of tesseract.exe. "
+            "Tesseract OCR binary not found. Install via apt (`apt-get install tesseract-ocr`) on Linux, "
+            "the UB Mannheim build on Windows, or `brew install tesseract` on macOS. "
+            "Override the path with the TESSERACT_CMD environment variable. "
             "Alternatively install PyTorch + EasyOCR on Python 3.11–3.12."
         )
     return jsonify(payload)
