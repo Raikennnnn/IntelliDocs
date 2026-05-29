@@ -1,9 +1,0 @@
-# Nixpacks-specific overrides for the Flask AI service.
-#
-# We do NOT redefine the Python install phase here — Nixpacks already
-# detects requirements.txt and sets up python3 + pip + a virtualenv on its
-# own. Overriding that phase made `pip` disappear from PATH on the build
-# container (exit code 127). All we need to do is add the Tesseract OCR
-# system binary so pytesseract has something to call at runtime.
-[phases.setup]
-aptPkgs = ["tesseract-ocr"]
