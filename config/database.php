@@ -74,10 +74,11 @@ function ensureUsersRoleStrict(PDO $pdo): void
     }
 }
 
-$host = '127.0.0.1';
-$dbname = 'intellidocs_db';
-$username = 'root';
-$password = '';
+$host     = (string)(getenv('DB_HOST') ?: '127.0.0.1');
+$port     = (int)(getenv('DB_PORT') ?: 3306);
+$dbname   = (string)(getenv('DB_NAME') ?: 'intellidocs_db');
+$username = (string)(getenv('DB_USER') ?: 'root');
+$password = (string)(getenv('DB_PASS') ?: '');
 
 try {
     // Prevent requests from hanging if MySQL is down/unreachable.
@@ -95,7 +96,7 @@ try {
     }
 
     $pdo = new PDO(
-        "mysql:host={$host};port=3306;dbname={$dbname};charset=utf8mb4",
+        "mysql:host={$host};port={$port};dbname={$dbname};charset=utf8mb4",
         $username,
         $password,
         $pdoOptions

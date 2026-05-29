@@ -130,17 +130,32 @@ if (!function_exists('sessionGuard')) {
 if (!function_exists('rapidActionGuard')) {
     /**
      * Short-circuit with HTTP 429 when the actor has exceeded the configured
-     * action rate (default >10 actions in the last 2 minutes) — picked from
-     * the IntelliDocs anomaly rules table. Reads `activity_logs.created_at`
+     * action rate (default >10 *mutations* in the last 2 minutes) — picked
+     * from the IntelliDocs anomaly rules table. Reads `activity_logs.created_at`
      * so it works without any new schema.
+     *
+     * Scope: this only counts user-initiated mutations on the current request
+     * (POST/PUT/PATCH/DELETE), and the COUNT query excludes the guard's own
+     * bookkeeping rows (`anomaly_*`, `login*`, `logout*`, page-load reads
+     * recorded by handlers that log every successful GET). Without those
+     * exclusions, a single dashboard render could fan out to 8+ GETs and
+     * trip the limit on the very first page load.
      */
     function rapidActionGuard(PDO $pdo, int $userId, string $endpointLabel): void
     {
         if ($userId <= 0) return;
+
+        // Only enforce on mutating verbs. GETs (dashboard fan-out, polling,
+        // refreshes) are not "actions" the anomaly rule was designed to catch.
+        $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+        if (!in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+            return;
+        }
+
         $window = (int)(getenv('RAPID_ACTION_WINDOW_MINUTES') ?: 2);
         if ($window < 1) $window = 2;
-        $threshold = (int)(getenv('RAPID_ACTION_THRESHOLD') ?: 10);
-        if ($threshold < 1) $threshold = 10;
+        $threshold = (int)(getenv('RAPID_ACTION_THRESHOLD') ?: 30);
+        if ($threshold < 1) $threshold = 30;
 
         try {
             // activity_logs is created lazily by ensureLoggingTables(); if
@@ -151,10 +166,14 @@ if (!function_exists('rapidActionGuard')) {
             $stmt->execute([':t' => 'activity_logs']);
             if (!$stmt->fetchColumn()) return;
 
+            // Exclude the guard's own anomaly rows and pure auth/heartbeat
+            // events so a flood of those cannot rate-limit the user.
             $countStmt = $pdo->prepare(
                 "SELECT COUNT(*) FROM activity_logs
                  WHERE actor_user_id = :uid
-                   AND created_at >= (NOW() - INTERVAL {$window} MINUTE)"
+                   AND created_at >= (NOW() - INTERVAL {$window} MINUTE)
+                   AND action NOT LIKE 'anomaly_%'
+                   AND action NOT IN ('login', 'login_attempt', 'login_success', 'logout', 'logout_success')"
             );
             $countStmt->execute([':uid' => $userId]);
             $count = (int)$countStmt->fetchColumn();

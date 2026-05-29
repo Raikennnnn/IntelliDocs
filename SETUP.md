@@ -128,6 +128,41 @@ Optional `env` overrides for the credentials feature (sensible defaults are bake
 | `AUTH_LOGIN_FAILURE_THRESHOLD` | `5` | Failed attempts in the window before throttling |
 | `AUTH_LOGIN_FAILURE_WINDOW_MINUTES` | `15` | Minutes the failure counter spans |
 
+#### Brevo (transactional email) deployment notes
+
+OTP and welcome-email delivery goes through Brevo when `MAIL_PROVIDER=brevo`
+in `env`. Two account-side settings will silently break delivery and have
+nothing to do with the code:
+
+1. **Authorised IPs must be deactivated** unless you intend to maintain the
+   allowlist by hand. Brevo dashboard → bottom-left profile → **Settings →
+   Security → Authorized IPs**. If `Activate for API keys` or
+   `Activate for SMTP keys` is on, only listed IPs can send. A laptop
+   moving between Wi-Fi networks and any cloud host with a rotating
+   outbound IP will hit `HTTP 401 unauthorized` until you add the new IP.
+   Recommended: keep both deactivated; the API key itself is the auth.
+
+2. **`MAIL_FROM_ADDRESS` must be a verified sender.** Brevo dashboard →
+   **Senders, Domains & Dedicated IPs → Senders → Add a sender**, fill in
+   the address you set in `env`, then click the verification link Brevo
+   emails. Until verified, every send fails with HTTP 400.
+
+To verify both before going live, hit `/api/mail-health` from the deployed
+host. The endpoint calls Brevo `/v3/account` and `/v3/senders` without
+sending real mail and returns a JSON report with `ready: true` (or the
+exact issue if not). Admins can also `POST /api/mail-health` with
+`{ "recipient": "..." }` to send a real round-trip test message.
+
+Other Brevo failure modes the same endpoint surfaces:
+
+- `HTTP 401 unauthorized` on the API key → key was revoked (Brevo's
+  GitHub secret-scanning partner auto-revokes leaked keys). Generate a
+  new one in Brevo → SMTP & API → API Keys, paste into `env`.
+- `Could not resolve host: api.brevo.com` → DNS / captive-portal issue
+  on the network the server is on. Not a Brevo or code problem.
+- Free-tier daily send cap hit (300/day) → upgrade or wait until the
+  counter rolls over at UTC midnight.
+
 ### 5. Database
 
 Start MariaDB/MySQL (via XAMPP control panel or your service of choice).  Then in phpMyAdmin or via CLI:
@@ -267,3 +302,226 @@ Tesseract OCR binary is missing.  Install it; `app.py` autodiscovers
 PHP wasn't installed with that extension.  XAMPP has it; for clean PHP
 builds, enable the extension in `php.ini`.
 
+
+## Production deployment (InfinityFree + Railway)
+
+The same three-tier setup deploys to three different homes:
+
+| Tier | Host | Why |
+| --- | --- | --- |
+| Frontend (React build) | InfinityFree `htdocs/` | Static files, free tier |
+| PHP API + MySQL | InfinityFree `htdocs/IntelliDocs/public/` + InfinityFree MySQL | PHP 8 + MariaDB included |
+| AI service (Flask) | Railway | InfinityFree is PHP-only; Flask needs Python |
+| Email | Brevo | Cloud transactional API |
+
+InfinityFree cannot run Python, so the AI verification service moves to
+Railway (or Render / Fly / any host with Python 3.12). The PHP backend
+calls the AI service over HTTPS via `AI_BASE_URL` in `env`.
+
+### Pre-flight
+
+Before deploying, the seeded `admin@nsdga.com / admin123` and
+`registrar@nsdga.com / registrar123` accounts will exist in production
+the moment `database_setup.sql` is imported. **Log in and change both
+passwords immediately after the first deploy** — `database_setup.sql`
+is a public file in the repo.
+
+Confirm Brevo is ready (see "Brevo (transactional email) deployment
+notes" above): both Authorised IP toggles deactivated, sender verified,
+API key valid.
+
+### 1. Build the frontend for production
+
+Create `frontend/.env.production`:
+
+```
+VITE_API_TARGET=https://intellidocs.infinityfreeapp.com
+VITE_API_BASE=/IntelliDocs/public
+VITE_AI_BASE_URL=https://your-ai-service.up.railway.app
+```
+
+Then build:
+
+```powershell
+cd frontend
+npm run build
+```
+
+That produces `frontend/dist/` — these static files are uploaded to
+InfinityFree in step 6.
+
+### 2. InfinityFree MySQL
+
+InfinityFree dashboard → **MySQL Databases** → create a database. Note
+the values it returns (host looks like `sqlXYZ.infinityfree.com`, name
+and user have a `if0_<account>_` prefix).
+
+Open phpMyAdmin from the panel, select the new DB, **Import** →
+`database_setup.infinityfree.sql`. Then import each migration in this
+order (each is idempotent):
+
+```
+database_migration_logging.sql
+database_migration_email_queue.sql
+database_migration_credentials.sql
+database_migration_physical_docs.sql
+database_migration_role_tables.sql
+database_migration_users_role_enum.sql
+database_migration_users_role_strict.sql
+database_migration_student_portal.sql
+database_migration_app_settings.sql
+database_migration_documents_upload.sql
+database_migration_document_review.sql
+```
+
+### 3. Production `env`
+
+Make a fresh `env` for the deployed host (do NOT reuse the local one —
+DB credentials and `APP_PUBLIC_URL` are different):
+
+```
+DB_HOST=sqlXYZ.infinityfree.com
+DB_PORT=3306
+DB_NAME=if0_<account>_intellidocs
+DB_USER=if0_<account>
+DB_PASS=<your DB password>
+
+# AI service URL (set after step 5)
+AI_BASE_URL=https://your-ai-service.up.railway.app
+
+# Mail
+MAIL_PROVIDER=brevo
+BREVO_API_KEY=<your Brevo key>
+MAIL_FROM_ADDRESS=<verified Brevo sender>
+MAIL_FROM_NAME=Nuestra Señora De Guia Academy
+
+# Public URL (welcome-email links)
+APP_BASE_URL=https://intellidocs.infinityfreeapp.com
+APP_PUBLIC_URL=https://intellidocs.infinityfreeapp.com
+
+# Security knobs
+AUTH_LOGIN_FAILURE_THRESHOLD=5
+AUTH_LOGIN_FAILURE_WINDOW_MINUTES=15
+SESSION_IDLE_TIMEOUT_MINUTES=30
+RAPID_ACTION_THRESHOLD=30
+RAPID_ACTION_WINDOW_MINUTES=2
+```
+
+`config/database.php` reads `DB_HOST` / `DB_PORT` / `DB_NAME` /
+`DB_USER` / `DB_PASS` from env (falling back to local defaults), so the
+same code runs in dev and prod with no edits.
+
+### 4. Upload PHP backend
+
+Use InfinityFree's **File Manager** or FTP. Upload to `htdocs/`:
+
+```
+htdocs/
+├── api/                    (entire folder)
+├── app/                    (entire folder)
+├── config/                 (entire folder)
+├── public/                 (entire folder)
+├── system/                 (CodeIgniter)
+├── vendor/                 (run `composer install` LOCALLY first)
+├── writable/
+├── env                     (production env from step 3)
+├── preload.php
+└── composer.json, composer.lock, spark
+```
+
+**Skip:**
+- `frontend/` (built separately)
+- `ai/` (lives on Railway)
+- `node_modules/`, `.kiro/`, `.git/`, `tests/`, `scripts/`
+- `_fix_engine.py`, `*.sql` (already imported)
+- The local `env` file (use the production one)
+
+InfinityFree free tier caps file count around 30,000. `vendor/` is
+~5,000 files; if you hit the cap, upload `vendor/` as a zip via the
+online File Manager and extract on the server. If you still hit it,
+delete `vendor/codeigniter4/framework/{tests,user_guide_src}` (not
+needed at runtime) or upgrade to Premium.
+
+### 5. Deploy AI service to Railway
+
+Files committed to the repo make the AI service Railway-ready:
+
+- `ai/requirements.txt` — Python deps including `gunicorn`
+- `ai/runtime.txt` — pins Python 3.12
+- `ai/nixpacks.toml` — installs Tesseract OCR system binary
+- `ai/Procfile` — start command for gunicorn
+
+Steps:
+
+1. railway.app → **New Project → Deploy from GitHub** → IntelliDocs repo
+2. **Settings → Service → Root Directory** = `ai`
+3. **Settings → Networking → Generate Domain** — copy the URL
+4. Wait for build (~5 minutes; pulls Tesseract + numpy + opencv)
+5. Verify: `https://<railway-url>/health` returns `ocr_engine: tesseract`
+6. Paste the Railway URL into the production `env` as `AI_BASE_URL`
+   and re-upload `env`
+
+The Flask app reads `PORT` from the environment (set by Railway) and
+runs in production mode unless `FLASK_DEBUG=1`.
+
+### 6. Upload the React build
+
+Two layout options:
+
+**Same domain as PHP (simplest):** drop the contents of
+`frontend/dist/` into `htdocs/` directly. Frontend at
+`https://intellidocs.infinityfreeapp.com/`, API at
+`https://intellidocs.infinityfreeapp.com/IntelliDocs/public/api/...`.
+
+**Subfolder:** drop `dist/` into `htdocs/app/`. Set `VITE_BASE=/app/`
+in `frontend/.env.production` and rebuild.
+
+Add `htdocs/.htaccess` so React Router deep links survive page
+refresh:
+
+```apache
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # Let API requests pass through to PHP.
+  RewriteCond %{REQUEST_URI} ^/IntelliDocs/public/ [OR]
+  RewriteCond %{REQUEST_URI} ^/api/
+  RewriteRule ^ - [L]
+
+  # Don't rewrite real files or directories.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Everything else → SPA entry point.
+  RewriteRule ^ index.html [L]
+</IfModule>
+```
+
+### 7. Live smoke test
+
+In order, with DevTools Network tab open:
+
+1. `https://<infinityfree-domain>/IntelliDocs/public/api/mail-health`
+   → `{ "success": true, "report": { "ready": true, ... } }`
+2. `https://<railway-url>/health` → `ocr_engine: tesseract`
+3. SPA root loads → register a test student → OTP arrives in inbox
+4. Log in as seeded admin → **change the password immediately**
+5. Smoke-test the same three checks from "Common issues" above
+   (admin/users, admin/students, registrar approve flow)
+
+### 8. Known production gotchas
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `mail-health` returns `Brevo unreachable` only in prod | InfinityFree blocks outbound cURL on free tier | Upgrade to Premium, or switch `MAIL_PROVIDER=phpmail` (lower deliverability) |
+| `MySQL server has gone away` after idle | InfinityFree drops idle MySQL conns | Already mitigated by `PDO::ATTR_TIMEOUT`; if persistent, move DB to Railway/PlanetScale |
+| File count error during upload | `vendor/` has thousands of files | Upload as zip, extract on server, or delete `vendor/codeigniter4/framework/{tests,user_guide_src}` |
+| Frontend works but API calls 404 | `VITE_API_BASE` doesn't match the deploy path | Re-check `frontend/.env.production` and rebuild |
+| OTP works locally but fails in prod | Brevo `Authorized IPs` was re-enabled, or sender un-verified | Brevo dashboard → Security → deactivate; re-verify sender |
+
+### 9. Updating production
+
+Code change → push to GitHub → Railway auto-redeploys the AI service.
+PHP and frontend updates are manual (re-upload via File Manager) until
+you set up CI. For frequent deploys, consider an FTP-based GitHub
+Action that syncs `htdocs/`.

@@ -6,6 +6,10 @@ pytesseract>=0.3.13
 opencv-python==4.10.0.82
 numpy==1.26.4
 
+# Production WSGI server (used by Railway / Render via Procfile / nixpacks).
+# Local dev still uses Flask's built-in server via `python app.py`.
+gunicorn==22.0.0
+
 # Optional: EasyOCR needs PyTorch (use Python 3.11–3.12 for GPU/CPU wheels).
 # If installed and importable, app.py uses EasyOCR automatically.
 # EasyOCR==1.7.1

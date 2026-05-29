@@ -388,6 +388,24 @@ if ($action === 'login') {
         appLogEvent($pdo, 'login', 'auth', 'success', (int)$user['id'], 'user', (string)$user['id'], ['email' => $email, 'role' => $resolvedRole]);
         touchUserLastLogin($pdo, (int)$user['id']);
 
+        // Reset idle-session clock at login time. Without this, the
+        // sessionGuard in api/security_guard.php compares "now" against a
+        // stale users.last_activity_at left over from the previous session,
+        // which made the very first request after login fail with HTTP 401
+        // session_expired and bounce the user back to /login?reason=session_expired.
+        // Best-effort: column is created lazily and may be absent on
+        // permission-restricted DBs; failure must not block a successful login.
+        try {
+            require_once __DIR__ . '/security_guard.php';
+            ensureUserLastActivityColumn($pdo);
+            $resetActivity = $pdo->prepare('UPDATE users SET last_activity_at = NOW() WHERE id = :id LIMIT 1');
+            $resetActivity->execute([':id' => (int)$user['id']]);
+        } catch (Throwable $e) {
+            // Fall through: a missing column or permission issue means the
+            // sessionGuard will treat the next request as "no prior activity"
+            // (its own fail-open path), which is also acceptable.
+        }
+
         // Build the success response payload using the explicit allow-list
         // documented in design.md ("Auth_API Extension" → response shape).
         // Pulling fields by name (rather than echoing the whole row) keeps

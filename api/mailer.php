@@ -49,6 +49,10 @@ function sendViaBrevo(string $recipientEmail, string $subject, string $bodyText)
         return [false, 'BREVO_API_KEY or MAIL_FROM_ADDRESS missing'];
     }
 
+    if (!function_exists('curl_init')) {
+        return [false, 'PHP cURL extension is not enabled on this host'];
+    }
+
     $payload = json_encode([
         'sender' => ['email' => $fromEmail, 'name' => $fromName],
         'to' => [['email' => $recipientEmail]],
@@ -164,4 +168,150 @@ function processPendingEmailQueue(PDO $pdo, int $limit = 20): array
 function buildOtpEmailBody(string $otp): string
 {
     return "Your Nuestra Señora De Guia Academy verification code is: {$otp}\n\nThis code expires in 10 minutes.\nIf you did not request this, ignore this email.";
+}
+
+/**
+ * Pre-flight check for the configured mail transport. Returns a structured
+ * report admins can read from the browser BEFORE going live, so deployment
+ * surprises (revoked Brevo key, unverified sender, missing cURL, free-tier
+ * exhausted) surface as a concrete error instead of silent OTP failures.
+ *
+ * For the Brevo provider this calls `GET /v3/account` — a free, idempotent
+ * endpoint that validates the API key without sending mail. For phpmail it
+ * just confirms the `mail()` function exists.
+ *
+ * @return array{
+ *   ready: bool,
+ *   provider: string,
+ *   from: string,
+ *   issues: array<int,string>,
+ *   brevo?: array<string,mixed>
+ * }
+ */
+function checkMailerReadiness(): array
+{
+    $provider = strtolower((string)(getenv('MAIL_PROVIDER') ?: 'phpmail'));
+    $fromEmail = (string)(getenv('MAIL_FROM_ADDRESS') ?: '');
+    $fromName = (string)(getenv('MAIL_FROM_NAME') ?: '');
+    $issues = [];
+
+    if ($fromEmail === '') {
+        $issues[] = 'MAIL_FROM_ADDRESS is empty';
+    } elseif (!filter_var($fromEmail, FILTER_VALIDATE_EMAIL)) {
+        $issues[] = 'MAIL_FROM_ADDRESS is not a valid email';
+    }
+
+    $report = [
+        'ready' => false,
+        'provider' => $provider,
+        'from' => $fromEmail,
+        'from_name' => $fromName,
+        'issues' => $issues,
+    ];
+
+    if ($provider === 'brevo') {
+        $apiKey = (string)(getenv('BREVO_API_KEY') ?: '');
+        if ($apiKey === '') {
+            $issues[] = 'BREVO_API_KEY is empty';
+            $report['issues'] = $issues;
+            return $report;
+        }
+        if (!function_exists('curl_init')) {
+            $issues[] = 'PHP cURL extension is not enabled (required for Brevo)';
+            $report['issues'] = $issues;
+            return $report;
+        }
+
+        $ch = curl_init('https://api.brevo.com/v3/account');
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                'accept: application/json',
+                'api-key: ' . $apiKey,
+            ],
+            CURLOPT_TIMEOUT => 10,
+        ]);
+        $body = curl_exec($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+
+        $brevo = ['http' => $httpCode];
+        if ($body === false) {
+            $issues[] = 'Brevo unreachable: ' . $err;
+            $report['brevo'] = $brevo;
+            $report['issues'] = $issues;
+            return $report;
+        }
+
+        if ($httpCode === 401) {
+            $issues[] = 'Brevo rejected the API key (HTTP 401). It may have been revoked — generate a new one and update env.';
+            $report['brevo'] = $brevo;
+            $report['issues'] = $issues;
+            return $report;
+        }
+        if ($httpCode < 200 || $httpCode >= 300) {
+            $issues[] = 'Brevo /v3/account returned HTTP ' . $httpCode . ': ' . substr((string)$body, 0, 300);
+            $report['brevo'] = $brevo;
+            $report['issues'] = $issues;
+            return $report;
+        }
+
+        // Decode account info (plan, sender quota) for the report.
+        $decoded = json_decode((string)$body, true);
+        if (is_array($decoded)) {
+            $brevo['plan'] = $decoded['plan'] ?? null;
+            $brevo['email'] = $decoded['email'] ?? null;
+            $brevo['company'] = $decoded['companyName'] ?? null;
+        }
+        $report['brevo'] = $brevo;
+
+        // Verify the configured sender is actually authorized in Brevo.
+        if ($fromEmail !== '') {
+            $ch2 = curl_init('https://api.brevo.com/v3/senders');
+            curl_setopt_array($ch2, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => [
+                    'accept: application/json',
+                    'api-key: ' . $apiKey,
+                ],
+                CURLOPT_TIMEOUT => 10,
+            ]);
+            $sBody = curl_exec($ch2);
+            $sCode = (int)curl_getinfo($ch2, CURLINFO_RESPONSE_CODE);
+            curl_close($ch2);
+
+            if ($sCode >= 200 && $sCode < 300 && is_string($sBody)) {
+                $sDecoded = json_decode($sBody, true);
+                $senders = is_array($sDecoded['senders'] ?? null) ? $sDecoded['senders'] : [];
+                $matched = false;
+                foreach ($senders as $sender) {
+                    $senderEmail = strtolower((string)($sender['email'] ?? ''));
+                    if ($senderEmail === strtolower($fromEmail)) {
+                        $matched = true;
+                        $brevo['sender_active'] = (bool)($sender['active'] ?? false);
+                        break;
+                    }
+                }
+                if (!$matched) {
+                    $issues[] = 'MAIL_FROM_ADDRESS (' . $fromEmail . ') is not a verified Brevo sender. Add it under Brevo → Senders & IPs → Senders, then click the verification link.';
+                } elseif (isset($brevo['sender_active']) && !$brevo['sender_active']) {
+                    $issues[] = 'MAIL_FROM_ADDRESS (' . $fromEmail . ') is registered in Brevo but not yet active. Confirm the verification email.';
+                }
+                $report['brevo'] = $brevo;
+            }
+        }
+
+        $report['issues'] = $issues;
+        $report['ready'] = empty($issues);
+        return $report;
+    }
+
+    // phpmail fallback
+    if (!function_exists('mail')) {
+        $issues[] = 'PHP mail() is not available on this host';
+    }
+    $report['issues'] = $issues;
+    $report['ready'] = empty($issues);
+    return $report;
 }

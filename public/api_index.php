@@ -122,6 +122,10 @@ switch ($route) {
     case 'school-year/':
         require_once __DIR__ . '/../api/school_year.php';
         break;
+    case 'mail-health':
+    case 'mail-health/':
+        require_once __DIR__ . '/../api/mail_health.php';
+        break;
     default:
         http_response_code(404);
         echo json_encode(['error' => 'API not found']);
