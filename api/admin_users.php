@@ -59,23 +59,18 @@ function toDbStatus(string $status): ?string
     return null;
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    appLogEvent($pdo, 'admin_users_list', 'admin', 'failed', null, 'endpoint', 'admin/users', ['reason' => 'missing_user_context']);
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-
-if (getUserRole($pdo, $actorId) !== 'admin') {
-    appLogEvent($pdo, 'admin_users_list', 'admin', 'failed', $actorId > 0 ? $actorId : null, 'endpoint', 'admin/users', ['reason' => 'access_denied']);
+require_once __DIR__ . '/api_auth.php';
+require_once __DIR__ . '/permission_guard.php';
+$actor = apiRequireActor($pdo, 'admin/users');
+$actorId = $actor['id'];
+$actorRole = $actor['role'];
+if ($actorRole !== 'admin') {
     http_response_code(403);
     echo json_encode(['success' => false, 'error' => 'Access denied']);
     exit;
 }
 
-require_once __DIR__ . '/security_guard.php';
-runAuthenticatedSecurityGuards($pdo, $actorId, 'admin/users');
+requireActorPermission($pdo, $actor, 'manageUsers', false);
 
 try {
     if ($method === 'DELETE') {

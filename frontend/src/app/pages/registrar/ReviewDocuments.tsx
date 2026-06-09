@@ -39,7 +39,49 @@ import { useEffect, useState } from "react";
 import { useRef } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
-import { apiFetch } from "../../lib/api";
+import { apiFetch, formatApiError } from "../../lib/api";
+import { guessDocKind } from "../../lib/documentPreview";
+import { SecureDocumentPreview } from "../../components/SecureDocumentPreview";
+import {
+  SecurityLevelsPanel,
+  type SecurityLevels,
+} from "../../components/SecurityLevelsPanel";
+import { DocumentConcernChips } from "../../components/DocumentConcernChips";
+import {
+  ConcernScoringHelp,
+  DocumentConcernFormula,
+} from "../../components/ConcernComputationNote";
+import {
+  AiReviewScoreExplainer,
+  buildOverallScoreBreakdown,
+} from "../../components/AiReviewScoreExplainer";
+import { computeWeightedVerificationScore } from "../../lib/documentVerificationWeights";
+import {
+  verificationScoreTextClass,
+  concernScoreBadgeClasses,
+  concernScoreSurfaceClasses,
+  concernScoreTextClass,
+} from "../../lib/verificationScoreColors";
+import {
+  concernRiskLabel,
+  syntheticConcernPercent,
+  tamperConcernPercent,
+} from "../../lib/concernScore";
+import {
+  CONCERN_MANUAL_THRESHOLD,
+  CONCERN_STRICT_THRESHOLD,
+  documentAverageConcernFromAi,
+  documentConcernFromAi,
+} from "../../lib/concernScore";
+import { cn } from "../../components/ui/utils";
+
+function applicationReviewStatusBadgeClass(status: string): string {
+  const s = status.toLowerCase().trim();
+  if (s.includes("enrolled") || s === "approved") return "bg-green-600";
+  if (s.includes("review")) return "bg-blue-600";
+  if (s.includes("reject")) return "bg-red-600";
+  return "bg-yellow-600";
+}
 
 type AiVerifyStatus = "verified" | "failed";
 type AiDocType =
@@ -68,6 +110,10 @@ type AiVerifyResponse = {
     ok: boolean;
     match_ratio?: number;
     missing_tokens?: string[];
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
   }>;
   doc_checks?: Array<{
     field: string;
@@ -75,6 +121,9 @@ type AiVerifyResponse = {
   }>;
   image_width?: number;
   image_height?: number;
+  requested_doc_type?: string;
+  resolved_doc_type?: string;
+  v?: number;
   tamper_cells?: Array<{
     text: string;
     x: number;
@@ -98,15 +147,9 @@ type AiVerifyResponse = {
   extracted_text?: string;
   word_count?: number;
   issues?: string[];
+  quality?: { pass?: boolean; score?: number; message?: string; issues?: string[] };
+  security_levels?: SecurityLevels;
 };
-
-function guessDocKind(mimeType: string | undefined, fileName: string | undefined): "pdf" | "image" | "other" {
-  const mt = (mimeType || "").toLowerCase();
-  const fn = (fileName || "").toLowerCase();
-  if (mt.includes("pdf") || fn.endsWith(".pdf")) return "pdf";
-  if (mt.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|svg)$/.test(fn)) return "image";
-  return "other";
-}
 
 /** Detect real file type from bytes so we don't feed JSON/HTML into <img>. */
 function sniffBinaryKind(buf: ArrayBuffer): "jpeg" | "png" | "gif" | "webp" | "pdf" | "json" | "html" | "unknown" {
@@ -182,48 +225,56 @@ function mimeForSniff(s: ReturnType<typeof sniffBinaryKind>, fileName: string | 
   }
 }
 
-/** Average of per-document AI confidence scores (same source as the Documents tab). */
-function computeAggregateAiScore(documents: unknown): number | null {
-  if (!Array.isArray(documents) || documents.length === 0) return null;
-  const scores: number[] = [];
-  for (const d of documents) {
-    const n = Number((d as { aiConfidence?: unknown }).aiConfidence);
-    if (!Number.isFinite(n)) continue;
-    scores.push(n);
-  }
-  if (scores.length === 0) return null;
-  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
-  return Math.round(avg);
+function weightedVerificationFromDocuments(
+  documents: unknown,
+  getPct: (doc: { id?: unknown; aiConfidence?: unknown }) => number | null,
+) {
+  return computeWeightedVerificationScore(documents, getPct);
 }
 
-type AiReviewTier = "face_to_face" | "manual" | "light";
+function weightedVerificationFromAi(
+  documents: unknown,
+  aiResultsByDocId: Record<string, AiVerifyResponse>,
+) {
+  return weightedVerificationFromDocuments(documents, (doc) => {
+    const fromDoc = (doc as { aiConfidence?: unknown }).aiConfidence;
+    if (typeof fromDoc === "number" && Number.isFinite(fromDoc)) {
+      return fromDoc;
+    }
+    const id = String((doc as { id?: unknown }).id ?? "");
+    const r = aiResultsByDocId[id];
+    return documentAverageConcernFromAi(r);
+  });
+}
 
-function getAiReviewTier(score: number): {
+type AiReviewTier = "strict_manual" | "manual" | "light";
+
+function getAiReviewTier(concernScore: number): {
   tier: AiReviewTier;
   title: string;
   body: string;
   accent: string;
 } {
-  if (score < 75) {
+  if (concernScore > CONCERN_STRICT_THRESHOLD) {
     return {
-      tier: "face_to_face",
-      title: "Face-to-face verification required",
-      body: "Overall AI score is below 75%. Per policy, this applicant must pass face-to-face verification before enrollment can proceed.",
+      tier: "strict_manual",
+      title: "Strict manual verification required",
+      body: `Overall concern is above ${CONCERN_STRICT_THRESHOLD}%. Please personally verify this applicant's documents and identity before approving the enrollment.`,
       accent: "border-red-200 bg-red-50/80 text-red-900",
     };
   }
-  if (score < 90) {
+  if (concernScore > CONCERN_MANUAL_THRESHOLD) {
     return {
       tier: "manual",
       title: "Manual registrar review required",
-      body: "Overall AI score is between 75% and 89%. Documents should be manually reviewed by the registrar before a final decision.",
+      body: `Overall concern is between ${CONCERN_MANUAL_THRESHOLD + 1}% and ${CONCERN_STRICT_THRESHOLD}%. Documents should be manually reviewed by the registrar before a final decision.`,
       accent: "border-amber-200 bg-amber-50/80 text-amber-950",
     };
   }
   return {
     tier: "light",
     title: "Routine review",
-    body: "Overall AI score is 90% or higher. Manual document checking is not required beyond normal procedures; still confirm identity and completeness as needed.",
+    body: `Overall concern is ${CONCERN_MANUAL_THRESHOLD}% or lower. No extra manual checking is required beyond normal procedures; still confirm identity and completeness as needed.`,
     accent: "border-emerald-200 bg-emerald-50/80 text-emerald-950",
   };
 }
@@ -243,6 +294,323 @@ function docCheckShortTitle(dt: AiDocType): string {
   }
 }
 
+function enrollmentCrossCheckTitle(dt: AiDocType): string {
+  switch (dt) {
+    case "birth_certificate":
+      return "Enrollment vs PSA (identity)";
+    case "good_moral":
+      return "Enrollment vs certificate";
+    case "sf9":
+    case "form137":
+      return "Enrollment vs school record";
+    default:
+      return "Enrollment vs document";
+  }
+}
+
+function resolveApplicationStudentName(app: any): string {
+  const fromParts = [app?.givenName, app?.middleName, app?.lastName, app?.extensionName]
+    .map((p) => String(p ?? "").trim())
+    .filter(Boolean)
+    .join(" ");
+  return String(app?.studentName || fromParts || "").trim();
+}
+
+function resolveApplicationVerifyFields(app: any) {
+  return {
+    name: resolveApplicationStudentName(app),
+    lrn: String(app?.lrn || "").trim(),
+    sex: String(app?.gender || "").trim(),
+    schoolYear: String(app?.lastSchoolYearAttended || "").trim(),
+    prevSchool: String(app?.previousSchoolAttended || "").trim(),
+    dob: String(app?.birthDate || "").trim(),
+    birthPlace: String(app?.birthPlace || "").trim(),
+    gradeLevel: String(app?.gradeLevel || "").trim(),
+    strand: String(app?.strand || "").trim(),
+  };
+}
+
+const AI_VERIFY_PAYLOAD_VERSION = 9;
+
+/** Good moral: grade level and strand are not enrollment cross-checks. */
+const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
+
+/** Visual/document scans shown in cross-check but not enrollment MM %. */
+const ENROLLMENT_MM_EXCLUDED_FIELDS = new Set(["signature"]);
+
+type FieldCheckRow = NonNullable<AiVerifyResponse["field_checks"]>[number];
+
+function filterFieldChecksForDocType(docType: AiDocType, fieldChecks: FieldCheckRow[]): FieldCheckRow[] {
+  if (docType !== "good_moral") return fieldChecks;
+  return fieldChecks.filter(
+    (fc) => !GOOD_MORAL_EXCLUDED_CROSS_FIELDS.has(String(fc.field || "").trim().toLowerCase()),
+  );
+}
+
+function filterIssuesForDocType(docType: AiDocType, issues: string[]): string[] {
+  if (docType !== "good_moral") return issues;
+  return issues.filter((issue) => {
+    const lower = issue.toLowerCase();
+    return !lower.includes("grade level") && !lower.includes("strand");
+  });
+}
+
+function singleFieldCheckConcernPct(fc: FieldCheckRow): number {
+  if (fc.ok) return 0;
+  if (typeof fc.match_ratio === "number" && Number.isFinite(fc.match_ratio)) {
+    return Math.max(1, 100 - Math.round(fc.match_ratio * 100));
+  }
+  return 100;
+}
+
+function isEnrollmentMmField(field: string): boolean {
+  return !ENROLLMENT_MM_EXCLUDED_FIELDS.has(field.trim().toLowerCase());
+}
+
+function fieldCheckConcernPct(fieldChecks: FieldCheckRow[]): number {
+  const failed = fieldChecks.filter((fc) => fc.ok === false && isEnrollmentMmField(String(fc.field || "")));
+  if (!failed.length) return 0;
+  const perField = failed.map(singleFieldCheckConcernPct);
+  return Math.max(
+    1,
+    Math.min(100, Math.round(perField.reduce((sum, n) => sum + n, 0) / perField.length)),
+  );
+}
+
+function rebuildMismatchSecurityLevel(
+  security: AiVerifyResponse["security_levels"],
+  fieldChecks: FieldCheckRow[],
+  _docChecks: Array<{ field?: string; ok?: boolean }> = [],
+): AiVerifyResponse["security_levels"] {
+  const failed = fieldChecks.filter(
+    (fc) => fc.ok === false && isEnrollmentMmField(String(fc.field || "")),
+  );
+  const concern = failed.length ? fieldCheckConcernPct(failed) : 0;
+  const failedNames = failed.map((fc) => String(fc.field || "").trim()).filter(Boolean);
+  const summaryFields = failedNames.slice(0, 6);
+  const mismatchIssues = failedNames
+    .map((n) => `Mismatch: ${n} does not match the student's enrollment.`)
+    .slice(0, 8);
+  const hasMismatch = failed.length > 0;
+  const mismatchLevel = {
+    level: 1,
+    title: "Document & enrollment mismatch",
+    pass: !hasMismatch,
+    score: hasMismatch ? concern : 0,
+    summary: hasMismatch
+      ? `Mismatch concern ${concern}% — missing or mismatched: ${summaryFields.join(", ")}.`
+      : "No document or enrollment mismatch — 0% concern.",
+    issues: mismatchIssues,
+  };
+
+  if (!security?.levels?.length) {
+    if (!hasMismatch) return security;
+    return {
+      levels: [mismatchLevel],
+      overall_pass: false,
+      alert_level: 1,
+      highest_level_passed: 1,
+      quality_enforced_at_upload: true,
+    };
+  }
+
+  const levels = security.levels.map((lv) =>
+    /mismatch|enrollment/i.test(lv.title)
+      ? { ...lv, ...mismatchLevel, level: lv.level }
+      : lv,
+  );
+  const tamperOk = levels.find((l) => /tamper|integrity/i.test(l.title))?.pass ?? true;
+  return {
+    ...security,
+    levels,
+    overall_pass: !hasMismatch && Boolean(tamperOk),
+    alert_level: hasMismatch ? 1 : (security.alert_level ?? 0),
+  };
+}
+
+function filterSecurityLevelsForDocType(
+  docType: AiDocType,
+  security: AiVerifyResponse["security_levels"],
+  fieldChecks: FieldCheckRow[] = [],
+  docChecks: Array<{ field?: string; ok?: boolean }> = [],
+): AiVerifyResponse["security_levels"] {
+  return rebuildMismatchSecurityLevel(security, fieldChecks, docChecks);
+}
+
+function aiResultForDisplay(
+  docType: AiDocType,
+  r: AiVerifyResponse | undefined | null,
+): AiVerifyResponse | null {
+  if (!r) return null;
+  const field_checks = filterFieldChecksForDocType(
+    docType,
+    Array.isArray(r.field_checks) ? r.field_checks : [],
+  );
+  const doc_checks = Array.isArray(r.doc_checks) ? r.doc_checks : [];
+  const base =
+    docType === "good_moral"
+      ? {
+          ...r,
+          field_checks,
+          doc_checks,
+          issues: filterIssuesForDocType(docType, Array.isArray(r.issues) ? r.issues : []),
+        }
+      : { ...r, field_checks, doc_checks };
+  return {
+    ...base,
+    security_levels: filterSecurityLevelsForDocType(
+      docType,
+      base.security_levels,
+      field_checks,
+      doc_checks,
+    ),
+  };
+}
+
+function aiDocTypeFromResolved(resolved: string): AiDocType | null {
+  const r = resolved.toLowerCase().trim();
+  if (r === "birth_certificate" || r === "birthcert") return "birth_certificate";
+  if (r === "good_moral" || r === "goodmoral") return "good_moral";
+  if (r === "sf9" || r === "report_card") return "sf9";
+  if (r === "sf10" || r === "form137" || r === "form157") return "form137";
+  if (r === "photo_2x2" || r === "2x2" || r === "id_photo" || r === "photo") return "photo_2x2";
+  return null;
+}
+
+function normalizeDocTypeFromLabel(label: string): AiDocType {
+  const l = label.toLowerCase().trim();
+  if (!l) return "other";
+  if (l.includes("2x2") || (l.includes("picture") && l.includes("white"))) return "photo_2x2";
+  if (l.includes("psa") || l.includes("birth")) return "birth_certificate";
+  if (l.includes("good moral")) return "good_moral";
+  if (l.includes("sf9") || l.includes("report card")) return "sf9";
+  if (l.includes("form 137") || l.includes("form137") || l.includes("sf10")) return "form137";
+  return "other";
+}
+
+type EnrollmentCrossRow = {
+  field: string;
+  expected: string;
+  detected?: string;
+  ok: boolean | null;
+  match_ratio?: number;
+};
+
+/** Enrollment form fields that should be compared to OCR for each requirement type. */
+function enrollmentCrossCheckPlan(docType: AiDocType, app: any): EnrollmentCrossRow[] {
+  const f = resolveApplicationVerifyFields(app);
+  const maybe = (field: string, expected: string): EnrollmentCrossRow | null =>
+    expected.trim() ? { field, expected: expected.trim(), ok: null } : null;
+
+  if (docType === "birth_certificate") {
+    return [
+      maybe("Name", f.name),
+      maybe("Sex", f.sex),
+      maybe("Date of birth", f.dob),
+      maybe("Place of birth", f.birthPlace),
+    ].filter(Boolean) as EnrollmentCrossRow[];
+  }
+  if (docType === "good_moral") {
+    return [
+      maybe("Name", f.name),
+      maybe("Previous school", f.prevSchool),
+      maybe("School year", f.schoolYear),
+      { field: "Signature", expected: "Handwritten signature present", ok: null },
+    ].filter(Boolean) as EnrollmentCrossRow[];
+  }
+  if (docType === "sf9" || docType === "form137") {
+    return [
+      maybe("Name", f.name),
+      maybe("LRN", f.lrn),
+      maybe("Sex", f.sex),
+      maybe("School year", f.schoolYear),
+      maybe("Previous school", f.prevSchool),
+      maybe("Grade level", f.gradeLevel),
+    ].filter(Boolean) as EnrollmentCrossRow[];
+  }
+  const nameRow = maybe("Name", f.name);
+  return nameRow ? [nameRow] : [];
+}
+
+function applyEnrollmentCrossChecks(
+  plan: EnrollmentCrossRow[],
+  aiChecks: Array<{ field?: string; expected?: string; detected?: string; ok?: boolean; match_ratio?: number }>,
+): EnrollmentCrossRow[] {
+  return plan.map((row) => {
+    const hit = aiChecks.find(
+      (c) => String(c.field || "").toLowerCase() === row.field.toLowerCase(),
+    );
+    if (!hit) return row;
+    return {
+      field: row.field,
+      expected: String(hit.expected ?? row.expected),
+      detected: hit.detected ? String(hit.detected) : "",
+      ok: Boolean(hit.ok),
+      match_ratio: typeof hit.match_ratio === "number" ? hit.match_ratio : undefined,
+    };
+  });
+}
+
+function summarizeEnrollmentCrossRows(rows: EnrollmentCrossRow[]) {
+  const judged = rows.filter((r) => r.ok !== null);
+  const okCount = judged.filter((r) => r.ok === true).length;
+  const badCount = judged.filter((r) => r.ok === false).length;
+  const pendingCount = rows.filter((r) => r.ok === null).length;
+  const badBits = judged
+    .filter((r) => r.ok === false)
+    .map((r) =>
+      typeof r.match_ratio === "number" && Number.isFinite(r.match_ratio)
+        ? `${r.field} (${Math.round(r.match_ratio * 100)}%)`
+        : r.field,
+    );
+  const okNames = judged.filter((r) => r.ok === true).map((r) => r.field);
+  return { okCount, badCount, pendingCount, total: rows.length, badBits, okNames };
+}
+
+function isAiVerifyPayloadStale(docType: AiDocType, app: any, r?: AiVerifyResponse | null): boolean {
+  if (!r) return true;
+  const version = Number(r.v ?? 0);
+  if (version > 0 && version < AI_VERIFY_PAYLOAD_VERSION) return true;
+  if (!r.resolved_doc_type) return true;
+  const effective = aiDocTypeFromResolved(String(r.resolved_doc_type ?? "")) ?? docType;
+  if (effective === "good_moral" && Array.isArray(r.field_checks)) {
+    const hasExcluded = r.field_checks.some((fc) =>
+      GOOD_MORAL_EXCLUDED_CROSS_FIELDS.has(String(fc.field || "").trim().toLowerCase()),
+    );
+    if (hasExcluded) return true;
+    const hasSignatureScan = r.field_checks.some(
+      (fc) => String(fc.field || "").trim().toLowerCase() === "signature",
+    );
+    if (!hasSignatureScan) return true;
+  }
+  const mismatchLv = r.security_levels?.levels?.find((lv) =>
+    /mismatch|enrollment/i.test(lv.title),
+  );
+  const failedFields = filterFieldChecksForDocType(effective, r.field_checks ?? []).filter(
+    (fc) => fc.ok === false,
+  );
+  if (mismatchLv?.pass && failedFields.length > 0) return true;
+  if (Number(r.v ?? 0) > 0 && Number(r.v ?? 0) < AI_VERIFY_PAYLOAD_VERSION && failedFields.length > 0) {
+    return true;
+  }
+  if (mismatchLv?.summary && failedFields.length > 1) {
+    const listed = failedFields.filter((fc) =>
+      mismatchLv.summary!.toLowerCase().includes(String(fc.field || "").toLowerCase()),
+    );
+    if (listed.length < failedFields.length) return true;
+  }
+  const planned = enrollmentCrossCheckPlan(effective, app).length;
+  if (planned <= 0) return false;
+  const got = filterFieldChecksForDocType(effective, r.field_checks ?? []).length;
+  return got < Math.min(planned, 3);
+}
+
+function aiVerifyFromDocument(doc: { aiVerify?: AiVerifyResponse | null }): AiVerifyResponse | null {
+  const payload = doc?.aiVerify;
+  if (!payload || typeof payload !== "object") return null;
+  return payload as AiVerifyResponse;
+}
+
 function summarizeDocChecks(docChecks: Array<{ field: string; ok: boolean }>) {
   const missing = docChecks.filter((c) => !c.ok);
   const pass = docChecks.length - missing.length;
@@ -255,6 +623,34 @@ function summarizeDocChecks(docChecks: Array<{ field: string; ok: boolean }>) {
     total: docChecks.length,
     missingShort: missing.map((m) => shortLabel(m.field)),
   };
+}
+
+/** One-line explanation for the Documents tab (plain language). */
+function documentAiSummaryLine(opts: {
+  ai?: AiVerifyResponse;
+  isPhoto: boolean;
+  concernPct: number | null;
+  aiState?: "pending" | "running" | "done" | "error";
+  clearedOnFile?: boolean;
+}): string {
+  const { ai, isPhoto, concernPct, aiState, clearedOnFile } = opts;
+  if (aiState === "running") return "AI is checking this file…";
+  if (aiState === "error") return "AI check did not finish — open View and verify manually.";
+  if (clearedOnFile && concernPct === null) {
+    return "Previously verified on file. Re-run AI only if you need a fresh score.";
+  }
+  if (concernPct === null) return "Not scored yet. Click Re-run AI above after uploads finish.";
+
+  if (concernPct > CONCERN_STRICT_THRESHOLD || ai?.status === "failed") {
+    return "High concern — open View and verify before approving.";
+  }
+  if (concernPct > CONCERN_MANUAL_THRESHOLD) {
+    return "Moderate concern — a quick manual check is recommended.";
+  }
+  if (isPhoto) {
+    return "Low concern — photo checks look clear.";
+  }
+  return "Low concern — mismatch and tamper checks look clear.";
 }
 
 function summarizeFieldChecks(fieldChecks: NonNullable<AiVerifyResponse["field_checks"]>) {
@@ -283,6 +679,7 @@ export function ReviewDocuments() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewImgRef = useRef<HTMLImageElement | null>(null);
   const [previewImgBox, setPreviewImgBox] = useState<{ w: number; h: number } | null>(null);
+  const [previewLightboxOpen, setPreviewLightboxOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [application, setApplication] = useState<any | null>(null);
@@ -301,69 +698,89 @@ export function ReviewDocuments() {
   // action directly, so an accidental click never commits a final decision.
   // The dialog itself contains the remarks textarea (rejection only).
   const [decisionDialog, setDecisionDialog] = useState<null | "approve" | "reject">(null);
+  // When overall concern exceeds the strict threshold, the approve dialog forces
+  // the registrar to tick this checkbox before confirm is enabled.
+  const [lowScoreOverrideAck, setLowScoreOverrideAck] = useState(false);
   // Tracks per-document review-toggle in-flight; document id (string) → boolean.
   const [reviewSubmittingByDocId, setReviewSubmittingByDocId] = useState<Record<string, boolean>>({});
+  const [docDecisionDialogOpen, setDocDecisionDialogOpen] = useState(false);
+  const [docDecisionRemarks, setDocDecisionRemarks] = useState("");
+  const [docDecisionSubmitting, setDocDecisionSubmitting] = useState(false);
 
   const mapDocType = (doc: any): AiDocType => {
-    const label = String(doc?.requirementLabel ?? doc?.type ?? doc?.name ?? doc?.fileName ?? "").toLowerCase();
-    if (label.includes("2x2") || (label.includes("picture") && label.includes("white"))) return "photo_2x2";
-    if (label.includes("form 137") || label.includes("form137") || label.includes("sf10")) return "form137";
-    if (label.includes("sf9") || label.includes("report card")) return "sf9";
-    if (label.includes("good moral")) return "good_moral";
-    if (label.includes("birth")) return "birth_certificate";
-    return "other";
+    const label = String(doc?.requirementLabel ?? doc?.type ?? "").trim();
+    if (label) return normalizeDocTypeFromLabel(label);
+    const fallback = String(doc?.name ?? doc?.fileName ?? "").trim();
+    return fallback ? normalizeDocTypeFromLabel(fallback) : "other";
   };
 
-  const aiBadge = (r: AiVerifyResponse | undefined) => {
-    if (!r) return null;
-    if (r.status === "verified") return <Badge className="bg-emerald-600">AI Verified</Badge>;
-    return <Badge className="bg-rose-600">AI Failed</Badge>;
+  const resolveEffectiveDocType = (doc: any, ai?: AiVerifyResponse | null): AiDocType => {
+    const fromAi = aiDocTypeFromResolved(String(ai?.resolved_doc_type ?? ""));
+    if (fromAi) return fromAi;
+    return mapDocType(doc);
   };
 
-  const aiProgressBadge = (docId: string) => {
-    const st = aiDocStateById[docId]?.state;
-    if (!st || st === "pending") return <Badge className="bg-slate-500">AI Pending</Badge>;
-    if (st === "running") return <Badge className="bg-indigo-600">AI Running</Badge>;
-    if (st === "error") return <Badge className="bg-amber-600">AI Error</Badge>;
-    return null;
+  /** PSA identity fields — always sent so content-detected birth certs get full checks. */
+  const buildIdentityVerifyQuery = (app: any): string => {
+    const q = (key: string, value: string) =>
+      value.trim() ? `&${key}=${encodeURIComponent(value.trim())}` : "";
+    const { name, sex, dob, birthPlace } = resolveApplicationVerifyFields(app);
+    return (
+      q("expected_name", name) +
+      q("expected_sex", sex) +
+      q("expected_dob", dob) +
+      q("expected_birth_place", birthPlace)
+    );
   };
 
-  const aiConfidencePercent = (r: AiVerifyResponse | undefined): number | null => {
-    if (!r) return null;
-    const p = Math.round(Number(r.confidence) * 100);
-    return Number.isFinite(p) ? Math.max(0, Math.min(100, p)) : null;
+  /** Only send enrollment fields the AI should compare for this document type. */
+  const buildExpectedVerifyQuery = (docType: AiDocType, app: any): string => {
+    const q = (key: string, value: string) =>
+      value.trim() ? `&${key}=${encodeURIComponent(value.trim())}` : "";
+    const {
+      name,
+      lrn,
+      sex,
+      schoolYear,
+      prevSchool,
+      dob,
+      birthPlace,
+      gradeLevel,
+      strand,
+    } = resolveApplicationVerifyFields(app);
+    const identity = buildIdentityVerifyQuery(app);
+
+    if (docType === "birth_certificate") {
+      return identity;
+    }
+    if (docType === "good_moral") {
+      return (
+        q("expected_name", name) +
+        q("expected_prev_school", prevSchool) +
+        q("expected_school_year", schoolYear) +
+        identity
+      );
+    }
+    if (docType === "sf9" || docType === "form137") {
+      return (
+        q("expected_name", name) +
+        q("expected_lrn", lrn) +
+        q("expected_sex", sex) +
+        q("expected_school_year", schoolYear) +
+        q("expected_prev_school", prevSchool) +
+        q("expected_grade_level", gradeLevel) +
+        identity
+      );
+    }
+    return q("expected_name", name) + identity;
   };
 
-  const tamperPercent = (r: AiVerifyResponse | undefined): number | null => {
-    if (!r || typeof r.tamper_score !== "number") return null;
-    const p = Math.round(Number(r.tamper_score) * 100);
-    return Number.isFinite(p) ? Math.max(0, Math.min(100, p)) : null;
-  };
+  const documentConcernPercent = (r: AiVerifyResponse | undefined): number | null =>
+    documentAverageConcernFromAi(r);
 
-  const syntheticPercent = (r: AiVerifyResponse | undefined): number | null => {
-    if (!r || typeof r.synthetic_score !== "number") return null;
-    const p = Math.round(Number(r.synthetic_score) * 100);
-    return Number.isFinite(p) ? Math.max(0, Math.min(100, p)) : null;
-  };
+  const tamperPercent = (r: AiVerifyResponse | undefined): number | null => tamperConcernPercent(r);
 
-  const tamperBadge = (r: AiVerifyResponse | undefined) => {
-    const p = tamperPercent(r);
-    if (p === null) return null;
-    if (r?.tamper_applicable === false) return null;
-    if (p < 35) return <Badge className="bg-rose-600">Tamper: High risk</Badge>;
-    if (p < 65) return <Badge className="bg-amber-600">Tamper: Warning</Badge>;
-    return <Badge className="bg-emerald-600">Tamper: Low risk</Badge>;
-  };
-
-  const syntheticBadge = (r: AiVerifyResponse | undefined) => {
-    const p = syntheticPercent(r);
-    if (p === null) return null;
-    if (r?.synthetic_applicable === false) return null;
-    // Lower score => more suspicious
-    if (p < 55) return <Badge className="bg-fuchsia-700">Synthetic: Suspicious</Badge>;
-    if (p < 75) return <Badge className="bg-indigo-700">Synthetic: Check</Badge>;
-    return <Badge className="bg-slate-700">Synthetic: Low</Badge>;
-  };
+  const syntheticPercent = (r: AiVerifyResponse | undefined): number | null => syntheticConcernPercent(r);
 
   const summarizeTamper = (r: AiVerifyResponse | undefined): { title: string; body: string; tone: string } | null => {
     if (!r) return null;
@@ -379,24 +796,17 @@ export function ReviewDocuments() {
     const hasWarn =
       cells.some((c) => c?.risk === "warning") || fields.some((f) => f?.risk === "warning");
 
-    const risk = hasHigh ? "High risk" : hasWarn ? "Warning" : "Low risk";
-    const tone = hasHigh
-      ? "border-rose-200 bg-rose-50 text-rose-900"
-      : hasWarn
-        ? "border-amber-200 bg-amber-50 text-amber-950"
-        : "border-emerald-200 bg-emerald-50 text-emerald-950";
+    const concernPct = tamperPercent(r) ?? 0;
+    const risk =
+      concernPct <= 10 ? "Clear" : hasHigh ? "High concern" : hasWarn ? "Review" : concernRiskLabel(concernPct);
+    const tone = concernScoreSurfaceClasses(concernPct);
 
     const parts: string[] = [];
     if (cells.length > 0) parts.push(`${cells.length} suspicious grade cell(s)`);
     if (fields.length > 0) parts.push(`${fields.length} suspicious field(s)`);
     const what = parts.length ? parts.join(" and ") : "no suspicious areas detected";
 
-    // tamper_score 0..1: higher = fewer edit/manipulation signals (automated heuristic).
-    const pct = tamperPercent(r);
-    const pctText =
-      pct === null ? "" : ` Integrity ${pct}/100 — higher means fewer edit/manipulation signals.`;
-
-    let body = `Result: ${what}.${pctText}`;
+    let body = `Result: ${what}.`;
     if (hasHigh) body += " Recommend manual verification and compare to original source.";
     else if (hasWarn) body += " Recommend a quick manual check of highlighted areas.";
 
@@ -418,8 +828,25 @@ export function ReviewDocuments() {
       if (!response.ok || !data.success) {
         throw new Error(data.error || `Failed to load application (${response.status})`);
       }
-      setApplication(data.application ?? null);
-      setRemarks(String(data.application?.registrarRemarks ?? ""));
+      const app = data.application ?? null;
+      setApplication(app);
+      setRemarks(String(app?.registrarRemarks ?? ""));
+
+      const seeded: Record<string, AiVerifyResponse> = {};
+      for (const doc of Array.isArray(app?.documents) ? app.documents : []) {
+        const stored = aiVerifyFromDocument(doc);
+        if (stored && doc?.id) {
+          const docType = mapDocType(doc);
+          seeded[String(doc.id)] = aiResultForDisplay(docType, stored) ?? stored;
+        }
+      }
+      if (Object.keys(seeded).length > 0) {
+        setAiResultsByDocId((prev) => ({ ...seeded, ...prev }));
+      }
+
+      if (app?.isAlreadyEnrolled && app?.status !== "Rejected") {
+        setDecisionDialog(null);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load application");
     } finally {
@@ -449,10 +876,59 @@ export function ReviewDocuments() {
       const text = await res.text();
       const data = JSON.parse(text);
       if (!res.ok || !data.success) {
-        toast.error(data.error || `Failed to approve (${res.status})`);
+        const err = String(data.error || "");
+        if (err === "credentials_already_issued") {
+          toast.error(
+            "This student already has school credentials and is enrolled. They should appear under Students, not Applications."
+          );
+        } else {
+          toast.error(formatApiError(data, `Failed to approve (${res.status})`));
+        }
         return;
       }
-      toast.success(data.message || `Application ${application.id} approved`);
+      if (data.already_enrolled) {
+        toast.message(data.message || "Student is already enrolled.");
+      } else {
+        toast.success(data.message || `Application approved — ${application.id} is now enrolled`);
+      }
+
+      // Show how the student was placed into a section so the registrar
+      // has immediate feedback (auto-filled vs. needs manual placement,
+      // and whether they got their preferred shift).
+      const sa = (data as {
+        section_assignment?: {
+          assigned?: boolean;
+          section?: string | null;
+          shift?: string | null;
+          preferred_shift?: string | null;
+          shift_fallback?: boolean;
+          auto_created?: boolean;
+          warning?: string | null;
+        };
+      }).section_assignment;
+      if (sa) {
+        const shiftLabel = sa.shift === 'afternoon' ? 'afternoon' : 'morning';
+        const preferredLabel = sa.preferred_shift === 'afternoon' ? 'afternoon' : 'morning';
+        if (sa.assigned && sa.section) {
+          if (sa.auto_created) {
+            toast.success(
+              `Auto-assigned to a newly created section "${sa.section}" (${shiftLabel} shift). The previous sections were full.`,
+            );
+          } else {
+            toast.success(`Auto-assigned to section "${sa.section}" (${shiftLabel} shift).`);
+          }
+          if (sa.shift_fallback) {
+            toast.warning(
+              `Student preferred the ${preferredLabel} shift, but all ${preferredLabel} sections were full. Placed in the ${shiftLabel} shift instead — reassign on the Sections page if needed.`,
+            );
+          }
+        } else if (sa.warning === 'eim_female_manual_placement') {
+          toast.warning('Female applicant for EIM was not auto-placed. Please assign her section manually from the Sections page.');
+        } else if (sa.warning) {
+          toast.warning('Section auto-assignment was skipped. Please assign this student to a section manually.');
+        }
+      }
+
       setDecisionDialog(null);
       loadApplication();
     } finally {
@@ -480,7 +956,7 @@ export function ReviewDocuments() {
       const text = await res.text();
       const data = JSON.parse(text);
       if (!res.ok || !data.success) {
-        toast.error(data.error || `Failed to reject (${res.status})`);
+        toast.error(formatApiError(data, `Failed to reject (${res.status})`));
         return;
       }
       toast.success(data.message || `Application ${application.id} rejected`);
@@ -504,7 +980,7 @@ export function ReviewDocuments() {
     const text = await res.text();
     const data = JSON.parse(text);
     if (!res.ok || !data.success) {
-      toast.error(data.error || `Failed to save remarks (${res.status})`);
+      toast.error(formatApiError(data, `Failed to save remarks (${res.status})`));
       return;
     }
     toast.success(data.message || "Remarks saved successfully");
@@ -548,7 +1024,7 @@ export function ReviewDocuments() {
         setSelectedDocument((sel: any) =>
           sel && String(sel.id) === idStr ? { ...sel, registrarReviewed: !nextReviewed } : sel,
         );
-        toast.error(data.error || `Failed to update review status (${res.status})`);
+        toast.error(formatApiError(data, `Failed to update review status (${res.status})`));
         return;
       }
       toast.success(nextReviewed ? "Marked as reviewed" : "Reviewed flag cleared");
@@ -567,6 +1043,81 @@ export function ReviewDocuments() {
     }
   };
 
+  const rejectDocumentAndRequireResubmission = async (documentId: number | string, remarks: string) => {
+    const trimmed = String(remarks || "").trim();
+    if (!trimmed) {
+      toast.error("Please provide a reason so the student knows what to resubmit.");
+      return;
+    }
+    if (docDecisionSubmitting) return;
+    setDocDecisionSubmitting(true);
+    try {
+      const res = await apiFetch("/api/registrar/document-decision", {
+        method: "POST",
+        body: JSON.stringify({
+          document_id: Number(documentId),
+          action: "reject",
+          remarks: trimmed,
+        }),
+      });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok || !data?.success) {
+        const code =
+          data?.error === "remarks_required"
+            ? "Reason is required"
+            : formatApiError(data, `Failed to reject document (${res.status})`);
+        toast.error(code);
+        return;
+      }
+
+      // Update selected doc + application docs list so UI reflects immediately.
+      setSelectedDocument((prev: any) => {
+        if (!prev || String(prev.id) !== String(documentId)) return prev;
+        return {
+          ...prev,
+          status: "Flagged",
+          registrarReviewed: false,
+          registrarDocDecision: "rejected",
+          registrarDocRemarks: trimmed,
+          issues: Array.isArray(prev.issues) ? prev.issues : [],
+        };
+      });
+      setApplication((prev: any) => {
+        if (!prev) return prev;
+        const docs = Array.isArray(prev.documents) ? prev.documents : [];
+        const nextDocs = docs.map((d: any) => {
+          if (String(d?.id) !== String(documentId)) return d;
+          return {
+            ...d,
+            status: "Flagged",
+            registrarReviewed: false,
+            registrarDocDecision: "rejected",
+            registrarDocRemarks: trimmed,
+          };
+        });
+        return { ...prev, documents: nextDocs };
+      });
+
+      // The backend tries to dispatch a "please resubmit" email to the
+      // student right after a rejection; surface the outcome so the
+      // registrar knows whether the student was notified automatically or
+      // still needs a manual heads-up.
+      const emailSent = Boolean(data?.email_sent);
+      toast.success(
+        emailSent
+          ? "Document rejected. The student has been emailed to resubmit this requirement."
+          : "Document rejected. Email could not be sent automatically — please follow up with the student.",
+        { duration: emailSent ? 5000 : 8000 }
+      );
+      setDocDecisionDialogOpen(false);
+      setDocDecisionRemarks("");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to reject document");
+    } finally {
+      setDocDecisionSubmitting(false);
+    }
+  };
+
   const getDocumentStatusColor = (status: string) => {
     switch (status) {
       case "Verified":
@@ -580,37 +1131,41 @@ export function ReviewDocuments() {
     }
   };
 
-  const getConfidenceColor = (confidence: number) => {
-    if (confidence >= 90) return "text-green-600";
-    if (confidence >= 70) return "text-yellow-600";
-    return "text-red-600";
-  };
-
-  const getTamperColor = (tamperPct: number) => {
-    // tamper_pct: 0..100 where higher is better (cleaner)
-    if (tamperPct >= 75) return "text-emerald-700";
-    if (tamperPct >= 50) return "text-amber-700";
-    return "text-rose-700";
-  };
-
-  const aggregateAiScore = application ? computeAggregateAiScore(
-    (application.documents ?? []).map((d: any) => {
-      const key = String(d?.id ?? "");
-      const r = aiResultsByDocId[key];
-      const pct = aiConfidencePercent(r);
-      return { ...d, aiConfidence: pct ?? d.aiConfidence };
-    })
-  ) : null;
-  const aiTier = aggregateAiScore !== null ? getAiReviewTier(aggregateAiScore) : null;
+  const documentsForAi = application
+    ? (application.documents ?? []).map((d: any) => {
+        const key = String(d?.id ?? "");
+        const docType = mapDocType(d);
+        const r = aiResultForDisplay(docType, aiResultsByDocId[key]) ?? aiResultsByDocId[key];
+        const pct = documentConcernPercent(r);
+        return { ...d, aiConfidence: pct };
+      })
+    : [];
+  const weightedVerification =
+    documentsForAi.length > 0
+      ? weightedVerificationFromAi(documentsForAi, aiResultsByDocId)
+      : null;
+  const aggregateConcern = weightedVerification?.aggregateScore ?? null;
+  const aiTier = aggregateConcern !== null ? getAiReviewTier(aggregateConcern) : null;
+  const aiScoreBreakdown =
+    weightedVerification !== null
+      ? buildOverallScoreBreakdown(
+          documentsForAi,
+          aiResultsByDocId,
+          aiRunning,
+          weightedVerification.aggregateScore,
+          weightedVerification.categoryRows,
+        )
+      : null;
 
   const handleViewDocument = (doc: any) => {
     if (!application) return;
     const key = String(doc?.id ?? "");
-    const ai = aiResultsByDocId[key];
-    const pct = aiConfidencePercent(ai);
+    const docType = mapDocType(doc);
+    const ai = aiResultForDisplay(docType, aiResultsByDocId[key]) ?? aiResultsByDocId[key];
+    const pct = documentConcernPercent(ai);
     setSelectedDocument({
       ...doc,
-      aiConfidence: pct ?? doc.aiConfidence,
+      aiConfidence: pct,
       issues: ai?.issues ?? doc.issues,
       extractedText: ai?.extracted_text ?? doc.extractedText,
       aiStatus: ai?.status ?? doc.aiStatus,
@@ -627,14 +1182,15 @@ export function ReviewDocuments() {
   useEffect(() => {
     if (!isDocumentDialogOpen || !selectedDocument?.id) return;
     const key = String(selectedDocument.id);
-    const ai = aiResultsByDocId[key];
-    const pct = aiConfidencePercent(ai);
+    const docType = mapDocType(selectedDocument);
+    const ai = aiResultForDisplay(docType, aiResultsByDocId[key]) ?? aiResultsByDocId[key];
+    const pct = documentConcernPercent(ai);
     const aiErr = aiDocStateById[key]?.state === "error" ? aiDocStateById[key]?.error : null;
     setSelectedDocument((prev: any) => {
       if (!prev || String(prev.id) !== key) return prev;
       const next = {
         ...prev,
-        aiConfidence: pct ?? prev.aiConfidence,
+        aiConfidence: pct,
         issues: ai?.issues ?? prev.issues,
         extractedText: ai?.extracted_text ?? prev.extractedText,
         aiStatus: ai?.status ?? prev.aiStatus,
@@ -760,10 +1316,6 @@ export function ReviewDocuments() {
           display = "pdf";
         }
 
-        if (display === "image" && !mime.startsWith("image/")) {
-          display = "other";
-        }
-
         const url = URL.createObjectURL(blob);
         setPreviewObjectUrl(url);
         setPreviewDisplayKind(display);
@@ -820,29 +1372,21 @@ export function ReviewDocuments() {
         for (const doc of toVerify) {
           if (cancelled) return;
           const id = String(doc.id);
-          if (aiResultsByDocId[id]) continue;
+          const docType = mapDocType(doc);
+          const cached = aiResultsByDocId[id];
+          if (cached && !isAiVerifyPayloadStale(docType, application, cached)) continue;
 
           try {
             if (!cancelled) {
               setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
             }
-            const docType = mapDocType(doc);
-            const expectedName = String(application?.studentName || "").trim();
-            const expectedLrn = String((application as any)?.lrn || "").trim();
-            const expectedSex = String((application as any)?.gender || "").trim();
-            const expectedSchoolYear = String((application as any)?.lastSchoolYearAttended || "").trim();
-            const expectedPrevSchool = String((application as any)?.previousSchoolAttended || "").trim();
             const ac = new AbortController();
             const timeoutMs = 45000;
             const t = window.setTimeout(() => ac.abort(), timeoutMs);
             const aiRes = await apiFetch(
               `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
                 `&doc_type=${encodeURIComponent(docType)}` +
-                (expectedName ? `&expected_name=${encodeURIComponent(expectedName)}` : "") +
-                (expectedLrn ? `&expected_lrn=${encodeURIComponent(expectedLrn)}` : "") +
-                (expectedSex ? `&expected_sex=${encodeURIComponent(expectedSex)}` : "") +
-                (expectedSchoolYear ? `&expected_school_year=${encodeURIComponent(expectedSchoolYear)}` : "") +
-                (expectedPrevSchool ? `&expected_prev_school=${encodeURIComponent(expectedPrevSchool)}` : ""),
+                buildExpectedVerifyQuery(docType, application),
               { signal: ac.signal },
             );
             window.clearTimeout(t);
@@ -860,7 +1404,10 @@ export function ReviewDocuments() {
               continue;
             }
             if (!cancelled) {
-              setAiResultsByDocId((prev) => ({ ...prev, [id]: data as AiVerifyResponse }));
+              setAiResultsByDocId((prev) => ({
+                ...prev,
+                [id]: aiResultForDisplay(docType, data) ?? data,
+              }));
               setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
             }
           } catch (e) {
@@ -926,12 +1473,7 @@ export function ReviewDocuments() {
           </h2>
           <p className="text-gray-600">Application ID: {application.id}</p>
         </div>
-        <Badge className={
-          application.status === "Approved" ? "bg-green-600" :
-          application.status === "Under Review" ? "bg-blue-600" :
-          application.status === "Rejected" ? "bg-red-600" :
-          "bg-yellow-600"
-        }>
+        <Badge className={applicationReviewStatusBadgeClass(application.status)}>
           {application.status}
         </Badge>
       </div>
@@ -1290,29 +1832,35 @@ export function ReviewDocuments() {
                         className="bg-emerald-600 h-full rounded-full transition-all"
                         style={{ width: `${pct}%` }}
                       />
-                    </div>
+                        </div>
                   </div>
                 );
               })()}
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-sm text-gray-600">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2.5">
+                <div className="min-w-0 text-sm text-gray-600">
                   {aiRunning ? (
-                    <span className="inline-flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Running AI verification…
+                    <span className="inline-flex items-center gap-2 text-indigo-700">
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                      Running AI checks on uploaded files…
                     </span>
                   ) : aiServiceError ? (
                     <span className="text-rose-700">
-                      AI unavailable: {aiServiceError} (start `ai/app.py` on port 5000)
+                      AI service unavailable — {aiServiceError}. Start{" "}
+                      <code className="rounded bg-rose-50 px-1 text-xs">ai/app.py</code> on port 5000.
                     </span>
                   ) : (
-                    <span>AI verification runs automatically for image documents.</span>
+                    <span>
+                      Each file is scored on <strong className="font-medium text-gray-800">mismatch (MM)</strong>{" "}
+                      and <strong className="font-medium text-gray-800">tamper (T)</strong>. Image quality is
+                      checked at upload.
+                    </span>
                   )}
                 </div>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
+                  className="shrink-0"
                   onClick={() => {
                     setAiResultsByDocId({});
                     setAiDocStateById({});
@@ -1324,115 +1872,141 @@ export function ReviewDocuments() {
                   Re-run AI
                 </Button>
               </div>
+              <ConcernScoringHelp />
               {(application.documents ?? []).map((doc: any, index: number) => (
                 (() => {
                   const key = String(doc?.id ?? "");
                   const docType = mapDocType(doc);
                   const isPhoto = docType === "photo_2x2";
-                  const ai = aiResultsByDocId[key];
-                  const aiPct = aiConfidencePercent(ai);
-                  const displayAiConfidence = aiPct; // only show real AI confidence when available
+                  const rawAi = aiResultsByDocId[key];
+                  const ai = aiResultForDisplay(docType, rawAi) ?? rawAi;
+                  const aiPct = documentConcernPercent(ai);
+                  const aiState = aiDocStateById[key]?.state;
+                  const resubmitRequired =
+                    String(doc?.registrarDocDecision || "").toLowerCase() === "rejected" ||
+                    String(doc?.status || "").toLowerCase() === "flagged" ||
+                    String(doc?.aiStatus || "").toLowerCase() === "rejected";
+                  const registrarCleared =
+                    Boolean(doc?.registrarReviewed) ||
+                    String(doc?.status || "").toLowerCase() === "verified";
+                  const needsReview =
+                    !registrarCleared &&
+                    aiPct !== null &&
+                    (aiPct > CONCERN_STRICT_THRESHOLD || ai?.status === "failed");
+                  const passesChecks =
+                    registrarCleared ||
+                    (aiPct !== null &&
+                      ai?.status === "verified" &&
+                      aiPct <= CONCERN_STRICT_THRESHOLD);
+                  const concernParts = documentConcernFromAi(ai);
                   return (
                 <div
                   key={doc.id ?? index}
-                  className="p-4 border rounded-lg hover:border-[#8B1538] transition-colors"
+                  className={cn(
+                    "rounded-lg border p-4 transition-colors hover:border-[#8B1538]/60",
+                    needsReview && !registrarCleared
+                      ? "border-amber-200 bg-amber-50/30"
+                      : "border-gray-200 bg-white",
+                  )}
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-start gap-3 flex-1">
-                      <FileText className="w-5 h-5 text-gray-600 mt-0.5 shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-semibold text-[#8B1538] uppercase tracking-wide mb-1">
-                          {(doc.requirementLabel || 'Document').replace(/\s+/g, ' ').trim()}
-                        </p>
-                        <div className="flex items-center gap-2 mb-2 flex-wrap">
-                          <p className="font-medium text-gray-900 truncate" title={doc.fileName || doc.name}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      <FileText className="mt-0.5 h-5 w-5 shrink-0 text-gray-400" aria-hidden />
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-[#8B1538]">
+                            {(doc.requirementLabel || "Document").replace(/\s+/g, " ").trim()}
+                          </p>
+                          <p
+                            className="truncate font-medium text-gray-900"
+                            title={doc.fileName || doc.name}
+                          >
                             {doc.fileName || doc.name}
                           </p>
-                          <Badge className={getDocumentStatusColor(doc.status)}>
-                            {doc.status}
-                          </Badge>
-                          {doc.registrarReviewed ? (
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {resubmitRequired ? (
+                            <Badge className="bg-red-600 text-white">Resubmission required</Badge>
+                          ) : registrarCleared ? (
                             <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
-                              <CheckCircle className="w-3 h-3 mr-1" />
-                              Reviewed
+                              <CheckCircle className="mr-1 h-3 w-3" />
+                              {doc.registrarReviewed ? "You reviewed" : "Verified"}
                             </Badge>
-                          ) : null}
-                          {aiBadge(ai)}
-                          {!ai ? aiProgressBadge(key) : null}
-                          {!isPhoto && ai ? tamperBadge(ai) : null}
-                          {!isPhoto && ai ? syntheticBadge(ai) : null}
+                          ) : aiState === "running" ? (
+                            <Badge className="bg-indigo-600 text-white">AI checking…</Badge>
+                          ) : aiState === "error" ? (
+                            <Badge className="bg-amber-600 text-white">AI error</Badge>
+                          ) : aiPct === null ? (
+                            <Badge variant="outline" className="border-gray-300 text-gray-600">
+                              Awaiting AI
+                            </Badge>
+                          ) : passesChecks ? (
+                            <Badge className="bg-emerald-600 text-white">Clear</Badge>
+                          ) : needsReview ? (
+                            <Badge className="bg-amber-600 text-white">Needs review</Badge>
+                          ) : (
+                            <Badge variant="outline" className="border-gray-300">Scored</Badge>
+                          )}
                         </div>
-                        <div className="flex items-center gap-4 text-sm text-gray-600 flex-wrap">
-                          <div className="inline-flex items-center gap-2">
-                            <span className="text-gray-500">AI Confidence</span>
-                            <span
-                              className={`px-2 py-0.5 rounded-md border text-xs font-semibold tabular-nums ${
-                                displayAiConfidence === null
-                                  ? "text-gray-500 border-gray-200 bg-gray-50"
-                                  : `${getConfidenceColor(displayAiConfidence)} border-gray-200 bg-white`
-                              }`}
-                            >
-                              {displayAiConfidence === null ? "—" : `${displayAiConfidence}%`}
-                            </span>
-                          </div>
-
-                          <div className="inline-flex items-center gap-2">
-                            <span className="text-gray-500">Tamper score</span>
-                            {(() => {
-                              if (isPhoto) {
-                                return (
-                                  <span className="px-2 py-0.5 rounded-md border text-xs font-semibold tabular-nums text-gray-500 border-gray-200 bg-gray-50">
-                                    N/A
-                                  </span>
-                                );
-                              }
-                              const p = tamperPercent(ai);
-                              const cls =
-                                p === null
-                                  ? "text-gray-500 border-gray-200 bg-gray-50"
-                                  : `${getTamperColor(p)} border-gray-200 bg-white`;
-                              return (
-                                <span className={`px-2 py-0.5 rounded-md border text-xs font-semibold tabular-nums ${cls}`}>
-                                  {p === null ? "—" : `${p}%`}
-                                </span>
-                              );
-                            })()}
-                          </div>
-
-                          <div className="inline-flex items-center gap-2">
-                            <span className="text-gray-500">Uploaded</span>
-                            <span className="tabular-nums">{doc.uploadedDate}</span>
-                          </div>
-                        </div>
-                        {doc.status === "Flagged" && (
-                          <Alert className="mt-3 border-red-300 bg-red-50">
-                            <AlertCircle className="h-4 w-4 text-red-600" />
-                            <AlertDescription className="text-red-700">
-                              This document has been flagged by AI. Please review
-                              carefully for authenticity issues.
-                            </AlertDescription>
-                          </Alert>
+                        {aiPct !== null && !isPhoto ? (
+                          <DocumentConcernChips
+                            concernPct={aiPct}
+                            mismatchPct={concernParts?.mismatchConcern ?? null}
+                            tamperPct={concernParts?.tamperConcern ?? null}
+                          />
+                        ) : null}
+                        {aiPct !== null && concernParts ? (
+                          <DocumentConcernFormula
+                            mismatchPct={concernParts.mismatchConcern}
+                            tamperPct={concernParts.tamperConcern}
+                            averagePct={concernParts.documentAverage}
+                          />
+                        ) : null}
+                        {ai?.security_levels ? (
+                          <SecurityLevelsPanel security={ai.security_levels} compact />
+                        ) : (
+                          <p className="text-sm leading-snug text-gray-600">
+                            {documentAiSummaryLine({
+                              ai,
+                              isPhoto,
+                              concernPct: aiPct,
+                              aiState,
+                              clearedOnFile: registrarCleared,
+                            })}
+                          </p>
                         )}
+                        {doc.uploadedDate ? (
+                          <p className="text-xs text-gray-400">Uploaded {doc.uploadedDate}</p>
+                        ) : null}
                       </div>
                     </div>
-                    <div className="flex gap-2 ml-4">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleViewDocument(doc)}
-                      >
-                        <Eye className="w-4 h-4 mr-2" />
-                        View
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => downloadDocument(doc)}
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        Download
-                      </Button>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      {aiPct !== null ? (
+                        <span
+                          className={cn(
+                            "rounded-lg px-2.5 py-1 text-lg font-bold tabular-nums",
+                            concernScoreBadgeClasses(aiPct),
+                          )}
+                          title="Document average concern"
+                        >
+                          {aiPct}%
+                        </span>
+                      ) : null}
+                      <div className="flex gap-2">
+                        <Button variant="outline" size="sm" onClick={() => handleViewDocument(doc)}>
+                          <Eye className="mr-2 h-4 w-4" />
+                          View
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => downloadDocument(doc)}
+                        >
+                          <Download className="mr-2 h-4 w-4" />
+                          Download
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1451,71 +2025,127 @@ export function ReviewDocuments() {
                 buttons rather than a textarea that's only relevant to one
                 of the two outcomes. */}
 
-            <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-              <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#8B1538]/10">
-                  <Sparkles className="h-5 w-5 text-[#8B1538]" aria-hidden />
-                </div>
-                <div className="min-w-0 flex-1 space-y-3">
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900">AI review summary</h3>
-                    <p className="text-sm text-gray-600">
-                      Overall score is the average of AI confidence on submitted documents (same values as the Documents tab).
-                    </p>
-                  </div>
-                  {aggregateAiScore !== null && aiTier ? (
-                    <>
-                      <div className="flex flex-wrap items-baseline gap-2">
-                        <span className="text-sm text-gray-600">Overall AI score</span>
-                        <span
-                          className={`text-2xl font-bold tabular-nums ${getConfidenceColor(aggregateAiScore)}`}
-                        >
-                          {aggregateAiScore}%
-                        </span>
-                      </div>
-                      <div className={`rounded-md border p-3 text-sm ${aiTier.accent}`}>
-                        <p className="font-semibold">{aiTier.title}</p>
-                        <p className="mt-1 leading-relaxed">{aiTier.body}</p>
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        Thresholds: below 75% → face-to-face; 75–89% → manual registrar review; 90% and up → no
-                        extra manual checking required.
+            <div
+              className={cn(
+                "overflow-hidden rounded-xl border shadow-sm",
+                aggregateConcern !== null
+                  ? concernScoreSurfaceClasses(aggregateConcern)
+                  : "border-gray-200 bg-white",
+              )}
+            >
+              <div className="border-b border-black/5 bg-white/60 px-5 py-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#8B1538]/10">
+                      <Sparkles className="h-5 w-5 text-[#8B1538]" aria-hidden />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">AI review summary</h3>
+                      <p className="mt-0.5 text-sm text-gray-600">
+                        Per file: average of <strong className="font-medium">MM</strong> +{" "}
+                        <strong className="font-medium">T</strong>. Overall = weighted mean (0% = clean).
                       </p>
-                    </>
-                  ) : (
-                    <p className="text-sm text-gray-600">
-                      No document AI scores are available yet. Uploads and AI processing will appear on the
-                      Documents tab first; then this summary will show an overall score and guidance.
-                    </p>
-                  )}
+                    </div>
+                  </div>
+                  {aggregateConcern !== null ? (
+                    <div className="text-right">
+                      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                        Overall concern
+                      </p>
+                      <p
+                        className={cn(
+                          "mt-0.5 text-3xl font-bold tabular-nums leading-none",
+                          concernScoreTextClass(aggregateConcern),
+                        )}
+                      >
+                        {aggregateConcern}%
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
+                <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] text-gray-600">
+                  {[
+                    ["SF10", "25%"],
+                    ["SF9", "25%"],
+                    ["PSA", "25%"],
+                    ["Good moral", "20%"],
+                    ["2×2 photo", "5%"],
+                  ].map(([label, weight]) => (
+                    <span
+                      key={label}
+                      className="rounded-full border border-gray-200 bg-white/80 px-2 py-0.5"
+                    >
+                      {label} <span className="font-semibold text-gray-800">{weight}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-4 px-5 py-4">
+                {aggregateConcern !== null && aiTier ? (
+                  <>
+                    {aiScoreBreakdown ? (
+                      <AiReviewScoreExplainer breakdown={aiScoreBreakdown} />
+                    ) : null}
+                    <div className={cn("rounded-lg border p-3.5 text-sm", aiTier.accent)}>
+                      <p className="font-semibold">{aiTier.title}</p>
+                      <p className="mt-1 leading-relaxed">{aiTier.body}</p>
+                    </div>
+                    <div className="grid gap-2 text-xs text-gray-600 sm:grid-cols-3">
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50/80 px-2.5 py-2">
+                        <span className="font-semibold text-emerald-800">0–{CONCERN_MANUAL_THRESHOLD}%</span>
+                        <p className="mt-0.5">Routine review</p>
+                      </div>
+                      <div className="rounded-md border border-amber-200 bg-amber-50/80 px-2.5 py-2">
+                        <span className="font-semibold text-amber-900">
+                          {CONCERN_MANUAL_THRESHOLD + 1}–{CONCERN_STRICT_THRESHOLD}%
+                        </span>
+                        <p className="mt-0.5">Manual registrar review</p>
+                      </div>
+                      <div className="rounded-md border border-red-200 bg-red-50/80 px-2.5 py-2">
+                        <span className="font-semibold text-red-800">&gt;{CONCERN_STRICT_THRESHOLD}%</span>
+                        <p className="mt-0.5">Strict verification</p>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-gray-600">
+                    No AI scores yet. Open the <strong className="font-medium">Documents</strong> tab — scores
+                    appear here after AI finishes checking uploads.
+                  </p>
+                )}
               </div>
             </div>
 
             <div className="border-t pt-6">
               <h3 className="text-lg font-semibold mb-4">Application Decision</h3>
-              {application.status === "Approved" || application.status === "Rejected" ? (
+              {application.status === "Enrolled" ||
+              application.status === "Approved" ||
+              (application as { isAlreadyEnrolled?: boolean }).isAlreadyEnrolled ||
+              application.status === "Rejected" ? (
                 <div
                   className={
                     "rounded-lg border p-4 flex items-start gap-3 " +
-                    (application.status === "Approved"
-                      ? "border-green-300 bg-green-50"
-                      : "border-red-300 bg-red-50")
+                    (application.status === "Rejected"
+                      ? "border-red-300 bg-red-50"
+                      : "border-green-300 bg-green-50")
                   }
                 >
-                  {application.status === "Approved" ? (
-                    <CheckCircle className="w-5 h-5 text-green-700 mt-0.5 shrink-0" />
-                  ) : (
+                  {application.status === "Rejected" ? (
                     <XCircle className="w-5 h-5 text-red-700 mt-0.5 shrink-0" />
+                  ) : (
+                    <CheckCircle className="w-5 h-5 text-green-700 mt-0.5 shrink-0" />
                   )}
                   <div className="flex-1">
                     <p
                       className={
                         "font-semibold " +
-                        (application.status === "Approved" ? "text-green-800" : "text-red-800")
+                        (application.status === "Rejected" ? "text-red-800" : "text-green-800")
                       }
                     >
-                      Application {application.status.toLowerCase()}
+                      {application.status === "Rejected"
+                        ? "Application rejected"
+                        : "Student is already enrolled"}
                     </p>
                     {application.registrarRemarks ? (
                       <p className="text-sm text-gray-700 mt-1 whitespace-pre-wrap">
@@ -1554,29 +2184,29 @@ export function ReviewDocuments() {
                           ) : (
                             "All documents have been reviewed. You can now approve or reject the application."
                           )}
-                        </AlertDescription>
-                      </Alert>
-                      <div className="flex gap-3">
-                        <Button
-                          variant="outline"
+                </AlertDescription>
+              </Alert>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
                           className="border-red-600 text-red-600 hover:bg-red-600 hover:text-white disabled:hover:bg-transparent disabled:hover:text-red-600"
                           onClick={() => setDecisionDialog("reject")}
                           disabled={decisionSubmitting !== null || blocked}
                           title={blocked ? `Review all ${totalDocs} document${totalDocs === 1 ? "" : "s"} first` : undefined}
-                        >
-                          <XCircle className="w-4 h-4 mr-2" />
+                >
+                  <XCircle className="w-4 h-4 mr-2" />
                           {decisionSubmitting === "reject" ? "Rejecting…" : "Reject Application"}
-                        </Button>
-                        <Button
+                </Button>
+                <Button
                           className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white disabled:bg-[#2D5016]/40 disabled:hover:bg-[#2D5016]/40"
                           onClick={() => setDecisionDialog("approve")}
                           disabled={decisionSubmitting !== null || blocked}
                           title={blocked ? `Review all ${totalDocs} document${totalDocs === 1 ? "" : "s"} first` : undefined}
-                        >
-                          <CheckCircle className="w-4 h-4 mr-2" />
+                >
+                  <CheckCircle className="w-4 h-4 mr-2" />
                           {decisionSubmitting === "approve" ? "Approving…" : "Approve Application"}
-                        </Button>
-                      </div>
+                </Button>
+              </div>
                     </>
                   );
                 })()
@@ -1596,6 +2226,9 @@ export function ReviewDocuments() {
         onOpenChange={(open) => {
           if (!open && decisionSubmitting === null) {
             setDecisionDialog(null);
+            setLowScoreOverrideAck(false);
+          } else if (open) {
+            setLowScoreOverrideAck(false);
           }
         }}
       >
@@ -1608,10 +2241,61 @@ export function ReviewDocuments() {
             </DialogTitle>
             <DialogDescription>
               {decisionDialog === "approve"
-                ? "This will issue school credentials and email them to the student. The decision is final."
+                ? "This will enroll the student, issue school credentials, and email them to the student. The decision is final."
                 : "This will close the application as rejected. Please write a short reason — the student will see it in their portal."}
             </DialogDescription>
           </DialogHeader>
+
+          {decisionDialog === "approve" && aggregateConcern !== null && aggregateConcern > CONCERN_STRICT_THRESHOLD && (
+            <div className="space-y-3 rounded-md border border-red-300 bg-red-50 p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-5 w-5 shrink-0 text-red-700 mt-0.5" aria-hidden />
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-red-900">
+                    Overall concern is {aggregateConcern}% — above the {CONCERN_STRICT_THRESHOLD}% policy threshold
+                  </p>
+                  <p className="text-sm text-red-900/90 leading-relaxed">
+                    Concern this high usually means mismatch or tamper signals on the
+                    documents. Please make sure you have personally reviewed each
+                    file and verified the applicant's information before approving.
+                  </p>
+                </div>
+              </div>
+              <label className="flex items-start gap-2 text-sm text-red-900 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 accent-red-700"
+                  checked={lowScoreOverrideAck}
+                  onChange={(e) => setLowScoreOverrideAck(e.target.checked)}
+                />
+                <span>
+                  I have manually reviewed this applicant's documents and confirm
+                  I want to approve the enrollment despite the high concern score.
+                </span>
+              </label>
+            </div>
+          )}
+
+          {decisionDialog === "approve" &&
+            aggregateConcern !== null &&
+            aggregateConcern > CONCERN_MANUAL_THRESHOLD &&
+            aggregateConcern <= CONCERN_STRICT_THRESHOLD && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-3">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-5 w-5 shrink-0 text-amber-700 mt-0.5" aria-hidden />
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-amber-900">
+                    Overall concern is {aggregateConcern}% — manual review recommended
+                  </p>
+                  <p className="text-sm text-amber-900/90 leading-relaxed">
+                    This falls in the manual review band ({CONCERN_MANUAL_THRESHOLD + 1}%–
+                    {CONCERN_STRICT_THRESHOLD}%). Please confirm you have personally reviewed
+                    the flagged documents before approving.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {decisionDialog === "reject" && (
             <div className="space-y-2">
@@ -1642,14 +2326,35 @@ export function ReviewDocuments() {
               Cancel
             </Button>
             {decisionDialog === "approve" ? (
-              <Button
-                className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
-                onClick={handleApprove}
-                disabled={decisionSubmitting !== null}
-              >
-                <CheckCircle className="w-4 h-4 mr-2" />
-                {decisionSubmitting === "approve" ? "Approving…" : "Confirm approval"}
-              </Button>
+              (() => {
+                const belowThreshold =
+                  aggregateConcern !== null && aggregateConcern > CONCERN_STRICT_THRESHOLD;
+                const approveDisabled =
+                  decisionSubmitting !== null || (belowThreshold && !lowScoreOverrideAck);
+                return (
+                  <Button
+                    className={
+                      belowThreshold
+                        ? "bg-red-700 hover:bg-red-700/90 text-white disabled:bg-red-700/40 disabled:hover:bg-red-700/40"
+                        : "bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
+                    }
+                    onClick={handleApprove}
+                    disabled={approveDisabled}
+                    title={
+                      belowThreshold && !lowScoreOverrideAck
+                        ? "Tick the manual review confirmation above to continue"
+                        : undefined
+                    }
+                  >
+                    <CheckCircle className="w-4 h-4 mr-2" />
+                    {decisionSubmitting === "approve"
+                      ? "Approving…"
+                      : belowThreshold
+                        ? "Approve anyway"
+                        : "Confirm approval"}
+                  </Button>
+                );
+              })()
             ) : (
               <Button
                 className="bg-red-600 hover:bg-red-600/90 text-white"
@@ -1669,10 +2374,28 @@ export function ReviewDocuments() {
         open={isDocumentDialogOpen}
         onOpenChange={(open) => {
           setIsDocumentDialogOpen(open);
-          if (!open) setSelectedDocument(null);
+          if (!open) {
+            setSelectedDocument(null);
+            setPreviewLightboxOpen(false);
+          }
         }}
       >
-        <DialogContent className="flex h-[92vh] max-h-[92vh] w-[min(96vw,1440px)] max-w-[min(96vw,1440px)] flex-col gap-3 overflow-hidden p-5 sm:max-w-[min(96vw,1440px)] sm:p-6">
+        <DialogContent
+          className={cn(
+            "flex h-[92vh] max-h-[92vh] w-[min(96vw,1440px)] max-w-[min(96vw,1440px)] flex-col gap-3 overflow-hidden p-5 sm:max-w-[min(96vw,1440px)] sm:p-6",
+            previewLightboxOpen &&
+              "[&>button.absolute]:pointer-events-none [&>button.absolute]:invisible",
+          )}
+          onInteractOutside={(e) => {
+            if (previewLightboxOpen) e.preventDefault();
+          }}
+          onPointerDownOutside={(e) => {
+            if (previewLightboxOpen) e.preventDefault();
+          }}
+          onEscapeKeyDown={(e) => {
+            if (previewLightboxOpen) e.preventDefault();
+          }}
+        >
           <DialogHeader className="shrink-0">
             <DialogTitle>Document Verification Details</DialogTitle>
             <DialogDescription>
@@ -1702,7 +2425,7 @@ export function ReviewDocuments() {
                         {selectedDocument.status}
                       </Badge>
                     </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-600 mb-2">
+                    <div className="mb-3 grid grid-cols-2 gap-4 text-sm text-gray-600 md:grid-cols-3">
                       <div>
                         <p className="text-xs text-gray-500">Student</p>
                         <p className="font-medium">{selectedDocument.studentName}</p>
@@ -1714,16 +2437,35 @@ export function ReviewDocuments() {
                       <div>
                         <p className="text-xs text-gray-500">Strand / Grade</p>
                         <p className="font-medium">
-                          {selectedDocument.strand} - Grade {selectedDocument.gradeLevel}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Verification score</p>
-                        <p className={`font-semibold ${getConfidenceColor(selectedDocument.aiConfidence)}`}>
-                          {selectedDocument.aiConfidence}%
+                          {selectedDocument.strand} — Grade {selectedDocument.gradeLevel}
                         </p>
                       </div>
                     </div>
+                    {(() => {
+                      const id = String(selectedDocument.id ?? "");
+                      const raw = aiResultsByDocId[id];
+                      const docType = resolveEffectiveDocType(selectedDocument, raw);
+                      const r = aiResultForDisplay(docType, raw);
+                      const parts = documentConcernFromAi(r);
+                      const avg =
+                        typeof selectedDocument.aiConfidence === "number"
+                          ? selectedDocument.aiConfidence
+                          : null;
+                      if (avg === null) {
+                        return (
+                          <p className="mb-2 text-sm font-medium text-gray-500">AI score pending</p>
+                        );
+                      }
+                      return (
+                        <DocumentConcernChips
+                          className="mb-2"
+                          size="md"
+                          concernPct={avg}
+                          mismatchPct={parts?.mismatchConcern ?? null}
+                          tamperPct={parts?.tamperConcern ?? null}
+                        />
+                      );
+                    })()}
                     {(() => {
                       const id = String(selectedDocument.id ?? "");
                       const r = aiResultsByDocId[id];
@@ -1731,7 +2473,10 @@ export function ReviewDocuments() {
                       const pct = Math.round(r.ocr_confidence * 100);
                       return (
                         <div className="text-xs text-gray-600">
-                          OCR readability: <span className="font-semibold">{pct}%</span>
+                          OCR readability:{" "}
+                          <span className={cn("font-semibold tabular-nums", verificationScoreTextClass(pct))}>
+                            {pct}%
+                          </span>
                         </div>
                       );
                     })()}
@@ -1739,6 +2484,8 @@ export function ReviewDocuments() {
                       const id = String(selectedDocument.id ?? "");
                       const reviewed = !!selectedDocument.registrarReviewed;
                       const submitting = !!reviewSubmittingByDocId[id];
+                      const rejected = String(selectedDocument.registrarDocDecision || "").toLowerCase() === "rejected";
+                      const docRemarks = String(selectedDocument.registrarDocRemarks || "").trim();
                       return (
                         <div className="mt-3 flex flex-wrap items-center gap-3">
                           {reviewed ? (
@@ -1751,6 +2498,12 @@ export function ReviewDocuments() {
                               Not yet reviewed
                             </Badge>
                           )}
+                          {rejected ? (
+                            <Badge className="bg-red-600 text-white hover:bg-red-700">
+                              <XCircle className="w-3.5 h-3.5 mr-1" />
+                              Re-upload required
+                            </Badge>
+                          ) : null}
                           <Button
                             type="button"
                             size="sm"
@@ -1768,6 +2521,24 @@ export function ReviewDocuments() {
                                 ? "Mark as unreviewed"
                                 : "Mark as reviewed"}
                           </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="destructive"
+                            disabled={!selectedDocument.id || docDecisionSubmitting}
+                            onClick={() => {
+                              setDocDecisionDialogOpen(true);
+                              setDocDecisionRemarks(docRemarks);
+                            }}
+                          >
+                            <XCircle className="w-4 h-4 mr-2" />
+                            {docDecisionSubmitting ? "Rejecting…" : "Reject (require re-upload)"}
+                          </Button>
+                          {rejected && docRemarks ? (
+                            <p className="w-full text-xs text-gray-600">
+                              Reason shown to student: <span className="font-medium">{docRemarks}</span>
+                            </p>
+                          ) : null}
                         </div>
                       );
                     })()}
@@ -1777,290 +2548,435 @@ export function ReviewDocuments() {
 
               <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 md:grid-cols-2 md:gap-6">
                 <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-1 md:max-h-[calc(92vh-12rem)]">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {(() => {
-                      const id = String(selectedDocument.id ?? "");
-                      const isPhoto = mapDocType(selectedDocument) === "photo_2x2";
-                      if (isPhoto) return null;
-                      const r = aiResultsByDocId[id];
-                      const pct = tamperPercent(r);
-                      if (pct === null) return null;
-                      const signals = Array.isArray(r?.tamper_signals) ? r?.tamper_signals : [];
-                      const cells = Array.isArray((r as any)?.tamper_cells) ? ((r as any).tamper_cells as any[]) : [];
-                      const fields = Array.isArray((r as any)?.tamper_fields) ? ((r as any).tamper_fields as any[]) : [];
-                      const summary = summarizeTamper(r);
+                  {(() => {
+                    const id = String(selectedDocument.id ?? "");
+                    const raw = aiResultsByDocId[id];
+                    const docType = resolveEffectiveDocType(selectedDocument, raw);
+                    const r = aiResultForDisplay(docType, raw);
+                    if (r?.security_levels) {
                       return (
-                        <div className="h-full">
-                          {summary && (
-                            <div className={`rounded-md border p-4 text-sm ${summary.tone}`}>
-                              <p className="font-semibold">{summary.title}</p>
-                              <p className="mt-1 leading-relaxed">{summary.body}</p>
-                            </div>
-                          )}
-
-                          <details className="mt-2">
-                            <summary className="cursor-pointer text-sm font-medium text-gray-800">
-                              View tamper details
-                            </summary>
-                            <div className="mt-2 space-y-3">
-                              {signals.length > 0 && (
-                                <div>
-                                  <p className="text-sm font-medium text-gray-800">Signals</p>
-                                  <ul className="list-disc list-inside text-sm text-gray-700 mt-1 space-y-1">
-                                    {signals.map((s, idx) => (
-                                      <li key={idx}>{s}</li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-                              {cells.length > 0 && (
-                                <div>
-                                  <p className="text-sm font-medium text-gray-800">Suspicious cells (SF9)</p>
-                                  <ul className="list-disc list-inside text-sm text-gray-700 mt-1 space-y-1">
-                                    {cells.slice(0, 8).map((c, idx) => (
-                                      <li key={idx}>
-                                        Value <span className="font-semibold">{String(c.text)}</span>{" "}
-                                        {c.risk ? `(${String(c.risk)})` : ""}{" "}
-                                        {typeof c.ela_var === "number" ? `• ELA var: ${c.ela_var}` : ""}{" "}
-                                        {typeof c.ratio === "number" ? `• ratio: ${c.ratio}` : ""}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                  {cells.length > 8 && (
-                                    <p className="text-xs text-gray-500 mt-1">Showing 8 of {cells.length}.</p>
-                                  )}
-                                </div>
-                              )}
-                              {fields.length > 0 && (
-                                <div>
-                                  <p className="text-sm font-medium text-gray-800">Suspicious fields</p>
-                                  <ul className="list-disc list-inside text-sm text-gray-700 mt-1 space-y-1">
-                                    {fields.slice(0, 8).map((f, idx) => (
-                                      <li key={idx}>
-                                        <span className="font-semibold">{String(f.field)}</span>:{" "}
-                                        <span className="font-medium">{String(f.text)}</span>{" "}
-                                        {f.risk ? `(${String(f.risk)})` : ""}{" "}
-                                        {typeof f.ratio === "number" ? `• ratio: ${f.ratio}` : ""}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                  {fields.length > 8 && (
-                                    <p className="text-xs text-gray-500 mt-1">Showing 8 of {fields.length}.</p>
-                                  )}
-                                </div>
-                              )}
-                              <p className="text-xs text-gray-500">
-                                Tip: highlighted boxes are drawn on the preview image on the right.
-                              </p>
-                            </div>
-                          </details>
+                        <div className="rounded-lg border border-gray-200 bg-white p-4">
+                          <h4 className="mb-1 text-sm font-semibold text-gray-900">AI checks</h4>
+                          <p className="mb-3 text-xs text-gray-500">
+                            Mismatch compares enrollment data to the scan. Tamper looks for edit signals.
+                          </p>
+                          <SecurityLevelsPanel security={r.security_levels} />
                         </div>
                       );
-                    })()}
+                    }
+                    return (
+                      <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50/80 p-4 text-sm text-gray-600">
+                        Run AI on the Documents tab to load mismatch and tamper checks for this file.
+                      </div>
+                    );
+                  })()}
+                  {(() => {
+                    const id = String(selectedDocument.id ?? "");
+                    const raw = aiResultsByDocId[id];
+                    const docType = resolveEffectiveDocType(selectedDocument, raw);
+                    const r = aiResultForDisplay(docType, raw);
+                    const isPhoto = docType === "photo_2x2";
+                    if (isPhoto) return null;
 
-                    {(() => {
-                      const id = String(selectedDocument.id ?? "");
-                      const isPhoto = mapDocType(selectedDocument) === "photo_2x2";
-                      if (isPhoto) return null;
-                      const r = aiResultsByDocId[id];
-                      if (!r || r.synthetic_applicable === false) return null;
-                      const pct = syntheticPercent(r);
-                      if (pct === null) return null;
-                      const signals = Array.isArray(r?.synthetic_signals) ? r?.synthetic_signals : [];
-                      const risk =
-                        pct < 55 ? "Suspicious" : pct < 75 ? "Check" : "Low";
-                      const tone =
-                        pct < 55
-                          ? "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-950"
-                          : pct < 75
-                            ? "border-indigo-200 bg-indigo-50 text-indigo-950"
-                            : "border-slate-200 bg-slate-50 text-slate-800";
-                      return (
-                        <div className="h-full">
-                          <div className={`h-full rounded-md border p-4 text-sm ${tone}`}>
-                            <p className="font-semibold">Synthetic check: {risk}</p>
-                            <p className="mt-1 leading-relaxed">
-                              Score: {pct}%. This is a heuristic hint (not a definitive AI-generated detector).
-                            </p>
-                            {signals.length > 0 ? (
-                              <ul className="list-disc list-inside text-sm mt-2 space-y-1">
-                                {signals.slice(0, 5).map((s, idx) => (
-                                  <li key={idx}>{s}</li>
-                                ))}
-                              </ul>
-                            ) : null}
-                          </div>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                    {(() => {
-                      const id = String(selectedDocument.id ?? "");
-                      const r = aiResultsByDocId[id];
-                      const isPhoto = mapDocType(selectedDocument) === "photo_2x2";
-                      if (isPhoto) return null;
+                    const issues = filterIssuesForDocType(
+                      docType,
+                      Array.isArray(selectedDocument.issues) ? selectedDocument.issues : [],
+                    );
+                    const docChecks = Array.isArray(r?.doc_checks) ? r.doc_checks : [];
+                    const fieldChecks = Array.isArray(r?.field_checks) ? r.field_checks : [];
+                    const tamperPct = tamperPercent(r);
+                    const tamperSummary = summarizeTamper(r);
+                    const showTamper = tamperPct !== null && tamperSummary;
+                    const syntheticPct = syntheticPercent(r);
+                    const showSynthetic =
+                      Boolean(r && r.synthetic_applicable !== false && syntheticPct !== null);
+                    const docTitle = docCheckShortTitle(docType);
+                    const docSummary = docChecks.length ? summarizeDocChecks(docChecks) : null;
+                    const crossPlan = application
+                      ? enrollmentCrossCheckPlan(docType, application)
+                      : [];
+                    const crossRows = applyEnrollmentCrossChecks(crossPlan, fieldChecks);
+                    const cross = crossRows.length ? summarizeEnrollmentCrossRows(crossRows) : null;
 
-                      const issues = Array.isArray(selectedDocument.issues) ? selectedDocument.issues : [];
-                      const docChecks = Array.isArray(r?.doc_checks) ? r.doc_checks : [];
-                      const fieldChecks = Array.isArray(r?.field_checks) ? r.field_checks : [];
-                      if (issues.length === 0 && docChecks.length === 0 && fieldChecks.length === 0) return null;
+                    if (
+                      !showTamper &&
+                      !showSynthetic &&
+                      !docSummary &&
+                      !cross &&
+                      issues.length === 0
+                    ) {
+                      return null;
+                    }
 
-                      const docType = mapDocType(selectedDocument);
-                      const docTitle = docCheckShortTitle(docType);
-                      const docSummary = docChecks.length ? summarizeDocChecks(docChecks) : null;
-                      const cross = fieldChecks.length ? summarizeFieldChecks(fieldChecks) : null;
+                    const tamperSignals = Array.isArray(r?.tamper_signals) ? r.tamper_signals : [];
+                    const tamperCells = Array.isArray((r as any)?.tamper_cells)
+                      ? ((r as any).tamper_cells as any[])
+                      : [];
+                    const tamperFields = Array.isArray((r as any)?.tamper_fields)
+                      ? ((r as any).tamper_fields as any[])
+                      : [];
+                    const syntheticSignals = Array.isArray(r?.synthetic_signals) ? r.synthetic_signals : [];
+                    const syntheticRisk =
+                      syntheticPct !== null ? concernRiskLabel(syntheticPct) : "Clear";
+                    const syntheticTone =
+                      syntheticPct !== null
+                        ? concernScoreSurfaceClasses(syntheticPct)
+                        : "border-slate-200 bg-white text-slate-800";
 
-                      return (
-                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-5 text-base text-gray-800">
+                    const tileClass =
+                      "flex min-h-[11rem] flex-col rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-800 shadow-sm";
+
+                    return (
+                      <div className="space-y-3 text-sm text-gray-800">
+                        <div className="px-0.5">
                           <div className="flex flex-wrap items-baseline justify-between gap-2">
-                            <p className="font-semibold text-gray-900">Verification summary</p>
+                            <p className="text-base font-semibold text-gray-900">Check details</p>
                             <span className="text-xs text-gray-500">{docTitle}</span>
                           </div>
                           <p className="mt-1 text-xs leading-relaxed text-gray-500">
-                            OCR and rule checks only — confirm against the original file when in doubt.
+                            Supporting signals from OCR and rules — always confirm against the original file.
                           </p>
-
-                          <div className="mt-4 space-y-4">
-                            {docSummary ? (
-                              <div>
-                                <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                  Labels on scan
-                                </p>
-                                <div className="mt-2 flex flex-wrap items-center gap-2" aria-label="Label check results">
-                                  {docChecks.map((c, idx) => (
-                                    <span
-                                      key={idx}
-                                      title={String(c.field)}
-                                      className={`inline-block h-4 w-4 shrink-0 rounded-full ${c.ok ? "bg-emerald-600" : "bg-rose-600"}`}
-                                    />
-                                  ))}
-                                </div>
-                                <p className="mt-2 leading-snug">
-                                  <span className="font-medium text-gray-900">
-                                    {docSummary.pass}/{docSummary.total} found
-                                  </span>
-                                  {docSummary.missingShort.length > 0 ? (
-                                    <>
-                                      <span className="text-gray-400"> · </span>
-                                      <span className="text-gray-700">
-                                        Missing: {docSummary.missingShort.slice(0, 4).join(" · ")}
-                                        {docSummary.missingShort.length > 4
-                                          ? ` (+${docSummary.missingShort.length - 4} more)`
-                                          : ""}
-                                      </span>
-                                    </>
-                                  ) : (
-                                    <span className="text-emerald-700"> · All listed labels detected</span>
-                                  )}
-                                </p>
-                                <details className="mt-2 text-xs text-gray-600">
-                                  <summary className="cursor-pointer font-medium text-gray-600 hover:text-gray-900">
-                                    Every label ({docChecks.length})
-                                  </summary>
-                                  <ul className="mt-2 space-y-1.5 border-l border-gray-200 pl-3">
-                                    {docChecks.map((c, idx) => (
-                                      <li key={idx} className="flex items-start gap-2 leading-snug">
-                                        <span
-                                          className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${c.ok ? "bg-emerald-600" : "bg-rose-600"}`}
-                                          aria-hidden
-                                        />
-                                        <span className="text-gray-800">{String(c.field)}</span>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </details>
-                              </div>
-                            ) : null}
-
-                            {cross ? (
-                              <div>
-                                <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                  Enrollment vs document
-                                </p>
-                                <div className="mt-2 flex flex-wrap items-center gap-2" aria-label="Enrollment cross-check results">
-                                  {fieldChecks.map((c, idx) => (
-                                    <span
-                                      key={idx}
-                                      title={`${String(c.field)}: ${c.ok ? "match" : "mismatch"}`}
-                                      className={`inline-block h-4 w-4 shrink-0 rounded-full ${c.ok ? "bg-emerald-600" : "bg-rose-600"}`}
-                                    />
-                                  ))}
-                                </div>
-                                <p className="mt-2 leading-snug text-gray-800">
-                                  <span className="font-medium">{cross.okCount}</span> matched
-                                  <span className="text-gray-400"> · </span>
-                                  <span className="font-medium text-rose-800">{cross.badCount}</span> need review
-                                  {cross.badBits.length > 0 ? (
-                                    <>
-                                      <span className="text-gray-400">: </span>
-                                      {cross.badBits.join(" · ")}
-                                    </>
-                                  ) : null}
-                                </p>
-                                {cross.okNames.length > 0 && cross.badCount > 0 ? (
-                                  <p className="mt-1 text-xs text-emerald-800">
-                                    Matched: {cross.okNames.join(" · ")}
-                                  </p>
-                                ) : null}
-                                <details className="mt-2 text-xs text-gray-600">
-                                  <summary className="cursor-pointer font-medium text-gray-600 hover:text-gray-900">
-                                    Every enrollment field ({fieldChecks.length})
-                                  </summary>
-                                  <ul className="mt-2 space-y-1.5 border-l border-gray-200 pl-3">
-                                    {fieldChecks.map((c, idx) => (
-                                      <li key={idx} className="flex items-start gap-2 leading-snug">
-                                        <span
-                                          className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${c.ok ? "bg-emerald-600" : "bg-rose-600"}`}
-                                          aria-hidden
-                                        />
-                                        <span className="min-w-0 text-gray-800">
-                                          <span className="font-medium">{String(c.field)}</span>
-                                          <span className={c.ok ? " text-emerald-800" : " text-rose-800"}>
-                                            {" "}
-                                            {c.ok ? "match" : "mismatch"}
-                                            {typeof c.match_ratio === "number" && Number.isFinite(c.match_ratio)
-                                              ? ` (${Math.round(c.match_ratio * 100)}%)`
-                                              : ""}
-                                          </span>
-                                        </span>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </details>
-                              </div>
-                            ) : null}
-
-                            {issues.length > 0 ? (
-                              <details className="group rounded-md border border-gray-200 bg-white">
-                                <summary className="cursor-pointer list-none px-3 py-2 text-sm font-medium text-gray-700 marker:content-none [&::-webkit-details-marker]:hidden hover:bg-gray-50">
-                                  <span className="inline-flex items-center gap-2">
-                                    Full AI messages
-                                    <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700">
-                                      {issues.length}
-                                    </span>
-                                  </span>
-                                </summary>
-                                <ul className="space-y-1.5 border-t border-gray-100 px-3 py-2 text-sm leading-snug text-red-800">
-                                  {issues.map((issue: string, idx: number) => (
-                                    <li key={idx} className="pl-0">
-                                      {issue.replace(/^(Mismatch:\s*)/i, "").trim()}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </details>
-                            ) : null}
-                          </div>
                         </div>
-                      );
-                    })()}
-                    {String(selectedDocument.extractedText || "").trim().length > 0 && (
-                      <div className="mt-3">
-                        <p className="text-sm font-medium text-gray-800 mb-1">Extracted text (OCR)</p>
-                        <div className="max-h-40 overflow-auto rounded-md border bg-white p-3 text-xs text-gray-700 whitespace-pre-wrap">
-                          {String(selectedDocument.extractedText).trim()}
-                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        {showTamper && tamperSummary ? (
+                          <section
+                            className={cn(tileClass, tamperSummary.tone)}
+                            aria-labelledby="ai-tamper-heading"
+                          >
+                            <h3
+                              id="ai-tamper-heading"
+                              className="text-[11px] font-semibold uppercase tracking-wide text-gray-600"
+                            >
+                              Tamper check
+                            </h3>
+                            <div className="mt-2 flex flex-1 flex-col">
+                              <p className="font-semibold">{tamperSummary.title}</p>
+                              <p className="mt-1 flex-1 leading-relaxed">{tamperSummary.body}</p>
+                              {tamperPct !== null ? (
+                                <p className="mt-1 text-sm">
+                                  Tamper concern:{" "}
+                                  <span
+                                    className={cn(
+                                      "font-semibold tabular-nums",
+                                      concernScoreTextClass(tamperPct),
+                                    )}
+                                  >
+                                    {tamperPct}%
+                                  </span>
+                                  <span className="text-gray-600">
+                                    {" "}
+                                    — 0% is clean; higher means more edit/manipulation concern.
+                                  </span>
+                                </p>
+                              ) : null}
+                            </div>
+                            <details className="mt-2">
+                              <summary className="cursor-pointer text-xs font-medium text-gray-600 hover:text-gray-900">
+                                View tamper details
+                              </summary>
+                              <div className="mt-2 space-y-3 text-sm text-gray-700">
+                                {tamperSignals.length > 0 && (
+                                  <div>
+                                    <p className="font-medium text-gray-800">Signals</p>
+                                    <ul className="mt-1 list-inside list-disc space-y-1">
+                                      {tamperSignals.map((s, idx) => (
+                                        <li key={idx}>{s}</li>
+                          ))}
+                        </ul>
                       </div>
                     )}
+                                {tamperCells.length > 0 && (
+                                  <div>
+                                    <p className="font-medium text-gray-800">Suspicious cells (SF9)</p>
+                                    <ul className="mt-1 list-inside list-disc space-y-1">
+                                      {tamperCells.slice(0, 8).map((c, idx) => (
+                                        <li key={idx}>
+                                          Value <span className="font-semibold">{String(c.text)}</span>{" "}
+                                          {c.risk ? `(${String(c.risk)})` : ""}{" "}
+                                          {typeof c.ela_var === "number" ? `• ELA var: ${c.ela_var}` : ""}{" "}
+                                          {typeof c.ratio === "number" ? `• ratio: ${c.ratio}` : ""}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                    {tamperCells.length > 8 && (
+                                      <p className="mt-1 text-xs text-gray-500">
+                                        Showing 8 of {tamperCells.length}.
+                                      </p>
+                                    )}
+                  </div>
+                                )}
+                                {tamperFields.length > 0 && (
+                                  <div>
+                                    <p className="font-medium text-gray-800">Suspicious fields</p>
+                                    <ul className="mt-1 list-inside list-disc space-y-1">
+                                      {tamperFields.slice(0, 8).map((f, idx) => (
+                                        <li key={idx}>
+                                          <span className="font-semibold">{String(f.field)}</span>:{" "}
+                                          <span className="font-medium">{String(f.text)}</span>{" "}
+                                          {f.risk ? `(${String(f.risk)})` : ""}{" "}
+                                          {typeof f.ratio === "number" ? `• ratio: ${f.ratio}` : ""}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                    {tamperFields.length > 8 && (
+                                      <p className="mt-1 text-xs text-gray-500">
+                                        Showing 8 of {tamperFields.length}.
+                                      </p>
+                                    )}
+                </div>
+                                )}
+                                <p className="text-xs text-gray-500">
+                                  Tip: highlighted boxes are drawn on the preview image on the right.
+                                </p>
+              </div>
+                            </details>
+                          </section>
+                        ) : null}
+
+                        {showSynthetic && syntheticPct !== null ? (
+                          <section
+                            className={cn(tileClass, syntheticTone)}
+                            aria-labelledby="ai-synthetic-heading"
+                          >
+                            <h3
+                              id="ai-synthetic-heading"
+                              className="text-[11px] font-semibold uppercase tracking-wide text-gray-600"
+                            >
+                              Synthetic check
+                            </h3>
+                            <div className="mt-2 flex flex-1 flex-col">
+                              <p className="font-semibold">Synthetic check: {syntheticRisk}</p>
+                              <p className="mt-1 flex-1 leading-relaxed">
+                                Concern:{" "}
+                                <span
+                                  className={cn(
+                                    "font-semibold tabular-nums",
+                                    concernScoreTextClass(syntheticPct),
+                                  )}
+                                >
+                                  {syntheticPct}%
+                                </span>
+                                . 0% is clean. Heuristic hint only (not a definitive AI-generated detector).
+                              </p>
+                              {syntheticSignals.length > 0 ? (
+                                <ul className="mt-2 list-inside list-disc space-y-1">
+                                  {syntheticSignals.slice(0, 5).map((s, idx) => (
+                                    <li key={idx}>{s}</li>
+                                  ))}
+                                </ul>
+                              ) : null}
+                            </div>
+                          </section>
+                        ) : null}
+
+                        {docSummary ? (
+                          <section className={tileClass} aria-labelledby="ai-labels-heading">
+                            <h3
+                              id="ai-labels-heading"
+                              className="text-[11px] font-semibold uppercase tracking-wide text-gray-500"
+                            >
+                              Labels on scan
+                            </h3>
+                            <div
+                              className="mt-2 flex flex-wrap items-center gap-2"
+                              aria-label="Label check results"
+                            >
+                              {docChecks.map((c, idx) => (
+                                <span
+                                  key={idx}
+                                  title={String(c.field)}
+                                  className={`inline-block h-4 w-4 shrink-0 rounded-full ${c.ok ? "bg-emerald-600" : "bg-rose-600"}`}
+                                />
+                              ))}
+                </div>
+                            <p className="mt-2 leading-snug">
+                              <span className="font-medium text-gray-900">
+                                {docSummary.pass}/{docSummary.total} found
+                              </span>
+                              {docSummary.missingShort.length > 0 ? (
+                                <>
+                                  <span className="text-gray-400"> · </span>
+                                  <span className="text-gray-700">
+                                    Missing: {docSummary.missingShort.slice(0, 4).join(" · ")}
+                                    {docSummary.missingShort.length > 4
+                                      ? ` (+${docSummary.missingShort.length - 4} more)`
+                                      : ""}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="text-emerald-700"> · All listed labels detected</span>
+                              )}
+                            </p>
+                            <details className="mt-2 text-xs text-gray-600">
+                              <summary className="cursor-pointer font-medium text-gray-600 hover:text-gray-900">
+                                Every label ({docChecks.length})
+                              </summary>
+                              <ul className="mt-2 space-y-1.5 border-l border-gray-200 pl-3">
+                                {docChecks.map((c, idx) => (
+                                  <li key={idx} className="flex items-start gap-2 leading-snug">
+                                    <span
+                                      className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${c.ok ? "bg-emerald-600" : "bg-rose-600"}`}
+                                      aria-hidden
+                                    />
+                                    <span className="text-gray-800">{String(c.field)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
+                          </section>
+                        ) : null}
+
+                        {cross && crossRows.length > 0 ? (
+                          <section className={tileClass} aria-labelledby="ai-enrollment-heading">
+                            <h3
+                              id="ai-enrollment-heading"
+                              className="text-[11px] font-semibold uppercase tracking-wide text-gray-500"
+                            >
+                              {enrollmentCrossCheckTitle(docType)}
+                            </h3>
+                            <p className="mt-1 text-xs text-gray-500">
+                              {docType === "good_moral"
+                                ? "Enrollment fields plus a visual signature scan on the certificate — re-run AI after updates."
+                                : "Compared against the student\u2019s enrollment form — re-run AI after form updates."}
+                            </p>
+                            <div
+                              className="mt-2 flex flex-wrap items-center gap-2"
+                              aria-label="Enrollment cross-check results"
+                            >
+                              {crossRows.map((c, idx) => (
+                                <span
+                                  key={idx}
+                                  title={
+                                    c.ok === null
+                                      ? `${c.field}: awaiting AI check`
+                                      : `${c.field}: ${c.ok ? "match" : "mismatch"}`
+                                  }
+                                  className={`inline-block h-4 w-4 shrink-0 rounded-full ${
+                                    c.ok === null
+                                      ? "bg-gray-300"
+                                      : c.ok
+                                        ? "bg-emerald-600"
+                                        : "bg-rose-600"
+                                  }`}
+                                />
+                              ))}
+              </div>
+                            <p className="mt-2 leading-snug text-gray-800">
+                              <span className="font-medium">{cross.okCount}</span> matched
+                              <span className="text-gray-400"> · </span>
+                              <span className="font-medium text-rose-800">{cross.badCount}</span>{" "}
+                              {String(selectedDocument?.registrarDocDecision || "").toLowerCase() === "rejected"
+                                ? "need resubmission"
+                                : "need review"}
+                              {cross.pendingCount > 0 ? (
+                                <>
+                                  <span className="text-gray-400"> · </span>
+                                  <span className="font-medium text-gray-600">{cross.pendingCount}</span> pending AI
+                                </>
+                              ) : null}
+                              {cross.badBits.length > 0 ? (
+                                <>
+                                  <span className="text-gray-400">: </span>
+                                  {cross.badBits.join(" · ")}
+                                </>
+                              ) : null}
+                            </p>
+                            {cross.okNames.length > 0 && cross.badCount > 0 ? (
+                              <p className="mt-1 text-xs text-emerald-800">
+                                Matched: {cross.okNames.join(" · ")}
+                              </p>
+                            ) : null}
+                            <details className="mt-2 text-xs text-gray-600" open>
+                              <summary className="cursor-pointer font-medium text-gray-600 hover:text-gray-900">
+                                Every enrollment field ({crossRows.length})
+                              </summary>
+                              <ul className="mt-2 space-y-1.5 border-l border-gray-200 pl-3">
+                                {crossRows.map((c, idx) => (
+                                  <li key={idx} className="flex items-start gap-2 leading-snug">
+                                    <span
+                                      className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${
+                                        c.ok === null
+                                          ? "bg-gray-300"
+                                          : c.ok
+                                            ? "bg-emerald-600"
+                                            : "bg-rose-600"
+                                      }`}
+                                      aria-hidden
+                                    />
+                                      <span className="min-w-0 text-gray-800">
+                                      <span className="font-medium">{String(c.field)}</span>
+                                      <span
+                                        className={
+                                          c.ok === null
+                                            ? " text-gray-600"
+                                            : c.ok
+                                              ? " text-emerald-800"
+                                              : " text-rose-800"
+                                        }
+                                      >
+                                        {" "}
+                                        {c.ok === null
+                                          ? "pending AI check"
+                                          : String(c.field).toLowerCase() === "signature"
+                                            ? c.ok
+                                              ? "detected on scan"
+                                              : "not detected on scan"
+                                            : c.ok
+                                              ? "match"
+                                              : "mismatch"}
+                                        {typeof c.match_ratio === "number" && Number.isFinite(c.match_ratio)
+                                          ? ` (${Math.round(c.match_ratio * 100)}%)`
+                                          : ""}
+                                      </span>
+                                      <span className="block text-gray-600">
+                                        Form: {String(c.expected).trim()}
+                                        {String(c.detected || "").trim()
+                                          ? ` · Document: ${String(c.detected).trim()}`
+                                          : ""}
+                                      </span>
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
+                          </section>
+                        ) : null}
+
+                        {issues.length > 0 ? (
+                          <section
+                            className={cn(tileClass, "min-h-0 sm:col-span-2")}
+                            aria-labelledby="ai-messages-heading"
+                          >
+                            <h3
+                              id="ai-messages-heading"
+                              className="text-[11px] font-semibold uppercase tracking-wide text-gray-500"
+                            >
+                              Full AI messages
+                            </h3>
+                            <details className="group mt-2 rounded-md border border-gray-100 bg-gray-50/80">
+                              <summary className="cursor-pointer list-none px-3 py-2 text-sm font-medium text-gray-700 marker:content-none hover:bg-gray-50 [&::-webkit-details-marker]:hidden">
+                                <span className="inline-flex items-center gap-2">
+                                  View all messages
+                                  <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700">
+                                    {issues.length}
+                                  </span>
+                                </span>
+                              </summary>
+                              <ul className="space-y-1.5 border-t border-gray-100 px-3 py-2 text-sm leading-snug text-red-800">
+                                {issues.map((issue: string, idx: number) => (
+                                  <li key={idx} className="pl-0">
+                                    {issue.replace(/^(Mismatch:\s*)/i, "").trim()}
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
+                          </section>
+                        ) : null}
+                        </div>
+                      </div>
+                    );
+                  })()}
                     {String(selectedDocument.aiError || "").trim().length > 0 && (
                       <Alert className="mt-3 border-amber-300 bg-amber-50">
                         <AlertDescription className="text-amber-900">
@@ -2087,114 +3003,180 @@ export function ReviewDocuments() {
                     Download
                   </Button>
                 </div>
-                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-auto overscroll-contain rounded-lg border bg-white">
-                  {previewLoading && (
-                    <div className="flex flex-col items-center gap-2 py-12 text-gray-600">
-                      <Loader2 className="w-8 h-8 animate-spin" />
-                      <span className="text-sm">Loading preview…</span>
-                    </div>
-                  )}
-                  {!previewLoading && previewError && (
-                    <Alert variant="destructive" className="m-4 border-red-200">
-                      <AlertDescription>{previewError}</AlertDescription>
-                    </Alert>
-                  )}
-                  {!previewLoading && !previewError && previewObjectUrl && (() => {
-                    const kind =
-                      previewDisplayKind ??
-                      guessDocKind(selectedDocument.mimeType, selectedDocument.fileName || selectedDocument.name);
-                    if (kind === "pdf") {
-                      return (
-                        <iframe
-                          title="Document preview"
-                          src={previewObjectUrl}
-                          className="min-h-[480px] h-[70vh] w-full border-0 bg-gray-100"
-                        />
-                      );
-                    }
-                    if (kind === "image") {
-                      const id = String(selectedDocument.id ?? "");
-                      const r = aiResultsByDocId[id];
-                      const cells = Array.isArray(r?.tamper_cells) ? r?.tamper_cells : [];
-                      const fields = Array.isArray((r as any)?.tamper_fields) ? ((r as any).tamper_fields as any[]) : [];
-                      const natW = typeof r?.image_width === "number" ? r.image_width : null;
-                      const natH = typeof r?.image_height === "number" ? r.image_height : null;
-                      const hasAny = cells.length > 0 || fields.length > 0;
-                      const canOverlay = hasAny && natW && natH && previewImgBox;
-                      const sx = canOverlay ? previewImgBox!.w / natW! : 1;
-                      const sy = canOverlay ? previewImgBox!.h / natH! : 1;
-                      return (
-                        <div className="relative w-full">
-                          <img
-                            ref={previewImgRef}
-                            src={previewObjectUrl}
-                            alt={selectedDocument.fileName || selectedDocument.name}
-                            className="block w-full h-auto"
-                            onLoad={() => {
-                              const img = previewImgRef.current;
-                              if (!img) return;
-                              const r = img.getBoundingClientRect();
-                              if (r.width > 0 && r.height > 0) setPreviewImgBox({ w: r.width, h: r.height });
-                            }}
-                          />
-                          {canOverlay && (
-                            <div className="absolute inset-0 pointer-events-none">
-                              {cells.map((c, idx) => {
-                                const risk = c.risk || "warning";
-                                const color =
-                                  risk === "high"
-                                    ? "border-rose-600 bg-rose-500/10"
-                                    : "border-amber-500 bg-amber-400/10";
-                                return (
-                                  <div
-                                    key={idx}
-                                    className={`absolute rounded-sm border-2 ${color}`}
-                                    style={{
-                                      left: `${c.x * sx}px`,
-                                      top: `${c.y * sy}px`,
-                                      width: `${c.w * sx}px`,
-                                      height: `${c.h * sy}px`,
-                                    }}
-                                    title={`Suspicious cell: ${c.text}`}
-                                  />
-                                );
-                              })}
-                              {fields.map((f, idx) => {
-                                const risk = f.risk || "warning";
-                                const color =
-                                  risk === "high"
-                                    ? "border-fuchsia-600 bg-fuchsia-500/10"
-                                    : "border-sky-500 bg-sky-400/10";
-                                return (
-                                  <div
-                                    key={`f-${idx}`}
-                                    className={`absolute rounded-sm border-2 ${color}`}
-                                    style={{
-                                      left: `${f.x * sx}px`,
-                                      top: `${f.y * sy}px`,
-                                      width: `${f.w * sx}px`,
-                                      height: `${f.h * sy}px`,
-                                    }}
-                                    title={`Suspicious field (${f.field}): ${f.text}`}
-                                  />
-                                );
-                              })}
+                {(() => {
+                  const kind =
+                    previewDisplayKind ??
+                    guessDocKind(selectedDocument.mimeType, selectedDocument.fileName || selectedDocument.name);
+                  const id = String(selectedDocument.id ?? "");
+                  const raw = aiResultsByDocId[id];
+                  const docType = resolveEffectiveDocType(selectedDocument, raw);
+                  const r = aiResultForDisplay(docType, raw);
+                  const cells = Array.isArray(r?.tamper_cells) ? r?.tamper_cells : [];
+                  const fields = Array.isArray((r as any)?.tamper_fields) ? ((r as any).tamper_fields as any[]) : [];
+                  const fieldChecksAll = Array.isArray(r?.field_checks) ? r.field_checks : [];
+                  const signatureScan = fieldChecksAll.find(
+                    (fc) =>
+                      String(fc.field || "").toLowerCase() === "signature" &&
+                      typeof fc.x === "number" &&
+                      typeof fc.y === "number" &&
+                      typeof fc.w === "number" &&
+                      typeof fc.h === "number",
+                  );
+                  const mismatches = filterFieldChecksForDocType(docType, fieldChecksAll).filter(
+                    (fc) =>
+                      fc &&
+                      String(fc.field || "").toLowerCase() !== "signature" &&
+                      fc.ok === false &&
+                      typeof fc.x === "number" &&
+                      typeof fc.y === "number" &&
+                      typeof fc.w === "number" &&
+                      typeof fc.h === "number",
+                  );
+                  const natW = typeof r?.image_width === "number" ? r.image_width : null;
+                  const natH = typeof r?.image_height === "number" ? r.image_height : null;
+                  const hasAny =
+                    cells.length > 0 ||
+                    fields.length > 0 ||
+                    mismatches.length > 0 ||
+                    Boolean(signatureScan);
+                  const canOverlay = hasAny && natW && natH && previewImgBox;
+                  const sx = canOverlay ? previewImgBox!.w / natW! : 1;
+                  const sy = canOverlay ? previewImgBox!.h / natH! : 1;
+                  const imageOverlay =
+                    canOverlay && kind === "image" && previewImgBox ? (
+                      <div
+                        className="pointer-events-none absolute left-1/2 top-1/2"
+                        style={{
+                          width: previewImgBox.w,
+                          height: previewImgBox.h,
+                          transform: "translate(-50%, -50%)",
+                        }}
+                      >
+                        {cells.map((c, idx) => {
+                          const risk = c.risk || "warning";
+                          const color =
+                            risk === "high"
+                              ? "border-rose-600 bg-rose-500/10"
+                              : "border-amber-500 bg-amber-400/10";
+                          return (
+                            <div
+                              key={idx}
+                              className={`absolute rounded-sm border-2 ${color}`}
+                              style={{
+                                left: `${c.x * sx}px`,
+                                top: `${c.y * sy}px`,
+                                width: `${c.w * sx}px`,
+                                height: `${c.h * sy}px`,
+                              }}
+                              title={`Suspicious cell: ${c.text}`}
+                            />
+                          );
+                        })}
+                        {fields.map((f, idx) => {
+                          const risk = f.risk || "warning";
+                          const color =
+                            risk === "high"
+                              ? "border-fuchsia-600 bg-fuchsia-500/10"
+                              : "border-sky-500 bg-sky-400/10";
+                          return (
+                            <div
+                              key={`f-${idx}`}
+                              className={`absolute rounded-sm border-2 ${color}`}
+                              style={{
+                                left: `${f.x * sx}px`,
+                                top: `${f.y * sy}px`,
+                                width: `${f.w * sx}px`,
+                                height: `${f.h * sy}px`,
+                              }}
+                              title={`Suspicious field (${f.field}): ${f.text}`}
+                            />
+                          );
+                        })}
+                        {mismatches.map((m, idx) => {
+                          const detected = String(m.detected || "").trim();
+                          const detectedLabel = detected ? `, saw "${detected}"` : "";
+                          return (
+                            <div
+                              key={`m-${idx}`}
+                              className="absolute rounded-full border-[3px] border-blue-600 bg-blue-500/10"
+                              style={{
+                                left: `${m.x * sx}px`,
+                                top: `${m.y * sy}px`,
+                                width: `${m.w * sx}px`,
+                                height: `${m.h * sy}px`,
+                                boxShadow: "0 0 0 1px rgba(255,255,255,0.85) inset",
+                              }}
+                              title={`Mismatch (${String(m.field)}): expected "${String(m.expected)}"${detectedLabel}`}
+                            >
+                              <span
+                                className="absolute -top-5 left-0 whitespace-nowrap rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white shadow"
+                              >
+                                {String(m.field)} mismatch
+                              </span>
                             </div>
-                          )}
-                        </div>
-                      );
-                    }
-                    return (
-                      <div className="p-8 text-center text-sm text-gray-600">
-                        <p className="mb-3">Preview is not available for this file type.</p>
-                        <Button type="button" variant="outline" onClick={() => downloadDocument(selectedDocument)}>
-                          <Download className="w-4 h-4 mr-2" />
-                          Download to open
-                        </Button>
+                          );
+                        })}
+                        {signatureScan ? (
+                          <div
+                            className={`absolute rounded-sm border-[3px] ${
+                              signatureScan.ok
+                                ? "border-emerald-600 bg-emerald-500/10"
+                                : "border-violet-600 bg-violet-500/10"
+                            }`}
+                            style={{
+                              left: `${signatureScan.x! * sx}px`,
+                              top: `${signatureScan.y! * sy}px`,
+                              width: `${signatureScan.w! * sx}px`,
+                              height: `${signatureScan.h! * sy}px`,
+                            }}
+                            title={
+                              signatureScan.ok
+                                ? "Signature scan: handwritten strokes detected"
+                                : "Signature scan: no handwritten signature detected in this area"
+                            }
+                          >
+                            <span
+                              className={`absolute -top-5 left-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white shadow ${
+                                signatureScan.ok ? "bg-emerald-600" : "bg-violet-600"
+                              }`}
+                            >
+                              {signatureScan.ok ? "Signature scanned" : "Signature missing"}
+                            </span>
+                          </div>
+                        ) : null}
                       </div>
-                    );
-                  })()}
-                </div>
+                    ) : null;
+
+                  return (
+                    <SecureDocumentPreview
+                      url={previewObjectUrl}
+                      kind={kind}
+                      alt={selectedDocument.fileName || selectedDocument.name}
+                      loading={previewLoading}
+                      error={previewError}
+                      onLightboxOpenChange={setPreviewLightboxOpen}
+                      imageRef={previewImgRef}
+                      onImageLoad={() => {
+                        const img = previewImgRef.current;
+                        if (!img) return;
+                        const rect = img.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                          setPreviewImgBox({ w: rect.width, h: rect.height });
+                        }
+                      }}
+                      imageOverlay={imageOverlay}
+                      unavailableFallback={
+                        <div className="text-center text-sm text-gray-600">
+                          <p className="mb-3">Preview is not available for this file type.</p>
+                          <Button type="button" variant="outline" onClick={() => downloadDocument(selectedDocument)}>
+                            <Download className="w-4 h-4 mr-2" />
+                            Download to open
+                          </Button>
+                        </div>
+                      }
+                    />
+                  );
+                })()}
                 <p className="mt-2 shrink-0 text-xs text-gray-500">
                   Preview loads securely for registrar accounts. Use Download to save a copy.
                 </p>
@@ -2202,6 +3184,52 @@ export function ReviewDocuments() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={docDecisionDialogOpen} onOpenChange={setDocDecisionDialogOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Reject this document?</DialogTitle>
+            <DialogDescription>
+              This will mark the document as <span className="font-semibold">Re-upload required</span>. The student will
+              see your reason and must submit a new file for this requirement.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="doc-reject-remarks">
+              Reason <span className="text-red-500" aria-hidden="true">*</span>
+            </Label>
+            <textarea
+              id="doc-reject-remarks"
+              className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-[#8B1538]/30"
+              rows={4}
+              value={docDecisionRemarks}
+              onChange={(e) => setDocDecisionRemarks(e.target.value)}
+              placeholder="Example: Please re-upload a clearer copy. The form keyword and school year header are not readable."
+            />
+            {!String(docDecisionRemarks).trim() ? (
+              <p className="text-xs text-red-600">Reason is required.</p>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={docDecisionSubmitting}
+              onClick={() => setDocDecisionDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={docDecisionSubmitting || !String(docDecisionRemarks).trim() || !selectedDocument?.id}
+              onClick={() => rejectDocumentAndRequireResubmission(selectedDocument.id, docDecisionRemarks)}
+            >
+              {docDecisionSubmitting ? "Rejecting…" : "Confirm reject"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

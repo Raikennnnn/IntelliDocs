@@ -10,7 +10,7 @@ if (preg_match('#^http://(127\.0\.0\.1|localhost)(:\\d+)?$#', $origin)) {
     header('Access-Control-Allow-Origin: *');
 }
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-User-Id');
+header('Access-Control-Allow-Headers: Content-Type, X-User-Id, Authorization');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
@@ -50,6 +50,10 @@ switch ($route) {
     case 'auth/':
         require_once __DIR__ . '/../api/auth.php';
         break;
+    case 'role-permissions':
+    case 'role-permissions/':
+        require_once __DIR__ . '/../api/role_permissions.php';
+        break;
     case 'documents':
     case 'documents/':
         require_once __DIR__ . '/../api/documents.php';
@@ -62,6 +66,14 @@ switch ($route) {
     case 'student/enrollment/':
         require_once __DIR__ . '/../api/student_enrollment.php';
         break;
+    case 'student/physical-docs':
+    case 'student/physical-docs/':
+        require_once __DIR__ . '/../api/student_physical_docs.php';
+        break;
+    case 'student/notifications':
+    case 'student/notifications/':
+        require_once __DIR__ . '/../api/student_notifications.php';
+        break;
     case 'registrar/applications':
     case 'registrar/applications/':
         require_once __DIR__ . '/../api/registrar_applications.php';
@@ -69,6 +81,10 @@ switch ($route) {
     case 'registrar/students':
     case 'registrar/students/':
         require_once __DIR__ . '/../api/registrar_students.php';
+        break;
+    case 'registrar/cohorts':
+    case 'registrar/cohorts/':
+        require_once __DIR__ . '/../api/registrar_cohorts.php';
         break;
     case 'registrar/physical-docs':
     case 'registrar/physical-docs/':
@@ -78,6 +94,10 @@ switch ($route) {
     case 'registrar/overview/':
         require_once __DIR__ . '/../api/registrar_overview.php';
         break;
+    case 'registrar/reports':
+    case 'registrar/reports/':
+        require_once __DIR__ . '/../api/registrar_reports.php';
+        break;
     case 'registrar/application':
     case 'registrar/application/':
         require_once __DIR__ . '/../api/registrar_application_detail.php';
@@ -85,6 +105,18 @@ switch ($route) {
     case 'registrar/document-review':
     case 'registrar/document-review/':
         require_once __DIR__ . '/../api/registrar_document_review.php';
+        break;
+    case 'registrar/document-decision':
+    case 'registrar/document-decision/':
+        require_once __DIR__ . '/../api/registrar_document_decision.php';
+        break;
+    case 'registrar/sections':
+    case 'registrar/sections/':
+        require_once __DIR__ . '/../api/registrar_sections.php';
+        break;
+    case 'registrar/student-section':
+    case 'registrar/student-section/':
+        require_once __DIR__ . '/../api/registrar_student_section.php';
         break;
     case 'ai/verify-document':
     case 'ai/verify-document/':
@@ -117,6 +149,20 @@ switch ($route) {
     case 'admin/reports':
     case 'admin/reports/':
         require_once __DIR__ . '/../api/admin_reports.php';
+        break;
+    case 'admin/settings':
+    case 'admin/settings/':
+        require_once __DIR__ . '/../api/admin_settings.php';
+        break;
+    case 'admin/security-logs':
+    case 'admin/security-logs/':
+        require_once __DIR__ . '/../api/admin_security_logs.php';
+        break;
+    case 'admin/activity-logs':
+    case 'admin/activity-logs/':
+    case 'registrar/activity-logs':
+    case 'registrar/activity-logs/':
+        require_once __DIR__ . '/../api/activity_logs.php';
         break;
     case 'school-year':
     case 'school-year/':

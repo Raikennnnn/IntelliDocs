@@ -1,8 +1,14 @@
 import { Navigate, useLocation } from 'react-router';
+import { useRolePermissions } from '../context/RolePermissionsContext';
+import { anyPermissionsForPath, permissionForPath } from '../lib/rolePermissions';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
   allowedRoles: string[];
+  /** Override automatic path-based permission check */
+  requiredPermission?: string;
+  /** Allow route when user has any of these permissions */
+  requiredAnyPermissions?: string[];
 }
 
 /**
@@ -46,8 +52,20 @@ function getValidStoredUser(): any | null {
  * triggers the guard immediately on the next protected navigation without
  * needing an extra context wiring.
  */
-export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) {
+function dashboardPathForRole(role: string): string {
+  if (role === 'registrar') return '/registrar/dashboard';
+  if (role === 'admin') return '/admin/dashboard';
+  return '/student/dashboard';
+}
+
+export function ProtectedRoute({
+  children,
+  allowedRoles,
+  requiredPermission,
+  requiredAnyPermissions,
+}: ProtectedRouteProps) {
   const location = useLocation();
+  const { loaded, hasPermission, hasPathAccess } = useRolePermissions();
 
   // Read the persisted user synchronously in render rather than in a
   // useEffect. The previous useEffect-based hydration captured a snapshot
@@ -74,6 +92,28 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
   // than the full URL) lets query strings and hashes pass through.
   if (user.must_change_password === true && location.pathname !== CHANGE_PASSWORD_PATH) {
     return <Navigate to={CHANGE_PASSWORD_PATH} replace />;
+  }
+
+  if (!loaded) {
+    return null;
+  }
+
+  const anyKeys =
+    requiredAnyPermissions ??
+    anyPermissionsForPath(location.pathname) ??
+    undefined;
+  if (anyKeys && anyKeys.length > 0) {
+    const allowed = anyKeys.some((key) => hasPermission(key));
+    if (!allowed) {
+      return <Navigate to={dashboardPathForRole(user.role)} replace />;
+    }
+  } else {
+    const permKey = requiredPermission ?? permissionForPath(location.pathname);
+    if (permKey && !hasPermission(permKey)) {
+      return <Navigate to={dashboardPathForRole(user.role)} replace />;
+    } else if (!permKey && !hasPathAccess(location.pathname)) {
+      return <Navigate to={dashboardPathForRole(user.role)} replace />;
+    }
   }
 
   return <>{children}</>;

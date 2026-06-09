@@ -1,6 +1,7 @@
 import { Link, useNavigate } from 'react-router';
 import { LogOut, Menu, X, GraduationCap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { clearAuthStorage } from '../lib/api';
 import { Button } from '../components/ui/button';
 import { useState, ReactNode } from 'react';
 import schoolLogo from '../../assets/logo.png';
@@ -22,7 +23,8 @@ import {
   CheckSquare,
   Activity,
   Brain,
-  UsersRound
+  UsersRound,
+  Layers
 } from 'lucide-react';
 
 interface DashboardLayoutProps {
@@ -34,19 +36,19 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
-  const handleLogout = () => {
-    localStorage.removeItem('user');
+  const handleLogout = async () => {
     localStorage.removeItem('studentEnrollmentLocked');
-    logout();
+    await logout();
+    clearAuthStorage();
     navigate('/login');
   };
 
   const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="flex h-screen min-h-screen flex-col overflow-hidden bg-gray-50">
       {/* Header */}
-      <header className="bg-[#8B1538] border-b border-gray-200 sticky top-0 z-10 shadow-md">
+      <header className="shrink-0 bg-[#8B1538] border-b border-gray-200 z-10 shadow-md">
         <div className="px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-md p-1">
@@ -74,9 +76,9 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
         </div>
       </header>
 
-      <div className="flex">
-        {/* Sidebar */}
-        <aside className="w-64 bg-white border-r border-gray-200 min-h-[calc(100vh-64px)] p-4">
+      <div className="flex min-h-0 flex-1">
+        {/* Sidebar — stays visible; only main content scrolls */}
+        <aside className="flex w-64 shrink-0 flex-col border-r border-gray-200 bg-white p-4 overflow-y-auto">
           <nav className="space-y-1">
             {navigation.map((item) => (
               <Link
@@ -92,7 +94,7 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 p-6">
+        <main className="min-h-0 flex-1 overflow-y-auto p-6">
           {children}
         </main>
       </div>
@@ -105,13 +107,15 @@ export const studentNavigation = [
   { name: 'Dashboard', path: '/student/dashboard', icon: Home },
   { name: 'Enrollment', path: '/student/enrollment', icon: ClipboardList },
   { name: 'Application Status', path: '/student/application-status', icon: CheckSquare },
-  { name: 'Announcements', path: '/student/announcements', icon: Bell },
+  { name: 'Notifications', path: '/student/notifications', icon: Bell },
+  { name: 'Announcements', path: '/student/announcements', icon: BookOpen },
 ];
 
 export const registrarNavigation = [
   { name: 'Dashboard', path: '/registrar/dashboard', icon: Home },
   { name: 'Applications', path: '/registrar/applications', icon: ClipboardList },
   { name: 'Students', path: '/registrar/students', icon: Users },
+  { name: 'Sections', path: '/registrar/sections', icon: Layers },
   { name: 'Reports', path: '/registrar/reports', icon: BarChart3 },
   { name: 'Announcements', path: '/registrar/announcements', icon: Bell },
 ];
@@ -123,6 +127,7 @@ export const adminNavigation = [
   { name: 'Students', path: '/admin/students', icon: GraduationCap },
   { name: 'Reports', path: '/admin/reports', icon: BarChart3 },
   { name: 'Activity Logs', path: '/admin/activity-logs', icon: Activity },
+  { name: 'Security Monitoring', path: '/admin/security-monitoring', icon: Shield },
   { name: 'System Settings', path: '/admin/system-settings', icon: Settings },
   { name: 'Announcements', path: '/admin/announcements', icon: Bell },
 ];

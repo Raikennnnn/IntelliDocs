@@ -28,6 +28,10 @@ export function EnrollmentGuard({
   const enrollmentAllowed = useEnrollmentAllowed();
   const { activeSchoolYear } = useSchoolYear();
 
+  if (enrollmentAllowed === null) {
+    return <>{children}</>;
+  }
+
   if (!enrollmentAllowed) {
     return (
       <Card className="border-red-200 bg-red-50">

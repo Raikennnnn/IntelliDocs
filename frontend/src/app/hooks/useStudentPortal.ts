@@ -25,6 +25,8 @@ export type StudentPortalData = {
     grade_level: string;
     school_year: string;
     application_status: string;
+    school_username?: string | null;
+    must_change_password?: boolean;
   };
   guardian: {
     name: string;
@@ -41,16 +43,34 @@ export type StudentPortalData = {
   };
   application: {
     id: string;
+    /** Formatted id e.g. APP-2026-015 — matches registrar views. */
+    display_id?: string;
     status: string;
     /** Normalized DB status: approved, pending, rejected, etc. */
     status_code?: string;
     submittedDate: string;
     lastUpdated: string;
-    documents: { name: string; status: string; remarks: string }[];
+    documents: {
+      /** Original uploaded filename (e.g. "psa tamper 1.jpg"). */
+      name: string;
+      /** Machine key for the requirement (e.g. "birth_certificate"). */
+      type?: string;
+      /** Human-readable requirement label, e.g. "PSA Birth Certificate". */
+      requirementLabel?: string;
+      status: string;
+      /** True once the registrar has manually marked this document as reviewed. */
+      registrarReviewed?: boolean;
+      /** Empty when no per-document decision; otherwise "reject" / "clear" / etc. */
+      registrarDecision?: string;
+      remarks: string;
+    }[];
     registrarRemarks: string;
     mode_of_payment?: string;
     voucher_no?: string;
   };
+  needs_resubmission?: boolean;
+  school_username?: string | null;
+  must_change_password?: boolean;
 };
 
 export function useStudentPortal() {
@@ -83,6 +103,11 @@ export function useStudentPortal() {
           guardian: json.guardian,
           enrollment_progress: json.enrollment_progress,
           application: json.application,
+          needs_resubmission: Boolean(json.needs_resubmission),
+          school_username: json.school_username ?? json.profile?.school_username ?? null,
+          must_change_password: Boolean(
+            json.must_change_password ?? json.profile?.must_change_password
+          ),
         });
       } else {
         setError('Unexpected response');

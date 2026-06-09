@@ -229,6 +229,9 @@ export function UserManagement() {
       throw new Error('Server returned an invalid response');
     }
     if (!res.ok || !json.success) {
+      if (json.error === 'rate_limited' || json.code === 'rapid_actions') {
+        throw new Error('Too many changes in a short time. Wait a minute and try again.');
+      }
       throw new Error(json.error || `Failed to delete user (${res.status})`);
     }
     toast.success(`User ${user.name} has been deleted`);

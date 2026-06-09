@@ -50,21 +50,18 @@ if (!function_exists('columnExists')) {
     }
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-if (getUserRole($pdo, $actorId) !== 'admin') {
-    appLogEvent($pdo, 'admin_students_list', 'admin', 'failed', $actorId, 'endpoint', 'admin/students', ['reason' => 'access_denied']);
+require_once __DIR__ . '/api_auth.php';
+require_once __DIR__ . '/permission_guard.php';
+$actor = apiRequireActor($pdo, 'admin/students');
+$actorId = $actor['id'];
+$actorRole = $actor['role'];
+if ($actorRole !== 'admin') {
     http_response_code(403);
     echo json_encode(['success' => false, 'error' => 'Access denied']);
     exit;
 }
 
-require_once __DIR__ . '/security_guard.php';
-runAuthenticatedSecurityGuards($pdo, $actorId, 'admin/students');
+requireActorPermission($pdo, $actor, 'manageUsers', false);
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET') {
     http_response_code(405);
@@ -142,15 +139,29 @@ if ($hasEnrollments) {
             ) e ON e.user_id = u.id
         ";
     } else {
+        // Prefer the active enrollment school year; fall back to latest row.
         $latestEnrollmentJoin = "
             LEFT JOIN (
                 SELECT e2.user_id, e2.id AS enrollment_id, e2.status AS enrollment_status,
                        e2.grade_level, e2.strand, e2.school_year, e2.enrollment_steps
                 FROM enrollments e2
                 INNER JOIN (
-                    SELECT user_id, MAX(id) AS max_id
-                    FROM enrollments
-                    GROUP BY user_id
+                    SELECT e_pick.user_id, e_pick.id AS max_id
+                      FROM enrollments e_pick
+                     INNER JOIN (
+                        SELECT e3.user_id,
+                               (
+                                 SELECT e4.id
+                                   FROM enrollments e4
+                                  WHERE e4.user_id = e3.user_id
+                                  ORDER BY
+                                    (TRIM(COALESCE(e4.school_year, '')) = :prefer_sy) DESC,
+                                    e4.id DESC
+                                  LIMIT 1
+                               ) AS pick_id
+                          FROM enrollments e3
+                         GROUP BY e3.user_id
+                     ) picked ON picked.user_id = e_pick.user_id AND picked.pick_id = e_pick.id
                 ) latest ON latest.user_id = e2.user_id AND latest.max_id = e2.id
             ) e ON e.user_id = u.id
         ";
@@ -175,6 +186,8 @@ $bindings = [];
 
 if ($syFilter !== 'all') {
     $bindings[':latest_sy'] = $syFilter;
+} elseif ($hasEnrollments) {
+    $bindings[':prefer_sy'] = $syCurrent ?? '';
 }
 
 if ($gradeFilter !== '' && $gradeFilter !== 'all') {
@@ -302,9 +315,10 @@ try {
         if (preg_match('/(\d{1,2})/', $gradeRaw, $m)) {
             $gradeNum = (int)$m[1];
         }
+        // Keep legacy `approved` and `enrolled` as Enrolled in admin views.
         $statusRaw = strtolower(trim((string)($row['enrollment_status'] ?? '')));
         $displayStatus = match ($statusRaw) {
-            'approved' => 'Enrolled',
+            'approved', 'enrolled' => 'Enrolled',
             'rejected' => 'Rejected',
             'pending' => 'Pending review',
             'under_review', 'under review', 'review' => 'Under review',

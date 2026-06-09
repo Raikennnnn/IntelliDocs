@@ -72,15 +72,10 @@ try {
     $enrollmentSchoolYearLabel = null;
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    appLogEvent($pdo, 'admin_overview', 'admin', 'failed', null, 'endpoint', 'admin/overview', ['reason' => 'missing_user_context']);
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-
-if (getUserRole($pdo, $actorId) !== 'admin') {
+require_once __DIR__ . '/api_auth.php';
+$actor = apiRequireActor($pdo, 'admin/overview');
+$actorId = $actor['id'];
+if ($actor['role'] !== 'admin') {
     appLogEvent($pdo, 'admin_overview', 'admin', 'failed', $actorId > 0 ? $actorId : null, 'endpoint', 'admin/overview', ['reason' => 'access_denied']);
     http_response_code(403);
     echo json_encode(['success' => false, 'error' => 'Access denied']);

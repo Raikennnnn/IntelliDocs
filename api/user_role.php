@@ -128,6 +128,14 @@ function getUserRole(PDO $pdo, int $userId): string
         $stmt->execute([':id' => $userId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         $r = strtolower(trim((string)($row['role'] ?? 'student')));
+        if (!in_array($r, ['admin', 'registrar'], true) && userRoleColumnExists($pdo)) {
+            $legacyStmt = $pdo->prepare('SELECT LOWER(TRIM(COALESCE(role, \'\'))) FROM users WHERE id = :id LIMIT 1');
+            $legacyStmt->execute([':id' => $userId]);
+            $legacy = strtolower(trim((string)($legacyStmt->fetchColumn() ?: '')));
+            if (in_array($legacy, ['admin', 'registrar', 'student'], true)) {
+                $r = $legacy;
+            }
+        }
 
         return in_array($r, ['admin', 'registrar', 'student'], true) ? $r : 'student';
     }
@@ -146,6 +154,12 @@ function getUserRole(PDO $pdo, int $userId): string
     return 'student';
 }
 
+/** True when the user may manage school-year settings (admin portal). */
+function userIsAdmin(PDO $pdo, int $userId): bool
+{
+    return getUserRole($pdo, $userId) === 'admin';
+}
+
 /**
  * @param 'admin'|'registrar'|'student' $role
  */
@@ -155,7 +169,10 @@ function setUserRole(PDO $pdo, int $userId, string $role): void
     if (!in_array($role, ['admin', 'registrar', 'student'], true)) {
         $role = 'student';
     }
-    ensureRoleTables($pdo);
+    // DDL inside a transaction causes MySQL to implicit-commit — only run when missing.
+    if (!roleTablesExist($pdo)) {
+        ensureRoleTables($pdo);
+    }
     ensureRoleTablesUsernameColumn($pdo);
     $unameStmt = $pdo->prepare('SELECT username FROM users WHERE id = :id LIMIT 1');
     $unameStmt->execute([':id' => $userId]);

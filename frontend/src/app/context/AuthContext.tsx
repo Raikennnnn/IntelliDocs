@@ -1,24 +1,8 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { apiFetch } from '../lib/api';
-// Real backend API integration - mocks removed
+import { apiFetch, clearAuthStorage, setSessionToken } from '../lib/api';
 
 type UserRole = 'student' | 'registrar' | 'admin';
 
-/**
- * AuthUser carries the authenticated user's identity payload returned by
- * `api/auth.php` after a successful login. The shape mirrors the
- * `student-school-credentials` design's AuthUser interface.
- *
- * Note: `id` is kept as `string` for backwards compatibility with the rest of
- * the frontend (apiFetch sends `X-User-Id` as a string, ProtectedRoute reads
- * the stored id as a string). The design's `id: number` is honored on the
- * wire — `buildUserFromBackend` accepts either and stringifies on storage.
- *
- * All fields beyond `id`, `username`, `email`, `role`, and `name` are
- * optional so older login responses (and stored sessions saved before this
- * feature shipped) continue to deserialize cleanly. Missing string fields
- * default to `null` and `must_change_password` defaults to `false`.
- */
 export interface AuthUser {
   id: string;
   username: string;
@@ -31,15 +15,12 @@ export interface AuthUser {
   extension_name?: string | null;
   role: UserRole;
   must_change_password?: boolean;
-  /** Legacy display-name field; kept so existing UI that reads `user.name` keeps working. */
   name: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
-/** Internal alias preserved so the existing implementation keeps compiling. */
 type User = AuthUser;
 
-/** DB may return `applicant`; student portal routes expect `student`. */
 function toPortalRole(role: string | undefined): UserRole {
   const r = (role || '').toLowerCase();
   if (r === 'registrar' || r === 'admin') return r;
@@ -93,77 +74,88 @@ function normalizeStoredUser(raw: unknown): User | null {
   };
 }
 
-/**
- * Result returned by `AuthContext.login`.
- *
- * - `ok` indicates whether the login succeeded.
- * - `user` is populated on success.
- * - `errorCode` carries the backend's `error` (or `code`) field on failure so
- *   callers can distinguish a generic credential failure from the throttle
- *   response (`account_locked` / `code: "throttled"`) without re-parsing the
- *   network call. Per the design's auth response shape, the throttle response
- *   is HTTP 401 with `{ error: "account_locked", code: "throttled" }`.
- */
+function persistAuthUser(user: User, token?: string | null): void {
+  localStorage.setItem('user', JSON.stringify(user));
+  if (token !== undefined) {
+    setSessionToken(token);
+  }
+}
+
+type AuthLoginResponse = {
+  success?: boolean;
+  requires_otp?: boolean;
+  user?: Record<string, unknown>;
+  must_change_password?: boolean;
+  token?: string | null;
+  email?: string;
+  email_masked?: string;
+  otp_delivery?: string;
+  dev_otp?: string;
+  error?: string;
+  code?: string;
+};
+
 export type LoginResult =
   | { ok: true; user: User }
-  | { ok: false; user?: undefined; errorCode?: string };
+  | { ok: false; user?: undefined; errorCode?: string }
+  | {
+      ok: false;
+      requiresOtp: true;
+      email: string;
+      emailMasked?: string;
+      otpDelivery?: string;
+      devOtp?: string;
+    };
+
+export type VerifyLoginOtpResult =
+  | { ok: true; user: User }
+  | { ok: false; errorCode?: string };
 
 interface AuthContextType {
   user: User | null;
-  /**
-   * Authenticate with either a personal email or a school username.
-   *
-   * The first argument is named `credential` to match the wire field — the
-   * backend accepts the same value via either field for backwards
-   * compatibility (see registrar approve / auth design).
-   */
   login: (credential: string, password: string) => Promise<LoginResult>;
-  logout: () => void;
+  verifyLoginOtp: (email: string, otp: string) => Promise<VerifyLoginOtpResult>;
+  resendLoginOtp: (credential: string) => Promise<{ ok: boolean; message?: string; devOtp?: string; errorCode?: string }>;
+  logout: () => Promise<void>;
   isAuthenticated: boolean;
-  /**
-   * Mutate a small, allow-listed slice of the persisted user object.
-   *
-   * Includes `must_change_password` so the change-password screen
-   * (`pages/student/ChangePassword.tsx`) can clear the forced-first-login
-   * flag locally after the backend confirms the rotation, letting the
-   * `First_Login_Guard` stop redirecting on the very next navigation
-   * without requiring a full re-login round trip.
-   */
   patchUser: (fields: Partial<Pick<User, 'name' | 'email' | 'must_change_password'>>) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function applyLoginPayload(data: AuthLoginResponse): User | null {
+  if (!data.success || !data.user) return null;
+  const nextUser = buildUserFromBackend(data.user);
+  if (typeof data.must_change_password === 'boolean') {
+    nextUser.must_change_password = data.must_change_password;
+  }
+  persistAuthUser(nextUser, data.token ?? null);
+  return nextUser;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
 
-  // Initialize from localStorage after mount
   useEffect(() => {
     const storedUser = localStorage.getItem('user');
     if (storedUser) {
       try {
-        const parsed = JSON.parse(storedUser);
-        const normalized = normalizeStoredUser(parsed);
+        const normalized = normalizeStoredUser(JSON.parse(storedUser));
         if (!normalized) {
-          // Old/stale user objects can miss ID; clear to avoid API calls without X-User-Id.
-          localStorage.removeItem('user');
+          clearAuthStorage();
           setUser(null);
           return;
         }
         setUser(normalized);
-      } catch (error) {
-        console.error('Failed to parse stored user:', error);
-        localStorage.removeItem('user');
+      } catch {
+        clearAuthStorage();
       }
     }
   }, []);
 
-  // Persist user to localStorage whenever it changes
   useEffect(() => {
     if (user) {
       localStorage.setItem('user', JSON.stringify(user));
-    } else {
-      localStorage.removeItem('user');
     }
   }, [user]);
 
@@ -171,43 +163,91 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await apiFetch('/api/auth', {
         method: 'POST',
-        // Send the new `credential` field per the student-school-credentials
-        // design. The backend accepts either `credential` or the legacy
-        // `email` field (task 7.2), so this remains backwards compatible if
-        // an older API is deployed alongside this client.
         body: JSON.stringify({ action: 'login', credential, password }),
       });
 
-      const data = await response.json().catch(() => null) as
-        | { success?: boolean; user?: Record<string, unknown>; must_change_password?: boolean; error?: string; code?: string }
-        | null;
+      const data = (await response.json().catch(() => null)) as AuthLoginResponse | null;
+      if (!data) return { ok: false };
 
-      if (data && data.success && data.user) {
-        const nextUser = buildUserFromBackend(data.user);
-        // Per design, `must_change_password` is returned at the top level of
-        // the login response (not nested under `user`). Hydrate it onto the
-        // AuthUser so the First_Login_Guard can read it from a single place.
-        // Older login responses without this field default to false.
-        if (typeof data.must_change_password === 'boolean') {
-          nextUser.must_change_password = data.must_change_password;
-        }
-        // Persist before returning so navigated routes (ProtectedRoute) always see storage.
-        localStorage.setItem('user', JSON.stringify(nextUser));
+      if (data.success && data.requires_otp) {
+        return {
+          ok: false,
+          requiresOtp: true,
+          email: String(data.email ?? credential),
+          emailMasked: data.email_masked,
+          otpDelivery: data.otp_delivery,
+          devOtp: data.dev_otp,
+        };
+      }
+
+      if (data.success && data.user) {
+        const nextUser = applyLoginPayload(data);
+        if (!nextUser) return { ok: false };
         setUser(nextUser);
         return { ok: true, user: nextUser };
       }
-      // Surface the backend's error code so the UI can render a throttle
-      // message distinct from a generic invalid-credentials message. Prefer
-      // `code` (e.g. "throttled") then fall back to `error`.
-      const errorCode = data?.code || data?.error;
-      return { ok: false, errorCode };
+
+      return { ok: false, errorCode: data.code || data.error };
     } catch (error) {
       console.error('Login error:', error);
       return { ok: false };
     }
   };
 
-  const logout = () => {
+  const verifyLoginOtp = async (email: string, otp: string): Promise<VerifyLoginOtpResult> => {
+    try {
+      const response = await apiFetch('/api/auth', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'verify_login_otp', email, otp }),
+      });
+      const data = (await response.json().catch(() => null)) as AuthLoginResponse | null;
+      if (data?.success && data.user) {
+        const nextUser = applyLoginPayload(data);
+        if (!nextUser) return { ok: false, errorCode: 'invalid_otp' };
+        setUser(nextUser);
+        return { ok: true, user: nextUser };
+      }
+      if (!data) {
+        return { ok: false, errorCode: 'server_error' };
+      }
+      return { ok: false, errorCode: data?.error || 'invalid_otp' };
+    } catch (error) {
+      console.error('Login OTP error:', error);
+      return { ok: false, errorCode: 'server_error' };
+    }
+  };
+
+  const resendLoginOtp = async (credential: string) => {
+    try {
+      const response = await apiFetch('/api/auth', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'resend_login_otp', email: credential }),
+      });
+      const data = (await response.json().catch(() => null)) as {
+        success?: boolean;
+        message?: string;
+        dev_otp?: string;
+        error?: string;
+      } | null;
+      if (data?.success) {
+        return { ok: true, message: data.message, devOtp: data.dev_otp };
+      }
+      return { ok: false, errorCode: data?.error || 'resend_failed' };
+    } catch {
+      return { ok: false, errorCode: 'server_error' };
+    }
+  };
+
+  const logout = async (): Promise<void> => {
+    try {
+      await apiFetch('/api/auth', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'logout' }),
+      });
+    } catch {
+      // still clear client session
+    }
+    clearAuthStorage();
     setUser(null);
   };
 
@@ -217,23 +257,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser((prev) => {
       if (!prev) return prev;
       const next = { ...prev, ...fields };
-      // Persist synchronously so a navigation that follows this call (e.g.
-      // the change-password screen redirecting to /student/dashboard) sees
-      // the updated flag in localStorage. The persist-on-change effect
-      // would otherwise run on the next tick, and ProtectedRoute reads
-      // localStorage at mount — leaving must_change_password=true visible
-      // to the guard and bouncing the user right back to this screen.
       try {
         localStorage.setItem('user', JSON.stringify(next));
       } catch {
-        // ignore — the effect below will retry on the next render.
+        // ignore
       }
       return next;
     });
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user, patchUser }}>
+    <AuthContext.Provider value={{ user, login, verifyLoginOtp, resendLoginOtp, logout, isAuthenticated: !!user, patchUser }}>
       {children}
     </AuthContext.Provider>
   );
@@ -243,8 +277,6 @@ export function useAuth() {
   const context = useContext(AuthContext);
   if (context !== undefined) return context;
 
-  // Fallback: avoid hard-crashing the app if a route/layout is rendered outside the provider.
-  // This can happen during router error rendering or mis-wired layout trees.
   const fallbackUser = (() => {
     try {
       const raw = localStorage.getItem('user');
@@ -259,12 +291,10 @@ export function useAuth() {
     user: fallbackUser,
     isAuthenticated: !!fallbackUser,
     login: async (): Promise<LoginResult> => ({ ok: false }),
-    logout: () => {
-      try {
-        localStorage.removeItem('user');
-      } catch {
-        // ignore
-      }
+    verifyLoginOtp: async (): Promise<VerifyLoginOtpResult> => ({ ok: false }),
+    resendLoginOtp: async () => ({ ok: false }),
+    logout: async () => {
+      clearAuthStorage();
     },
     patchUser: () => {},
   };

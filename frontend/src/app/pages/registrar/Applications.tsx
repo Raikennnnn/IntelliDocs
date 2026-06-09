@@ -331,7 +331,7 @@ export function Applications() {
                               />
                             </div>
                             <span className="text-xs text-gray-600 whitespace-nowrap">
-                              {app.documentsVerified}/{app.totalDocuments} docs verified
+                              {app.documentsVerified}/{app.totalDocuments} docs reviewed
                             </span>
                           </div>
                         </div>

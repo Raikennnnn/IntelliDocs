@@ -58,7 +58,10 @@ function sendViaBrevo(string $recipientEmail, string $subject, string $bodyText)
         'to' => [['email' => $recipientEmail]],
         'subject' => $subject,
         'textContent' => $bodyText,
-    ]);
+        'htmlContent' => '<div style="font-family:Arial,sans-serif;line-height:1.5;color:#111">'
+            . nl2br(htmlspecialchars($bodyText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'))
+            . '</div>',
+    ], JSON_UNESCAPED_UNICODE);
 
     $ch = curl_init('https://api.brevo.com/v3/smtp/email');
     curl_setopt_array($ch, [
@@ -106,6 +109,9 @@ function sendViaPhpMail(string $recipientEmail, string $subject, string $bodyTex
  */
 function processSingleQueuedEmail(PDO $pdo, int $queueId): bool
 {
+    if (function_exists('applySystemMailEnvOverrides')) {
+        applySystemMailEnvOverrides($pdo);
+    }
     ensureEmailQueueTable($pdo);
     $stmt = $pdo->prepare("SELECT * FROM email_queue WHERE id = :id LIMIT 1");
     $stmt->execute([':id' => $queueId]);
@@ -143,6 +149,32 @@ function processSingleQueuedEmail(PDO $pdo, int $queueId): bool
     return false;
 }
 
+function getEmailQueueLastError(PDO $pdo, int $queueId): ?string
+{
+    try {
+        ensureEmailQueueTable($pdo);
+        $stmt = $pdo->prepare('SELECT last_error FROM email_queue WHERE id = :id LIMIT 1');
+        $stmt->execute([':id' => $queueId]);
+        $err = $stmt->fetchColumn();
+        if ($err === false || $err === null) {
+            return null;
+        }
+        $text = trim((string)$err);
+
+        return $text !== '' ? $text : null;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
+/** When false, failed OTP sends do not expose dev_otp on localhost (use real Brevo). */
+function mailDevOtpFallbackEnabled(): bool
+{
+    $flag = strtolower(trim((string)(getenv('MAIL_DEV_OTP_FALLBACK') ?: '0')));
+
+    return in_array($flag, ['1', 'true', 'yes', 'on'], true);
+}
+
 function processPendingEmailQueue(PDO $pdo, int $limit = 20): array
 {
     ensureEmailQueueTable($pdo);
@@ -165,9 +197,24 @@ function processPendingEmailQueue(PDO $pdo, int $limit = 20): array
     return $sentIds;
 }
 
+function otpEmailSubject(): string
+{
+    return 'NSDGA IntelliDocs - Email verification code';
+}
+
 function buildOtpEmailBody(string $otp): string
 {
-    return "Your Nuestra Señora De Guia Academy verification code is: {$otp}\n\nThis code expires in 10 minutes.\nIf you did not request this, ignore this email.";
+    return "Your NSDGA IntelliDocs verification code is: {$otp}\n\n"
+        . "This code expires in 10 minutes.\n"
+        . "If you did not request this, you can ignore this email.";
+}
+
+/** On localhost, optionally return OTP in the API response for testing (email is still sent). */
+function mailLocalOtpInResponseEnabled(): bool
+{
+    $flag = strtolower(trim((string)(getenv('MAIL_LOCAL_OTP_IN_RESPONSE') ?: '0')));
+
+    return in_array($flag, ['1', 'true', 'yes', 'on'], true);
 }
 
 /**
@@ -245,7 +292,13 @@ function checkMailerReadiness(): array
         }
 
         if ($httpCode === 401) {
-            $issues[] = 'Brevo rejected the API key (HTTP 401). It may have been revoked — generate a new one and update env.';
+            $decoded401 = json_decode((string)$body, true);
+            $apiMessage = is_array($decoded401) ? (string)($decoded401['message'] ?? '') : '';
+            if (stripos($apiMessage, 'unrecognised IP') !== false || stripos($apiMessage, 'unauthorized IP') !== false) {
+                $issues[] = 'Brevo blocked this server IP (Authorized IPs is on). Brevo dashboard → Settings → Security → Authorized IPs → deactivate for API keys, or add your current public IP.';
+            } else {
+                $issues[] = 'Brevo rejected the API key (HTTP 401). It may have been revoked — generate a new one and update env.';
+            }
             $report['brevo'] = $brevo;
             $report['issues'] = $issues;
             return $report;

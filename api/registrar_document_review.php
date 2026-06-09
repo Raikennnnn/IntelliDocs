@@ -65,19 +65,18 @@ function ensureDocumentReviewSchema(PDO $pdo): void
     }
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-
-$role = getUserRole($pdo, $actorId);
+require_once __DIR__ . '/api_auth.php';
+$actor = apiRequireActor($pdo, 'registrar/document-review');
+$actorId = $actor['id'];
+$role = $actor['role'];
 if (!in_array($role, ['registrar', 'admin'], true)) {
     http_response_code(403);
     echo json_encode(['success' => false, 'error' => 'Access denied']);
     exit;
 }
+
+require_once __DIR__ . '/permission_guard.php';
+requireActorPermission($pdo, $actor, 'viewApplications');
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -128,11 +127,13 @@ try {
     }
 
     if ($reviewed) {
+        $hasUploadCount = columnExists($pdo, 'documents', 'upload_count');
+        $uploadReset = $hasUploadCount ? ', upload_count = 0' : '';
         $upd = $pdo->prepare('
             UPDATE documents
                SET registrar_reviewed = 1,
                    reviewed_at = CURRENT_TIMESTAMP,
-                   reviewed_by = :actor
+                   reviewed_by = :actor' . $uploadReset . '
              WHERE id = :id
         ');
         $upd->execute([':actor' => $actorId, ':id' => $documentId]);

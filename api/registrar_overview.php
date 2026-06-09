@@ -8,6 +8,8 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 }
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/user_role.php';
+require_once __DIR__ . '/school_year_helpers.php';
+require_once __DIR__ . '/section_grade_helpers.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     http_response_code(405);
@@ -22,34 +24,10 @@ function tableExists(PDO $pdo, string $table): bool
     return (bool)$stmt->fetchColumn();
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    appLogEvent($pdo, 'registrar_overview', 'registrar', 'failed', null, 'endpoint', 'registrar/overview', ['reason' => 'missing_user_context']);
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-
-$actorStmt = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1');
-$actorStmt->execute([':id' => $actorId]);
-$actor = $actorStmt->fetch();
-if (!$actor) {
-    appLogEvent($pdo, 'registrar_overview', 'registrar', 'failed', $actorId, 'endpoint', 'registrar/overview', ['reason' => 'invalid_user']);
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Invalid user']);
-    exit;
-}
-
-$actorRole = getUserRole($pdo, $actorId);
-if (!in_array($actorRole, ['registrar', 'admin'], true)) {
-    appLogEvent($pdo, 'registrar_overview', 'registrar', 'failed', $actorId, 'endpoint', 'registrar/overview', ['reason' => 'access_denied', 'role' => $actorRole]);
-    http_response_code(403);
-    echo json_encode(['success' => false, 'error' => 'Access denied']);
-    exit;
-}
-
-require_once __DIR__ . '/security_guard.php';
-runAuthenticatedSecurityGuards($pdo, $actorId, 'registrar/overview');
+require_once __DIR__ . '/api_auth.php';
+$actor = apiRequireActor($pdo, 'registrar/overview');
+$actorId = $actor['id'];
+$actorRole = $actor['role'];
 
 $overallQuota = 4000;
 
@@ -62,7 +40,20 @@ try {
     $rejected = 0;
     $byStrand = [];
 
+    $schoolYearScope = rosterEnrollmentContext($pdo)['school_year'] ?? '';
+    $schoolYearLabel = $schoolYearScope !== ''
+        ? 'SY ' . $schoolYearScope . ' (active enrollment)'
+        : 'All school years';
+    $schoolYearSql = '';
+    $schoolYearParams = [];
+    if ($schoolYearScope !== '') {
+        $schoolYearSql = " AND TRIM(COALESCE(school_year, '')) = :overview_sy";
+        $schoolYearParams[':overview_sy'] = $schoolYearScope;
+    }
+
     if (tableExists($pdo, 'enrollments')) {
+        // Scope counts to the active enrollment school year so historical rows
+        // from ended years do not inflate dashboard totals.
         // total_applications: in-flight queue items only — once an enrollment
         // is approved (or fully enrolled) it leaves the registrar's review
         // queue and stops counting toward this stat. Rejected rows are also
@@ -78,8 +69,11 @@ try {
                 SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS approved_count,
                 SUM(CASE WHEN LOWER(status) = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
             FROM enrollments
+            WHERE 1=1 {$schoolYearSql}
         ";
-        $summary = $pdo->query($summarySql)->fetch() ?: [];
+        $summaryStmt = $pdo->prepare($summarySql);
+        $summaryStmt->execute($schoolYearParams);
+        $summary = $summaryStmt->fetch() ?: [];
         $applicationsTotal = (int)($summary['total_applications'] ?? 0);
         $enrolledTotal = (int)($summary['total_enrolled'] ?? 0);
         $pending = (int)($summary['pending_count'] ?? 0);
@@ -95,10 +89,14 @@ try {
                 SUM(CASE WHEN LOWER(status) IN ('pending', 'under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS total_applications,
                 SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS enrolled_students
             FROM enrollments
+            WHERE 1=1 {$schoolYearSql}
             GROUP BY COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified')
+            HAVING total_applications > 0 OR enrolled_students > 0
             ORDER BY enrolled_students DESC, strand_name ASC
         ";
-        $strandRows = $pdo->query($strandSql)->fetchAll() ?: [];
+        $strandStmt = $pdo->prepare($strandSql);
+        $strandStmt->execute($schoolYearParams);
+        $strandRows = $strandStmt->fetchAll() ?: [];
         foreach ($strandRows as $row) {
             $byStrand[] = [
                 'name' => (string)$row['strand_name'],
@@ -138,6 +136,8 @@ try {
 
     echo json_encode([
         'success' => true,
+        'schoolYear' => $schoolYearScope !== '' ? $schoolYearScope : null,
+        'schoolYearLabel' => $schoolYearLabel,
         'summary' => [
             'overallQuota' => $overallQuota,
             'totalApplications' => $applicationsTotal,

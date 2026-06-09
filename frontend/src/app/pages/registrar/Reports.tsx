@@ -1,124 +1,288 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  FileText,
+  Download,
+  FileSpreadsheet,
+  Users,
+  School,
+  CheckCircle,
+  BarChart3,
+  ClipboardList,
+  ShieldCheck,
+  Calendar,
+  Loader2,
+  Eye,
+  Printer,
+} from 'lucide-react';
+import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import { FileText, Download, FileSpreadsheet, Users, School, CheckCircle, BarChart3 } from 'lucide-react';
-import { toast } from 'sonner';
-import { useEffect, useMemo, useState } from 'react';
-import { apiFetch } from '../../lib/api';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../../components/ui/dialog';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '../../components/ui/table';
+import { useSchoolYear } from '../../context/SchoolYearContext';
+import {
+  downloadRegistrarReportCsv,
+  fetchRegistrarReport,
+  printRegistrarReport,
+  type RegistrarReportJson,
+  type RegistrarReportType,
+} from '../../lib/registrarReports';
+
+type ReportCard = {
+  id: RegistrarReportType;
+  title: string;
+  description: string;
+  icon: typeof Users;
+  accent: string;
+};
+
+const REPORT_CARDS: ReportCard[] = [
+  {
+    id: 'applicants',
+    title: 'Applicant List',
+    description: 'Pending, under review, draft, and rejected applications for the selected school year',
+    icon: ClipboardList,
+    accent: 'text-blue-600 bg-blue-50',
+  },
+  {
+    id: 'enrollment_summary',
+    title: 'Enrollment Summary',
+    description: 'Enrollment counts by strand and grade level with status breakdown',
+    icon: BarChart3,
+    accent: 'text-indigo-600 bg-indigo-50',
+  },
+  {
+    id: 'document_verification',
+    title: 'Document Verification Results',
+    description: 'Per-document AI and registrar verification status for each student',
+    icon: ShieldCheck,
+    accent: 'text-purple-600 bg-purple-50',
+  },
+  {
+    id: 'approval_records',
+    title: 'Approval Records',
+    description: 'Approved and enrolled students with approval dates and registrar remarks',
+    icon: CheckCircle,
+    accent: 'text-green-600 bg-green-50',
+  },
+  {
+    id: 'rejection_records',
+    title: 'Rejection Records',
+    description: 'Rejected applications and documents with reasons and concern scores',
+    icon: FileText,
+    accent: 'text-red-600 bg-red-50',
+  },
+  {
+    id: 'anomaly_summary',
+    title: 'Anomaly Summary',
+    description: 'AI-detected tampering, verification anomalies, and security events',
+    icon: ShieldCheck,
+    accent: 'text-amber-600 bg-amber-50',
+  },
+  {
+    id: 'section_masterlist',
+    title: 'Section Masterlist',
+    description: 'Section rosters with strand, shift, and student assignments',
+    icon: School,
+    accent: 'text-emerald-600 bg-emerald-50',
+  },
+  {
+    id: 'quota_summary',
+    title: 'Quota Summary',
+    description: 'Overall quota utilization and per-strand enrollment share',
+    icon: Users,
+    accent: 'text-orange-600 bg-orange-50',
+  },
+  {
+    id: 'document_completion',
+    title: 'Document Completion Report',
+    description: 'Digital and physical document completion tracking per enrolled student',
+    icon: FileText,
+    accent: 'text-rose-600 bg-rose-50',
+  },
+];
+
+type MonitoringSummary = {
+  totalEnrolled: number;
+  totalSections: number;
+  quotaUtilization: number;
+  documentCompletionRate: number;
+  overallQuota: number;
+  remainingSlots: number;
+  verifiedDocuments: number;
+  totalDocuments: number;
+  pending: number;
+  underReview: number;
+};
+
+const DEFAULT_SUMMARY: MonitoringSummary = {
+  totalEnrolled: 0,
+  totalSections: 0,
+  quotaUtilization: 0,
+  documentCompletionRate: 0,
+  overallQuota: 4000,
+  remainingSlots: 4000,
+  verifiedDocuments: 0,
+  totalDocuments: 0,
+  pending: 0,
+  underReview: 0,
+};
 
 export function Reports() {
+  const { enrollmentSchoolYearLabel, endedSchoolYears } = useSchoolYear();
+  const [schoolYearFilter, setSchoolYearFilter] = useState<string>('current');
+  const [schoolYearOptions, setSchoolYearOptions] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [summary, setSummary] = useState({
-    totalEnrolled: 0,
-    totalSections: 0,
-    quotaUtilization: 0,
-    documentCompletionRate: 0,
-    overallQuota: 4000,
-    remainingSlots: 4000,
-    verifiedDocuments: 0,
-    totalDocuments: 0,
-  });
-  const [strands, setStrands] = useState<Array<{ name: string; totalApplications: number; enrolledStudents: number }>>([]);
+  const [summary, setSummary] = useState<MonitoringSummary>(DEFAULT_SUMMARY);
+  const [exportingId, setExportingId] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewData, setPreviewData] = useState<RegistrarReportJson | null>(null);
+
+  const apiSchoolYearParam = useMemo(() => {
+    if (schoolYearFilter === 'all') return 'all';
+    if (schoolYearFilter === 'current') {
+      return enrollmentSchoolYearLabel || 'current';
+    }
+    return schoolYearFilter;
+  }, [schoolYearFilter, enrollmentSchoolYearLabel]);
+
+  const loadMonitoring = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const json = await fetchRegistrarReport('monitoring_summary', apiSchoolYearParam);
+      const s = (json.summary ?? {}) as Record<string, unknown>;
+      setSummary({
+        totalEnrolled: Number(s.totalEnrolled ?? 0),
+        totalSections: Number(s.totalSections ?? 0),
+        quotaUtilization: Number(s.quotaUtilization ?? 0),
+        documentCompletionRate: Number(s.documentCompletionRate ?? 0),
+        overallQuota: Number(s.overallQuota ?? 4000),
+        remainingSlots: Number(s.remainingSlots ?? 0),
+        verifiedDocuments: Number(s.verifiedDocuments ?? 0),
+        totalDocuments: Number(s.totalDocuments ?? 0),
+        pending: Number(s.pending ?? 0),
+        underReview: Number(s.underReview ?? 0),
+      });
+      const opts = Array.isArray(json.filters?.school_year_options)
+        ? json.filters!.school_year_options!
+        : [];
+      setSchoolYearOptions(opts);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load reports');
+    } finally {
+      setLoading(false);
+    }
+  }, [apiSchoolYearParam]);
 
   useEffect(() => {
-    const loadOverview = async () => {
-      setError(null);
-      try {
-        const res = await apiFetch('/api/registrar/overview');
-        const text = await res.text();
-        let json: any = {};
-        try {
-          json = JSON.parse(text);
-        } catch {
-          throw new Error('Server returned an invalid response');
-        }
+    loadMonitoring();
+  }, [loadMonitoring]);
 
-        if (!res.ok || !json.success) {
-          setError(json.error || `Failed to load reports (${res.status})`);
-          return;
-        }
-
-        const s = json.summary ?? {};
-        setSummary({
-          totalEnrolled: Number(s.totalEnrolled ?? 0),
-          totalSections: Number(s.totalSections ?? 0),
-          quotaUtilization: Number(s.quotaUtilization ?? 0),
-          documentCompletionRate: Number(s.documentCompletionRate ?? 0),
-          overallQuota: Number(s.overallQuota ?? 4000),
-          remainingSlots: Number(s.remainingSlots ?? 0),
-          verifiedDocuments: Number(s.verifiedDocuments ?? 0),
-          totalDocuments: Number(s.totalDocuments ?? 0),
-        });
-        setStrands(Array.isArray(json.strands) ? json.strands : []);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Network error');
-      }
-    };
-
-    loadOverview();
-  }, []);
-
-  const handleExportPDF = (reportType: string) => {
-    toast.success(`Exporting ${reportType} as PDF...`);
-  };
-
-  const handleExportExcel = (reportType: string) => {
-    toast.success(`Exporting ${reportType} as Excel...`);
-  };
-
-  const strandSummary = useMemo(() => {
-    if (strands.length === 0) return 'No strand data yet';
-    return strands
-      .slice(0, 3)
-      .map((s) => `${s.name}: ${s.enrolledStudents}`)
-      .join(' | ');
-  }, [strands]);
-
-  const reports = [
-    {
-      id: 1,
-      title: 'Enrollment per Strand',
-      description: 'Comprehensive enrollment report showing students per strand with quota analysis',
-      icon: Users,
-      color: 'blue',
-      stats: { total: summary.totalEnrolled, byStrand: strandSummary }
-    },
-    {
-      id: 2,
-      title: 'Section Masterlist',
-      description: 'Complete list of all sections with student rosters and adviser assignments',
-      icon: School,
-      color: 'green',
-      stats: { total: `${summary.totalSections} Sections`, byStrand: strandSummary }
-    },
-    {
-      id: 3,
-      title: 'Quota Summary',
-      description: 'Strand quota tracking with remaining slots and capacity utilization',
-      icon: BarChart3,
-      color: 'orange',
-      stats: { quotaTotal: summary.overallQuota, enrolled: summary.totalEnrolled, remaining: summary.remainingSlots }
-    },
-    {
-      id: 4,
-      title: 'Document Completion Report',
-      description: 'Student document submission status with completion tracking',
-      icon: CheckCircle,
-      color: 'purple',
-      stats: {
-        complete: summary.verifiedDocuments,
-        incomplete: Math.max(0, summary.totalDocuments - summary.verifiedDocuments),
-        rate: `${summary.documentCompletionRate.toFixed(1)}%`,
-      }
+  const openPreview = async (report: RegistrarReportType) => {
+    setPreviewOpen(true);
+    setPreviewLoading(true);
+    setPreviewData(null);
+    try {
+      const json = await fetchRegistrarReport(report, apiSchoolYearParam);
+      setPreviewData(json);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to preview report');
+      setPreviewOpen(false);
+    } finally {
+      setPreviewLoading(false);
     }
-  ];
+  };
+
+  const runExport = async (
+    report: RegistrarReportType,
+    mode: 'csv' | 'print',
+    label: string,
+  ) => {
+    const key = `${report}-${mode}`;
+    setExportingId(key);
+    try {
+      if (mode === 'csv') {
+        await downloadRegistrarReportCsv(report, apiSchoolYearParam, report);
+        toast.success(`${label} exported as CSV`);
+      } else {
+        await printRegistrarReport(report, apiSchoolYearParam);
+        toast.success(`${label} opened for printing`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Export failed');
+    } finally {
+      setExportingId(null);
+    }
+  };
+
+  const exportAllCsv = async () => {
+    setExportingId('bulk-csv');
+    try {
+      for (const card of REPORT_CARDS) {
+        await downloadRegistrarReportCsv(card.id, apiSchoolYearParam, card.id);
+      }
+      toast.success('All reports exported as CSV files');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Bulk export failed');
+    } finally {
+      setExportingId(null);
+    }
+  };
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold text-gray-900">Reports</h2>
-        <p className="text-gray-600">Generate and export various registrar reports</p>
+        <h2 className="text-2xl font-semibold text-gray-900">Reports & Monitoring</h2>
+        <p className="text-gray-600">
+          Generate enrollment-related reports — applicant lists, summaries, document verification,
+          and approval records — in printable and exportable formats.
+        </p>
       </div>
+
+      <Card className="p-4">
+        <label
+          htmlFor="reports-school-year"
+          className="text-xs font-medium text-gray-600 mb-1.5 flex items-center gap-1.5"
+        >
+          <Calendar className="w-3.5 h-3.5" />
+          Report school year
+        </label>
+        <select
+          id="reports-school-year"
+          value={schoolYearFilter}
+          onChange={(e) => setSchoolYearFilter(e.target.value)}
+          className="w-full max-w-md h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+        >
+          {enrollmentSchoolYearLabel && (
+            <option value="current">Active enrollment ({enrollmentSchoolYearLabel})</option>
+          )}
+          {!enrollmentSchoolYearLabel && <option value="current">Active enrollment year</option>}
+          <option value="all">All school years</option>
+          {schoolYearOptions.map((y) => (
+            <option key={y} value={y}>
+              SY {y}
+              {endedSchoolYears.includes(y) ? ' (ended)' : ''}
+            </option>
+          ))}
+        </select>
+      </Card>
 
       {error && (
         <Alert variant="destructive">
@@ -126,105 +290,82 @@ export function Reports() {
         </Alert>
       )}
 
-      {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Total Enrolled</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-blue-600">{summary.totalEnrolled}</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Total Sections</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-[#2D5016]">{summary.totalSections}</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Quota Utilization</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-orange-600">{summary.quotaUtilization.toFixed(1)}%</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-gray-600">Document Complete</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-purple-600">{summary.documentCompletionRate.toFixed(1)}%</div>
-          </CardContent>
-        </Card>
+        {[
+          { label: 'Total Enrolled', value: summary.totalEnrolled, color: 'text-blue-600' },
+          { label: 'In Review Queue', value: summary.pending + summary.underReview, color: 'text-amber-600' },
+          { label: 'Quota Utilization', value: `${summary.quotaUtilization.toFixed(1)}%`, color: 'text-orange-600' },
+          { label: 'Docs Verified', value: `${summary.documentCompletionRate.toFixed(1)}%`, color: 'text-purple-600' },
+        ].map((stat) => (
+          <Card key={stat.label}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600">{stat.label}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className={`text-3xl font-bold ${stat.color}`}>
+                {loading ? <Loader2 className="w-6 h-6 animate-spin inline" /> : stat.value}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
-      {/* Report Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {reports.map((report) => {
+        {REPORT_CARDS.map((report) => {
           const Icon = report.icon;
+          const busyCsv = exportingId === `${report.id}-csv`;
+          const busyPrint = exportingId === `${report.id}-print`;
           return (
-            <Card key={report.id} className="border-2 hover:shadow-lg transition-all">
+            <Card key={report.id} className="border hover:shadow-md transition-shadow">
               <CardHeader>
                 <div className="flex items-start gap-4">
-                  <div className={`w-12 h-12 rounded-lg bg-${report.color}-100 flex items-center justify-center flex-shrink-0`}>
-                    <Icon className={`w-6 h-6 text-${report.color}-600`} />
+                  <div className={`w-12 h-12 rounded-lg flex items-center justify-center shrink-0 ${report.accent}`}>
+                    <Icon className="w-6 h-6" />
                   </div>
-                  <div className="flex-1">
-                    <CardTitle className="text-xl text-gray-900">{report.title}</CardTitle>
-                    <CardDescription className="mt-2">{report.description}</CardDescription>
+                  <div className="flex-1 min-w-0">
+                    <CardTitle className="text-lg text-gray-900">{report.title}</CardTitle>
+                    <CardDescription className="mt-1">{report.description}</CardDescription>
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-4">
-                {/* Stats Display */}
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <p className="text-xs text-gray-600 mb-2">Report Summary</p>
-                  {typeof report.stats === 'object' && 'total' in report.stats && (
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">{report.stats.total} Students</p>
-                      <p className="text-xs text-gray-600">{report.stats.byStrand}</p>
-                    </div>
-                  )}
-                  {typeof report.stats === 'object' && 'quotaTotal' in report.stats && (
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">Quota: {report.stats.quotaTotal}</p>
-                      <p className="text-xs text-gray-600">
-                        Enrolled: {report.stats.enrolled} | Remaining: {report.stats.remaining}
-                      </p>
-                    </div>
-                  )}
-                  {typeof report.stats === 'object' && 'complete' in report.stats && (
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">Completion Rate: {report.stats.rate}</p>
-                      <p className="text-xs text-gray-600">
-                        Complete: {report.stats.complete} | Incomplete: {report.stats.incomplete}
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Export Buttons */}
-                <div className="flex gap-2">
-                  <Button 
-                    onClick={() => handleExportPDF(report.title)}
-                    className="flex-1 bg-[#8B1538] hover:bg-[#6B1028]"
+              <CardContent className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => openPreview(report.id)}
                   >
-                    <FileText className="w-4 h-4 mr-2" />
-                    Export PDF
+                    <Eye className="w-4 h-4 mr-1.5" />
+                    Preview
                   </Button>
-                  <Button 
-                    onClick={() => handleExportExcel(report.title)}
-                    className="flex-1 bg-[#2D5016] hover:bg-[#1D3010]"
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="bg-[#8B1538] hover:bg-[#6B1028]"
+                    disabled={busyPrint}
+                    onClick={() => runExport(report.id, 'print', report.title)}
                   >
-                    <FileSpreadsheet className="w-4 h-4 mr-2" />
-                    Export Excel
+                    {busyPrint ? (
+                      <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <Printer className="w-4 h-4 mr-1.5" />
+                    )}
+                    Print / PDF
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="bg-[#2D5016] hover:bg-[#1D3010]"
+                    disabled={busyCsv}
+                    onClick={() => runExport(report.id, 'csv', report.title)}
+                  >
+                    {busyCsv ? (
+                      <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <FileSpreadsheet className="w-4 h-4 mr-1.5" />
+                    )}
+                    Export CSV
                   </Button>
                 </div>
               </CardContent>
@@ -233,35 +374,75 @@ export function Reports() {
         })}
       </div>
 
-      {/* Additional Report Options */}
       <Card>
         <CardHeader>
-          <CardTitle>Custom Report Generator</CardTitle>
-          <CardDescription>Generate custom reports with specific filters and date ranges</CardDescription>
+          <CardTitle>Bulk Export</CardTitle>
+          <CardDescription>Download every report type for the selected school year as CSV files.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <div className="flex items-center gap-3">
-              <Download className="w-6 h-6 text-blue-600" />
-              <div>
-                <p className="font-medium text-blue-900">Bulk Export Available</p>
-                <p className="text-sm text-blue-700">
-                  Export all reports at once or customize your report parameters
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-2 mt-4">
-              <Button variant="outline" className="border-blue-600 text-blue-600 hover:bg-blue-50">
-                Custom Report Settings
-              </Button>
-              <Button className="bg-blue-600 hover:bg-blue-700">
-                <Download className="w-4 h-4 mr-2" />
-                Export All Reports
-              </Button>
-            </div>
-          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={exportingId === 'bulk-csv'}
+            onClick={exportAllCsv}
+          >
+            {exportingId === 'bulk-csv' ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4 mr-2" />
+            )}
+            Export All Reports (CSV)
+          </Button>
         </CardContent>
       </Card>
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>{previewData?.title ?? 'Report preview'}</DialogTitle>
+            <DialogDescription>
+              {previewData?.schoolYearLabel ?? ''}
+              {previewData?.rowCount != null ? ` · ${previewData.rowCount} row(s)` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto border rounded-md">
+            {previewLoading ? (
+              <div className="p-8 text-center text-gray-500">
+                <Loader2 className="w-5 h-5 animate-spin inline mr-2" />
+                Loading report…
+              </div>
+            ) : previewData && (previewData.columns?.length ?? 0) > 0 ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {previewData.columns!.map((col) => (
+                      <TableHead key={col} className="whitespace-nowrap text-xs">
+                        {col}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(previewData.rows ?? []).slice(0, 200).map((row, idx) => (
+                    <TableRow key={idx}>
+                      {previewData.columns!.map((col) => (
+                        <TableCell key={col} className="text-xs max-w-[200px] truncate">
+                          {row[col] ?? ''}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <div className="p-8 text-center text-gray-500">No data for this report and school year.</div>
+            )}
+          </div>
+          {previewData && (previewData.rowCount ?? 0) > 200 && (
+            <p className="text-xs text-gray-500">Showing first 200 rows. Export CSV for the full report.</p>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

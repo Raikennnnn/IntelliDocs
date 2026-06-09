@@ -5,14 +5,18 @@ import {
   CardTitle,
 } from "../../components/ui/card";
 import { Badge } from "../../components/ui/badge";
+import { Button } from "../../components/ui/button";
 import {
   Bell,
   CheckCircle,
   AlertCircle,
   Info,
   Clock,
+  Loader2,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
+import { apiFetch } from "../../lib/api";
 
 interface Notification {
   id: string;
@@ -23,49 +27,74 @@ interface Notification {
   read: boolean;
 }
 
+function formatNotificationDate(raw: string): string {
+  if (!raw) return "";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleString(undefined, {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export function Notifications() {
-  const [notifications, setNotifications] = useState<Notification[]>([
-    {
-      id: "1",
-      type: "update",
-      title: "Application Status Update",
-      message: "Your enrollment application is now under review. The Registrar is verifying your documents.",
-      date: "March 18, 2026 - 2:30 PM",
-      read: false,
-    },
-    {
-      id: "2",
-      type: "success",
-      title: "Document Verified",
-      message: "Your Birth Certificate has been successfully verified by our AI system.",
-      date: "March 17, 2026 - 4:15 PM",
-      read: false,
-    },
-    {
-      id: "3",
-      type: "warning",
-      title: "Document Issue Detected",
-      message: "There's an issue with your SF10 / Form 137. Please check the Application Status page for details.",
-      date: "March 17, 2026 - 11:20 AM",
-      read: true,
-    },
-    {
-      id: "4",
-      type: "success",
-      title: "Application Submitted",
-      message: "Your enrollment application has been successfully submitted. Application ID: APP-2026-001",
-      date: "March 15, 2026 - 9:45 AM",
-      read: true,
-    },
-    {
-      id: "5",
-      type: "info",
-      title: "Welcome to IntelliDocs",
-      message: "Thank you for registering with IntelliDocs. You can now start your enrollment application.",
-      date: "March 14, 2026 - 3:00 PM",
-      read: true,
-    },
-  ]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadNotifications = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch("/api/student/notifications");
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to load notifications");
+      }
+      setNotifications(Array.isArray(data.notifications) ? data.notifications : []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load notifications");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadNotifications();
+  }, [loadNotifications]);
+
+  const markAsRead = async (id: string) => {
+    setNotifications((prev) =>
+      prev.map((notif) => (notif.id === id ? { ...notif, read: true } : notif))
+    );
+    try {
+      await apiFetch("/api/student/notifications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mark_read: [id] }),
+      });
+    } catch {
+      toast.error("Could not mark notification as read");
+      loadNotifications();
+    }
+  };
+
+  const markAllAsRead = async () => {
+    setNotifications((prev) => prev.map((notif) => ({ ...notif, read: true })));
+    try {
+      await apiFetch("/api/student/notifications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mark_all_read: true }),
+      });
+    } catch {
+      toast.error("Could not mark all as read");
+      loadNotifications();
+    }
+  };
 
   const getNotificationIcon = (type: string) => {
     switch (type) {
@@ -97,35 +126,38 @@ export function Notifications() {
     }
   };
 
-  const markAsRead = (id: string) => {
-    setNotifications(prev =>
-      prev.map(notif =>
-        notif.id === id ? { ...notif, read: true } : notif
-      )
-    );
-  };
+  const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const markAllAsRead = () => {
-    setNotifications(prev =>
-      prev.map(notif => ({ ...notif, read: true }))
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-gray-600 py-12">
+        <Loader2 className="w-6 h-6 animate-spin" />
+        Loading notifications…
+      </div>
     );
-  };
+  }
 
-  const unreadCount = notifications.filter(n => !n.read).length;
+  if (error) {
+    return (
+      <div className="space-y-4">
+        <p className="text-red-600">{error}</p>
+        <Button variant="outline" onClick={loadNotifications}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-semibold text-gray-900">
-            Notifications
-          </h2>
-          <p className="text-gray-600">
-            Stay updated with your enrollment progress
-          </p>
+          <h2 className="text-2xl font-semibold text-gray-900">Notifications</h2>
+          <p className="text-gray-600">Stay updated with your enrollment progress</p>
         </div>
         {unreadCount > 0 && (
           <button
+            type="button"
             onClick={markAllAsRead}
             className="text-sm text-[#8B1538] hover:underline font-medium"
           >
@@ -134,65 +166,60 @@ export function Notifications() {
         )}
       </div>
 
-      {/* Unread Count */}
       {unreadCount > 0 && (
         <Card className="border-[#8B1538] bg-red-50">
           <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <Bell className="w-5 h-5 text-[#8B1538]" />
-              <p className="text-sm text-[#8B1538] font-medium">
-                You have {unreadCount} unread notification{unreadCount > 1 ? 's' : ''}
+              <p className="text-sm font-medium text-[#8B1538]">
+                You have {unreadCount} unread notification{unreadCount !== 1 ? "s" : ""}
               </p>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Notifications List */}
       <div className="space-y-3">
         {notifications.length === 0 ? (
           <Card>
-            <CardContent className="pt-6">
-              <div className="text-center py-8">
-                <Bell className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-500">No notifications yet</p>
-              </div>
+            <CardContent className="py-12 text-center">
+              <Bell className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+              <p className="text-gray-500">No notifications yet</p>
             </CardContent>
           </Card>
         ) : (
           notifications.map((notification) => (
             <Card
               key={notification.id}
-              className={`cursor-pointer hover:border-[#8B1538] transition-colors ${
-                !notification.read ? 'border-l-4 border-l-[#8B1538] bg-red-50' : ''
+              className={`cursor-pointer transition-colors hover:bg-gray-50 ${
+                !notification.read ? "border-l-4 border-l-[#8B1538]" : ""
               }`}
-              onClick={() => markAsRead(notification.id)}
+              onClick={() => !notification.read && markAsRead(notification.id)}
             >
-              <CardContent className="pt-6">
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0 mt-0.5">
+              <CardHeader className="pb-2">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3 min-w-0">
                     {getNotificationIcon(notification.type)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-4 mb-2">
-                      <h3 className={`font-semibold ${!notification.read ? 'text-gray-900' : 'text-gray-700'}`}>
+                    <div className="min-w-0">
+                      <CardTitle className="text-base font-semibold">
                         {notification.title}
-                      </h3>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {!notification.read && (
-                          <div className="w-2 h-2 rounded-full bg-[#8B1538]" />
-                        )}
-                        <Badge className={getNotificationBadgeColor(notification.type)}>
-                          {notification.type}
-                        </Badge>
-                      </div>
+                      </CardTitle>
+                      <p className="text-sm text-gray-500 mt-1">
+                        {formatNotificationDate(notification.date)}
+                      </p>
                     </div>
-                    <p className={`text-sm mb-2 ${!notification.read ? 'text-gray-700' : 'text-gray-600'}`}>
-                      {notification.message}
-                    </p>
-                    <p className="text-xs text-gray-500">{notification.date}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {!notification.read && (
+                      <Badge className={`${getNotificationBadgeColor(notification.type)} text-white`}>
+                        New
+                      </Badge>
+                    )}
                   </div>
                 </div>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-gray-700">{notification.message}</p>
               </CardContent>
             </Card>
           ))

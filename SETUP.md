@@ -126,7 +126,7 @@ Optional `env` overrides for the credentials feature (sensible defaults are bake
 | `BREVO_API_KEY` | empty | Brevo transactional API key (leave blank to fall back to PHP `mail()`) |
 | `APP_PUBLIC_URL` | empty | Host portion used in welcome-email login links |
 | `AUTH_LOGIN_FAILURE_THRESHOLD` | `5` | Failed attempts in the window before throttling |
-| `AUTH_LOGIN_FAILURE_WINDOW_MINUTES` | `15` | Minutes the failure counter spans |
+| `AUTH_LOGIN_FAILURE_WINDOW_MINUTES` | `5` | Minutes the failure counter spans (paper: 5 min) |
 
 #### Brevo (transactional email) deployment notes
 
@@ -401,9 +401,9 @@ APP_PUBLIC_URL=https://intellidocs.infinityfreeapp.com
 
 # Security knobs
 AUTH_LOGIN_FAILURE_THRESHOLD=5
-AUTH_LOGIN_FAILURE_WINDOW_MINUTES=15
+AUTH_LOGIN_FAILURE_WINDOW_MINUTES=5
 SESSION_IDLE_TIMEOUT_MINUTES=30
-RAPID_ACTION_THRESHOLD=30
+RAPID_ACTION_THRESHOLD=10
 RAPID_ACTION_WINDOW_MINUTES=2
 ```
 

@@ -11,6 +11,11 @@ require_once __DIR__ . '/user_role.php';
 require_once __DIR__ . '/username_generator.php';
 require_once __DIR__ . '/welcome_email.php';
 require_once __DIR__ . '/mailer.php';
+require_once __DIR__ . '/section_assignment.php';
+require_once __DIR__ . '/enrollment_status_helpers.php';
+require_once __DIR__ . '/cohort_helpers.php';
+require_once __DIR__ . '/physical_docs_helpers.php';
+require_once __DIR__ . '/ai_persist.php';
 
 function tableExists(PDO $pdo, string $table): bool
 {
@@ -29,7 +34,9 @@ function columnExists(PDO $pdo, string $table, string $column): bool
 function toUiStatus(string $status): string
 {
     $s = strtolower(trim($status));
-    if ($s === 'approved') return 'Approved';
+    // Once the registrar approves in the Applications tab the student is
+    // enrolled. Legacy rows may still carry `approved` in the database.
+    if ($s === 'enrolled' || $s === 'approved') return 'Enrolled';
     if ($s === 'rejected') return 'Rejected';
     if (in_array($s, ['under_review', 'under review', 'review'], true)) return 'Under Review';
     if ($s === 'draft') return 'Draft';
@@ -74,21 +81,21 @@ function ensureCredentialsSchema(PDO $pdo): void
     }
 }
 
-function requireRegistrarOrAdmin(PDO $pdo): int
+/** @return array{id: int, role: string} */
+function requireRegistrarOrAdmin(PDO $pdo): array
 {
-    $actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-    if ($actorId <= 0) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'error' => 'Missing user context']);
-        exit;
-    }
-    $role = getUserRole($pdo, $actorId);
-    if (!in_array($role, ['registrar', 'admin'], true)) {
+    require_once __DIR__ . '/api_auth.php';
+    $actor = apiRequireActor($pdo, 'registrar/application-detail');
+    if (!in_array($actor['role'], ['registrar', 'admin'], true)) {
         http_response_code(403);
         echo json_encode(['success' => false, 'error' => 'Access denied']);
         exit;
     }
-    return $actorId;
+
+    return [
+        'id' => (int)$actor['id'],
+        'role' => (string)$actor['role'],
+    ];
 }
 
 function parseEnrollmentIdFromAppId(string $appId): int
@@ -99,12 +106,16 @@ function parseEnrollmentIdFromAppId(string $appId): int
     return 0;
 }
 
-$actorId = requireRegistrarOrAdmin($pdo);
+require_once __DIR__ . '/permission_guard.php';
+$actor = requireRegistrarOrAdmin($pdo);
+$actorId = $actor['id'];
 ensureCredentialsSchema($pdo);
 $hasRegistrarRemarks = columnExists($pdo, 'enrollments', 'registrar_remarks');
 $hasUpdatedAt = columnExists($pdo, 'enrollments', 'updated_at');
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    requireActorPermission($pdo, $actor, 'viewApplications');
+
     $appId = trim((string)($_GET['application_id'] ?? ''));
     $enrollmentId = (int)($_GET['enrollment_id'] ?? 0);
     if ($enrollmentId <= 0 && $appId !== '') {
@@ -142,28 +153,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $hasType = columnExists($pdo, 'documents', 'type');
             $hasOriginalName = columnExists($pdo, 'documents', 'original_name');
             $hasAiStatus = columnExists($pdo, 'documents', 'ai_status');
+            $hasAiScore = columnExists($pdo, 'documents', 'ai_score');
             $hasUploadedAt = columnExists($pdo, 'documents', 'uploaded_at');
             $hasMime = columnExists($pdo, 'documents', 'mime_type');
             $hasReviewed = columnExists($pdo, 'documents', 'registrar_reviewed');
             $hasReviewedAt = columnExists($pdo, 'documents', 'reviewed_at');
             $hasReviewedBy = columnExists($pdo, 'documents', 'reviewed_by');
+            $hasDocDecision = columnExists($pdo, 'documents', 'registrar_doc_decision');
+            $hasDocRemarks = columnExists($pdo, 'documents', 'registrar_doc_remarks');
+            $hasAiSecurityJson = columnExists($pdo, 'documents', 'ai_security_json');
 
             $selectType = $hasType ? 'type' : 'NULL AS type';
             $selectOriginalName = $hasOriginalName ? 'original_name' : 'NULL AS original_name';
             $selectAiStatus = $hasAiStatus ? 'ai_status' : '\'pending\' AS ai_status';
+            $selectAiScore = $hasAiScore ? 'ai_score' : 'NULL AS ai_score';
             $selectUploadedAt = $hasUploadedAt ? 'uploaded_at' : 'NULL AS uploaded_at';
             $selectMime = $hasMime ? 'mime_type' : 'NULL AS mime_type';
             $selectReviewed = $hasReviewed ? 'registrar_reviewed' : '0 AS registrar_reviewed';
             $selectReviewedAt = $hasReviewedAt ? 'reviewed_at' : 'NULL AS reviewed_at';
             $selectReviewedBy = $hasReviewedBy ? 'reviewed_by' : 'NULL AS reviewed_by';
+            $selectDecision = $hasDocDecision ? 'registrar_doc_decision' : 'NULL AS registrar_doc_decision';
+            $selectDocRemarks = $hasDocRemarks ? 'registrar_doc_remarks' : 'NULL AS registrar_doc_remarks';
+            $selectAiSecurityJson = $hasAiSecurityJson ? 'ai_security_json' : 'NULL AS ai_security_json';
 
             if (columnExists($pdo, 'documents', 'enrollment_id')) {
-                $d = $pdo->prepare("SELECT id, {$selectType}, {$selectOriginalName}, {$selectAiStatus}, {$selectUploadedAt}, {$selectMime}, {$selectReviewed}, {$selectReviewedAt}, {$selectReviewedBy} FROM documents WHERE enrollment_id = :eid ORDER BY id DESC");
+                $d = $pdo->prepare("SELECT id, {$selectType}, {$selectOriginalName}, {$selectAiStatus}, {$selectAiScore}, {$selectUploadedAt}, {$selectMime}, {$selectReviewed}, {$selectReviewedAt}, {$selectReviewedBy}, {$selectDecision}, {$selectDocRemarks}, {$selectAiSecurityJson} FROM documents WHERE enrollment_id = :eid ORDER BY id DESC");
                 $d->execute([':eid' => $enrollmentId]);
                 $docs = $d->fetchAll() ?: [];
             } elseif (tableExists($pdo, 'students') && columnExists($pdo, 'documents', 'student_id')) {
                 $d = $pdo->prepare('
-                    SELECT d.id, ' . $selectType . ', ' . $selectOriginalName . ', ' . $selectAiStatus . ', ' . $selectUploadedAt . ', ' . $selectMime . ', ' . $selectReviewed . ', ' . $selectReviewedAt . ', ' . $selectReviewedBy . '
+                    SELECT d.id, ' . $selectType . ', ' . $selectOriginalName . ', ' . $selectAiStatus . ', ' . $selectAiScore . ', ' . $selectUploadedAt . ', ' . $selectMime . ', ' . $selectReviewed . ', ' . $selectReviewedAt . ', ' . $selectReviewedBy . ', ' . $selectDecision . ', ' . $selectDocRemarks . '
                     FROM students s
                     INNER JOIN documents d ON d.student_id = s.id
                     WHERE s.user_id = :uid
@@ -175,9 +194,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 $docs = [];
             }
 
+            // Dedupe documents by requirement type, keeping only the newest row
+            // (rows are ordered by id DESC, so the first occurrence of a type is the latest).
+            $seenTypes = [];
+            $dedupedDocs = [];
             foreach ($docs as $doc) {
-                $st = strtolower((string)($doc['ai_status'] ?? 'pending'));
-                $ui = $st === 'verified' ? 'Verified' : ($st === 'rejected' || $st === 'tampered' ? 'Flagged' : 'Under Review');
+                $typeKeyRaw = trim((string)($doc['type'] ?? ''));
+                $typeKey = strtolower($typeKeyRaw);
+                if ($typeKey === '') {
+                    // Fall back to a per-row unique key so untyped rows still appear.
+                    $typeKey = '__id_' . (string)($doc['id'] ?? uniqid('', true));
+                }
+                if (isset($seenTypes[$typeKey])) {
+                    continue;
+                }
+                $seenTypes[$typeKey] = true;
+                $dedupedDocs[] = $doc;
+            }
+            $docs = $dedupedDocs;
+
+            foreach ($docs as $doc) {
+                $ui = documentRegistrarUiStatus($doc);
                 $typeLabel = trim((string)($doc['type'] ?? ''));
                 if ($typeLabel === '') {
                     $typeLabel = 'Document';
@@ -189,6 +226,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 if ($isReviewed) {
                     $documentsReviewed++;
                 }
+                $aiScoreRaw = $doc['ai_score'] ?? null;
+                $aiConfidence = null;
+                if ($aiScoreRaw !== null && $aiScoreRaw !== '' && is_numeric($aiScoreRaw)) {
+                    $aiConfidence = (int)round((float)$aiScoreRaw);
+                    $aiConfidence = max(0, min(100, $aiConfidence));
+                }
+
+                $aiVerify = parseStoredAiVerifyEnvelope(
+                    isset($doc['ai_security_json']) ? (string)$doc['ai_security_json'] : null
+                );
+
                 $documents[] = [
                     'id' => (int)$doc['id'],
                     'requirementLabel' => $typeLabel,
@@ -196,23 +244,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     'name' => $fileDisplay,
                     'mimeType' => $mimeRaw,
                     'status' => $ui,
-                    'aiConfidence' => $ui === 'Verified' ? 95 : ($ui === 'Flagged' ? 60 : 80),
+                    'aiConfidence' => $aiConfidence,
                     'uploadedDate' => (string)($doc['uploaded_at'] ?? ''),
-                    'issues' => $ui === 'Flagged' ? ['Requires manual verification'] : [],
+                    'issues' => $ui === 'Flagged' && $aiConfidence === null ? ['Requires manual verification'] : [],
                     'registrarReviewed' => $isReviewed,
                     'reviewedAt' => $doc['reviewed_at'] ?? null,
                     'reviewedBy' => isset($doc['reviewed_by']) && $doc['reviewed_by'] !== null ? (int)$doc['reviewed_by'] : null,
+                    'registrarDocDecision' => isset($doc['registrar_doc_decision']) ? (string)($doc['registrar_doc_decision'] ?? '') : '',
+                    'registrarDocRemarks' => isset($doc['registrar_doc_remarks']) ? (string)($doc['registrar_doc_remarks'] ?? '') : '',
+                    'aiVerify' => $aiVerify,
                 ];
             }
         }
 
         // Form JSON can contain keys that collide with server fields (e.g. "documents").
         // Merge with form first, then overlay server fields so DB-backed documents and IDs always win.
+        $statusRaw = strtolower(trim((string)($row['status'] ?? 'pending')));
+        $alreadyEnrolled = in_array($statusRaw, ['enrolled', 'approved'], true);
+        if (!$alreadyEnrolled && columnExists($pdo, 'users', 'school_username')) {
+            $suStmt = $pdo->prepare('SELECT school_username FROM users WHERE id = :uid LIMIT 1');
+            $suStmt->execute([':uid' => (int)$row['user_id']]);
+            $su = trim((string)($suStmt->fetchColumn() ?: ''));
+            $returningStudent = isReturningStudentReEnrollment($pdo, (int)$row['user_id'], $enrollmentId);
+            if ($su !== '' && !$returningStudent) {
+                $alreadyEnrolled = true;
+                if (!in_array($statusRaw, ['rejected'], true) && $statusRaw !== 'enrolled') {
+                    $repairSql = $hasUpdatedAt
+                        ? "UPDATE enrollments SET status = 'enrolled', updated_at = NOW() WHERE id = :id"
+                        : "UPDATE enrollments SET status = 'enrolled' WHERE id = :id";
+                    $pdo->prepare($repairSql)->execute([':id' => $enrollmentId]);
+                    $statusRaw = 'enrolled';
+                }
+            }
+        }
+
         $serverFields = [
             'id' => 'APP-' . date('Y') . '-' . str_pad((string)$enrollmentId, 3, '0', STR_PAD_LEFT),
             'enrollmentId' => $enrollmentId,
             'status' => toUiStatus((string)($row['status'] ?? 'pending')),
-            'studentName' => (string)($row['full_name'] ?? ''),
+            'enrollmentStatusRaw' => $statusRaw,
+            'isAlreadyEnrolled' => $alreadyEnrolled,
+            'studentName' => studentEnrollmentFormDisplayName(
+                $form,
+                [
+                    'full_name' => (string)($row['full_name'] ?? ''),
+                    'first_name' => columnExists($pdo, 'users', 'first_name') ? (string)($row['first_name'] ?? '') : '',
+                    'middle_name' => columnExists($pdo, 'users', 'middle_name') ? (string)($row['middle_name'] ?? '') : '',
+                    'last_name' => columnExists($pdo, 'users', 'last_name') ? (string)($row['last_name'] ?? '') : '',
+                    'extension_name' => columnExists($pdo, 'users', 'extension_name') ? (string)($row['extension_name'] ?? '') : '',
+                ]
+            ),
             'submittedDate' => (string)($row['applied_at'] ?? ''),
             'email' => (string)($row['email'] ?? ''),
             'gradeLevel' => (string)($row['grade_level'] ?? ''),
@@ -252,6 +333,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     try {
         if ($action === 'save_remarks') {
+            requireActorPermission($pdo, $actor, 'addRemarks');
             if (!$hasRegistrarRemarks) {
                 $pdo->exec('ALTER TABLE enrollments ADD COLUMN registrar_remarks TEXT NULL');
                 $hasRegistrarRemarks = true;
@@ -266,6 +348,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         if ($action === 'approve' || $action === 'reject') {
+            requireActorPermission($pdo, $actor, $action === 'approve' ? 'approveApplications' : 'rejectApplications');
             if ($action === 'approve') {
                 // Schema guard: fail-loud when the credentials migration has not run.
                 // ensureCredentialsSchema() runs above, but if ALTER privileges are
@@ -301,7 +384,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // owning user via the enrollment row and check school_username.
                 // Also pull enrollment_steps so we can extract personalInfo without
                 // a second round-trip in task 4.2.
-                $ownerStmt = $pdo->prepare('SELECT u.id AS user_id, u.school_username, u.email, u.full_name, e.enrollment_steps FROM enrollments e INNER JOIN users u ON u.id = e.user_id WHERE e.id = :id LIMIT 1');
+                $ownerStmt = $pdo->prepare(
+                    'SELECT u.id AS user_id, u.school_username, u.email, u.full_name,
+                            e.status AS enrollment_status, e.enrollment_steps
+                     FROM enrollments e
+                     INNER JOIN users u ON u.id = e.user_id
+                     WHERE e.id = :id LIMIT 1'
+                );
                 $ownerStmt->execute([':id' => $enrollmentId]);
                 $ownerRow = $ownerStmt->fetch();
                 if (!$ownerRow) {
@@ -310,6 +399,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
                 if ($ownerRow['school_username'] !== null && $ownerRow['school_username'] !== '') {
+                    $existingStatus = strtolower(trim((string)($ownerRow['enrollment_status'] ?? '')));
+                    // Idempotent approve: credentials already exist (student is
+                    // enrolled). Repair status if a bad re-submit reset it to
+                    // pending so the row leaves the Applications queue again.
+                    if ($existingStatus !== 'rejected') {
+                        if ($existingStatus !== 'enrolled') {
+                            $repairSql = $hasUpdatedAt
+                                ? "UPDATE enrollments SET status = 'enrolled', updated_at = NOW() WHERE id = :id"
+                                : "UPDATE enrollments SET status = 'enrolled' WHERE id = :id";
+                            $pdo->prepare($repairSql)->execute([':id' => $enrollmentId]);
+                        }
+                        syncStudentCohortForEnrollment($pdo, $enrollmentId);
+                        carryForwardPhysicalDocsForEnrollment($pdo, $enrollmentId);
+                        appLogEvent($pdo, 'registrar_decision', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, [
+                            'decision' => 'enrolled',
+                            'idempotent' => true,
+                        ]);
+                        echo json_encode([
+                            'success' => true,
+                            'message' => 'Student is already enrolled',
+                            'already_enrolled' => true,
+                            'school_username' => (string)$ownerRow['school_username'],
+                            'email_delivery' => 'skipped',
+                            'section_assignment' => [
+                                'assigned' => false,
+                                'section' => null,
+                                'shift' => null,
+                                'preferred_shift' => null,
+                                'shift_fallback' => false,
+                                'auto_created' => false,
+                                'warning' => null,
+                            ],
+                        ]);
+                        exit;
+                    }
                     appLogEvent($pdo, 'issue_credentials', 'registrar', 'failed', $actorId, 'enrollment', (string)$enrollmentId, ['reason' => 'credentials_already_issued']);
                     http_response_code(409);
                     echo json_encode(['success' => false, 'error' => 'credentials_already_issued']);
@@ -385,7 +509,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->exec('ALTER TABLE enrollments ADD COLUMN registrar_remarks TEXT NULL');
                 $hasRegistrarRemarks = true;
             }
-            $status = $action === 'approve' ? 'approved' : 'rejected';
+            // Approving the enrollment form means the student is enrolled.
+            // Physical-document collection is tracked separately on the
+            // registrar's checklist (enrollment_physical_docs).
+            $status = $action === 'approve' ? 'enrolled' : 'rejected';
 
             if ($action === 'approve') {
                 // Task 4.4: Issue credentials inside a single DB transaction.
@@ -499,6 +626,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 appLogEvent($pdo, 'registrar_decision', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, ['decision' => $status]);
+                syncStudentCohortForEnrollment($pdo, $enrollmentId);
+                if ($action === 'approve') {
+                    carryForwardPhysicalDocsForEnrollment($pdo, $enrollmentId);
+                }
+
+                // Section auto-assignment. Runs OUTSIDE the credential
+                // transaction — a failure here MUST NOT roll back the
+                // credentials write. Strand+gender come from the parsed
+                // form_data. EIM girls are intentionally NOT auto-placed
+                // (per registrar policy) so the registrar can decide where
+                // to put them. If every existing section for the strand is
+                // full, a new section letter (A → B → C …) is auto-created.
+                $assignedSection = null;
+                $assignedShift = null;
+                $sectionAutoCreated = false;
+                $sectionWarning = null;
+                $sectionShiftFallback = false;
+                $preferredShiftEcho = null;
+                try {
+                    $rawStrand = (string)($formData['strand'] ?? '');
+                    $rawGender = (string)($formData['gender'] ?? '');
+                    $rawPreferredShift = (string)($formData['preferredSchedule'] ?? '');
+                    $assignResult = autoAssignSectionForApprovedStudent(
+                        $pdo,
+                        $targetUserId,
+                        $rawStrand,
+                        $rawGender,
+                        $rawPreferredShift,
+                        (string)($formData['gradeLevel'] ?? '')
+                    );
+                    $preferredShiftEcho = (string)($assignResult['preferred_shift'] ?? '');
+                    if (!empty($assignResult['assigned'])) {
+                        $assignedSection = (string)$assignResult['section'];
+                        $assignedShift   = (string)($assignResult['shift'] ?? '');
+                        $sectionAutoCreated = !empty($assignResult['auto_created']);
+                        $sectionShiftFallback = !empty($assignResult['shift_fallback']);
+                        if ($sectionShiftFallback) {
+                            $warnings[] = 'section_shift_fallback';
+                        }
+                        appLogEvent($pdo, 'section_assignment', 'registrar', 'success', $actorId, 'user', (string)$targetUserId, [
+                            'strand'          => $assignResult['strand'] ?? $rawStrand,
+                            'section'         => $assignedSection,
+                            'shift'           => $assignedShift,
+                            'preferred_shift' => $preferredShiftEcho,
+                            'shift_fallback'  => $sectionShiftFallback,
+                            'auto_created'    => $sectionAutoCreated,
+                        ]);
+                    } else {
+                        $sectionWarning = (string)($assignResult['warning'] ?? 'section_not_assigned');
+                        $warnings[] = 'section_' . $sectionWarning;
+                        appLogEvent($pdo, 'section_assignment', 'registrar', 'failed', $actorId, 'user', (string)$targetUserId, [
+                            'strand'          => $rawStrand,
+                            'gender'          => $rawGender,
+                            'preferred_shift' => $preferredShiftEcho,
+                            'reason'          => $sectionWarning,
+                            'message'         => $assignResult['reason'] ?? null,
+                        ]);
+                    }
+                } catch (Throwable $secErr) {
+                    $sectionWarning = 'exception';
+                    $warnings[] = 'section_assignment_failed';
+                    appLogEvent($pdo, 'section_assignment', 'registrar', 'failed', $actorId, 'user', (string)$targetUserId, [
+                        'reason'  => 'exception',
+                        'message' => $secErr->getMessage(),
+                    ]);
+                }
 
                 // Task 5.3: SUCCESS audit entry for the credential-issuance
                 // event itself. target_type=user / target_id=$targetUserId so
@@ -514,10 +707,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $response = [
                     'success' => true,
-                    'message' => 'Application approved',
+                    'message' => 'Application approved — student is now enrolled',
                     'school_username' => $schoolUsername,
                     'email_delivery' => $emailDelivery,
                     'status_transition' => $statusTransition,
+                    'section_assignment' => [
+                        'assigned'        => $assignedSection !== null,
+                        'section'         => $assignedSection,
+                        'shift'           => $assignedShift,
+                        'preferred_shift' => $preferredShiftEcho,
+                        'shift_fallback'  => $sectionShiftFallback,
+                        'auto_created'    => $sectionAutoCreated,
+                        'warning'         => $sectionWarning,
+                    ],
                 ];
                 if (!empty($warnings)) {
                     $response['warnings'] = $warnings;
@@ -533,6 +735,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 : 'UPDATE enrollments SET status = :status, registrar_remarks = :remarks WHERE id = :id';
             $stmt = $pdo->prepare($sql);
             $stmt->execute([':status' => $status, ':remarks' => $remarks, ':id' => $enrollmentId]);
+            syncStudentCohortForEnrollment($pdo, $enrollmentId);
             appLogEvent($pdo, 'registrar_decision', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, ['decision' => $status]);
             echo json_encode(['success' => true, 'message' => 'Application rejected']);
             exit;
@@ -590,11 +793,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
-            // Refuse to issue credentials for a non-approved enrollment so
-            // the registrar can't accidentally release credentials before
-            // the approve decision has been made.
+            // Refuse to issue credentials before the application has been
+            // approved (student must be enrolled / legacy approved).
             $enrollmentStatus = strtolower(trim((string)($ownerRow['enrollment_status'] ?? '')));
-            if ($enrollmentStatus !== 'approved') {
+            if (!in_array($enrollmentStatus, ['approved', 'enrolled'], true)) {
                 appLogEvent($pdo, 'issue_credentials', 'registrar', 'failed', $actorId, 'enrollment', (string)$enrollmentId, ['reason' => 'enrollment_not_approved', 'status' => $enrollmentStatus]);
                 http_response_code(409);
                 echo json_encode(['success' => false, 'error' => 'enrollment_not_approved', 'details' => ['hint' => 'Approve the application first.']]);

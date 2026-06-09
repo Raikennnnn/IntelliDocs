@@ -16,6 +16,7 @@ import {
   FileText,
 } from "lucide-react";
 import { useState } from "react";
+import { verificationScoreTextClass } from "../../lib/verificationScoreColors";
 
 type DocType =
   | "form137"
@@ -62,12 +63,8 @@ export function AIVerification() {
     return <Badge className="bg-red-600">Failed</Badge>;
   };
 
-  const confidenceClass = (confidence01: number) => {
-    const pct = Math.round(confidence01 * 100);
-    if (pct >= 75) return "text-green-600";
-    if (pct >= 50) return "text-yellow-600";
-    return "text-red-600";
-  };
+  const confidenceClass = (confidence01: number) =>
+    verificationScoreTextClass(Math.round(confidence01 * 100));
 
   const runVerify = async () => {
     setError(null);

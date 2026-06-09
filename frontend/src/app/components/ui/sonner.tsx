@@ -8,8 +8,12 @@ const Toaster = ({ ...props }: ToasterProps) => {
 
   return (
     <Sonner
+      position="top-right"
+      // Sit just below the maroon school header bar (login/registration/dashboard ≈ 63–64px).
+      offset={{ top: "4.5rem", right: "1rem" }}
+      mobileOffset={{ top: "4.5rem", right: "0.75rem" }}
       theme={theme as ToasterProps["theme"]}
-      className="toaster group"
+      className="toaster group z-[100]"
       style={
         {
           "--normal-bg": "var(--popover)",

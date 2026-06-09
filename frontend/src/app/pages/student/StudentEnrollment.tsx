@@ -25,11 +25,46 @@ import {
   Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { Alert, AlertDescription } from "../../components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../../components/ui/alert-dialog";
 import { apiFetch } from "../../lib/api";
+import { Combobox } from "../../components/Combobox";
+import { SchoolYearCombobox } from "../../components/SchoolYearCombobox";
+import {
+  getSchoolYearAttendedOptions,
+  hasValidPersonName,
+  hasValidSectionLabel,
+  hasValidTextOnlyContent,
+  isValidEnrollmentLrn,
+  isValidPhilippineMobileNumber,
+  isValidSchoolYearAttended,
+  sanitizeEnrollmentFieldValue,
+  sanitizeEnrollmentFormData,
+} from "../../lib/enrollmentFieldValidation";
+import {
+  getBarangaysForMunicipality,
+  hasValidAddressLabel,
+  isKnownNcrMunicipality,
+  NCR_MUNICIPALITIES,
+  normalizeBarangayValue,
+  normalizeMunicipalityValue,
+  resolveNcrBarangay,
+  resolveNcrMunicipality,
+  sanitizeAddressLabelInput,
+} from "../../lib/ncrAddress";
 import { useEnrollmentAllowed } from "../../context/SchoolYearContext";
+import { EnrollmentGuard } from "../../components/EnrollmentGuard";
 
 /**
  * `RequiredLabel` renders a form label and a consistently-styled red
@@ -61,20 +96,50 @@ function formatLocalDateYmd(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Senior High: learner must be at least this many years old (DepEd K–12 typical range). */
+/** Senior High: typical DepEd K–12 learner age range for Grades 11–12. */
 const SHS_MIN_AGE_YEARS = 15;
+const SHS_MAX_AGE_YEARS = 25;
 
-function birthDateBoundsForShs(minAgeYears: number) {
+/** Calendar age in whole years on a given date (local timezone). */
+function calendarAgeYears(ymd: string, asOf: Date = new Date()): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  const [y, m, d] = ymd.split("-").map(Number);
+  const birth = new Date(y, m - 1, d);
+  if (birth.getFullYear() !== y || birth.getMonth() !== m - 1 || birth.getDate() !== d) {
+    return null;
+  }
+  let age = asOf.getFullYear() - y;
+  const asOfMonth = asOf.getMonth() + 1;
+  const asOfDay = asOf.getDate();
+  if (asOfMonth < m || (asOfMonth === m && asOfDay < d)) {
+    age -= 1;
+  }
+  return age;
+}
+
+function birthDateBoundsForShs(minAgeYears: number, maxAgeYears: number) {
   const now = new Date();
   const maxDob = new Date(now.getFullYear() - minAgeYears, now.getMonth(), now.getDate());
-  const minDob = new Date(now.getFullYear() - 120, now.getMonth(), now.getDate());
+  // Oldest allowed DOB: still maxAge today, not yet (maxAge + 1).
+  const minDob = new Date(now.getFullYear() - maxAgeYears - 1, now.getMonth(), now.getDate());
+  minDob.setDate(minDob.getDate() + 1);
   return { min: formatLocalDateYmd(minDob), max: formatLocalDateYmd(maxDob) };
 }
 
-function isBirthDateValidForShs(ymd: string, minAgeYears: number): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return false;
-  const { min, max } = birthDateBoundsForShs(minAgeYears);
-  return ymd >= min && ymd <= max;
+function birthDateValidationError(ymd: string, minAgeYears: number, maxAgeYears: number): string | null {
+  const age = calendarAgeYears(ymd);
+  if (age === null) return "Invalid birth date.";
+  if (age < minAgeYears) {
+    return `Birth date must show the learner is at least ${minAgeYears} years old (Senior High eligibility).`;
+  }
+  if (age > maxAgeYears) {
+    return `Birth date must show the learner is at most ${maxAgeYears} years old (Senior High eligibility).`;
+  }
+  return null;
+}
+
+function isBirthDateValidForShs(ymd: string, minAgeYears: number, maxAgeYears: number): boolean {
+  return birthDateValidationError(ymd, minAgeYears, maxAgeYears) === null;
 }
 
 interface DocumentUpload {
@@ -85,6 +150,228 @@ interface DocumentUpload {
   requiredFor?: 'all' | 'transferee';
   uploadedId?: number;
   uploadedAt?: string;
+  /** Latest AI status (verified|failed|rejected|pending|…). Used to lock approved files during resubmission. */
+  aiStatus?: string;
+  /** "rejected" when the registrar explicitly required a re-upload of this requirement. */
+  registrarDecision?: string;
+  /** Registrar's note for the student (shown next to the rejected document on the upload step). */
+  registrarRemarks?: string;
+  /**
+   * True once the registrar has manually marked this document as reviewed in
+   * the registrar portal. We treat this as an "approval" signal on the
+   * student side so the badge shows "Approved" instead of leaving the
+   * student wondering whether anyone has looked at their file yet.
+   */
+  registrarReviewed?: boolean;
+  /**
+   * Resubmit attempts used after the registrar rejected this requirement.
+   * While filling the enrollment form, replacements do not increment this.
+   */
+  uploadCount?: number;
+  /** Copied from a prior school-year enrollment during Grade 12 rollover. */
+  carriedForward?: boolean;
+}
+
+/** Maximum number of times a student may upload a single requirement. */
+const UPLOAD_ATTEMPT_LIMIT = 5;
+
+/** Match API document rows to enrollment step labels (PSA vs birth_certificate, etc.). */
+function normalizeRequirementKey(label: string): string {
+  const t = label.trim().toLowerCase();
+  if (!t) return "";
+  if (["birth_certificate", "birthcert", "psa"].includes(t)) return "birth_certificate";
+  if (["good_moral", "goodmoral"].includes(t)) return "good_moral";
+  if (["sf9", "report_card"].includes(t)) return "sf9";
+  if (["sf10", "form137", "form_137"].includes(t)) return "sf10";
+  if (["photo_2x2", "id_picture", "picture_2x2"].includes(t)) return "photo_2x2";
+  if (t.includes("2x2") || (t.includes("picture") && t.includes("white"))) return "photo_2x2";
+  if (t.includes("good moral")) return "good_moral";
+  if (t.includes("sf9") || t.includes("report card")) return "sf9";
+  if (t.includes("form 137") || t.includes("form137") || t.includes("sf10")) return "sf10";
+  if (t.includes("birth")) return "birth_certificate";
+  return t;
+}
+
+/** Student-facing label/class for one requirement on the upload step. */
+function studentDocumentDisplayMeta(
+  doc: DocumentUpload,
+  opts: {
+    enrollmentFinalized: boolean;
+    isGrade12PromotionFlow: boolean;
+    isResubmitFlow: boolean;
+  }
+): {
+  needsResubmit: boolean;
+  verified: boolean;
+  label: string;
+  badgeClass: string;
+  showCarriedHint: boolean;
+  allowReupload: boolean;
+} {
+  const aiStatus = String(doc.aiStatus || "").toLowerCase();
+  const decision = String(doc.registrarDecision || "").toLowerCase();
+  const registrarCleared = doc.registrarReviewed === true;
+  const aiVerified =
+    aiStatus === "verified" ||
+    aiStatus === "approved" ||
+    aiStatus === "pass" ||
+    aiStatus.includes("verify");
+  const needsResubmit =
+    !registrarCleared &&
+    (decision === "rejected" ||
+      aiStatus === "rejected" ||
+      (!opts.isGrade12PromotionFlow &&
+        String(doc.registrarRemarks || "").trim().length > 0 &&
+        !aiVerified &&
+        !opts.enrollmentFinalized));
+
+  if (doc.status !== "uploaded") {
+    return {
+      needsResubmit: false,
+      verified: false,
+      label: "Missing",
+      badgeClass: "bg-gray-600",
+      showCarriedHint: false,
+      allowReupload: !opts.isGrade12PromotionFlow,
+    };
+  }
+
+  // Registrar manually reviewed this file — always show cleared (even if AI is pending).
+  if (registrarCleared && !needsResubmit) {
+    return {
+      needsResubmit: false,
+      verified: true,
+      label: opts.enrollmentFinalized ? "Verified" : "Approved",
+      badgeClass: "bg-green-600",
+      showCarriedHint: false,
+      allowReupload: false,
+    };
+  }
+
+  // Grade 12 re-enrollment: files on file from last year are already cleared.
+  if (opts.isGrade12PromotionFlow && !opts.enrollmentFinalized) {
+    if (needsResubmit) {
+      return {
+        needsResubmit: true,
+        verified: false,
+        label: "Contact registrar",
+        badgeClass: "bg-red-600",
+        showCarriedHint: false,
+        allowReupload: false,
+      };
+    }
+    return {
+      needsResubmit: false,
+      verified: true,
+      label: "Approved",
+      badgeClass: "bg-green-600",
+      showCarriedHint: false,
+      allowReupload: false,
+    };
+  }
+
+  const verified =
+    !needsResubmit && (opts.enrollmentFinalized || aiVerified);
+
+  const showCarriedHint =
+    opts.isGrade12PromotionFlow &&
+    !opts.enrollmentFinalized &&
+    !verified &&
+    !needsResubmit &&
+    Boolean(doc.carriedForward);
+
+  if (needsResubmit) {
+    return {
+      needsResubmit: true,
+      verified: false,
+      label: "Resubmission required",
+      badgeClass: "bg-red-600",
+      showCarriedHint: false,
+      allowReupload: true,
+    };
+  }
+
+  if (verified) {
+    return {
+      needsResubmit: false,
+      verified: true,
+      label: opts.enrollmentFinalized ? "Verified" : "Approved",
+      badgeClass: "bg-green-600",
+      showCarriedHint: false,
+      allowReupload: false,
+    };
+  }
+  if (showCarriedHint) {
+    return {
+      needsResubmit: false,
+      verified: false,
+      label: "On file from last year",
+      badgeClass: "bg-slate-600",
+      showCarriedHint: true,
+      allowReupload: false,
+    };
+  }
+  if (opts.isResubmitFlow && aiStatus === "pending" && doc.file) {
+    return {
+      needsResubmit: false,
+      verified: false,
+      label: "Resubmitted — awaiting review",
+      badgeClass: "bg-amber-500 text-white",
+      showCarriedHint: false,
+      allowReupload: true,
+    };
+  }
+
+  return {
+    needsResubmit: false,
+    verified: false,
+    label: "Uploaded — awaiting review",
+    badgeClass: "bg-blue-600",
+    showCarriedHint: false,
+    allowReupload: true,
+  };
+}
+
+type ApiDocumentRow = {
+  id: number;
+  type?: string;
+  uploaded_at?: string;
+  ai_status?: string;
+  registrar_doc_decision?: string;
+  registrar_doc_remarks?: string;
+  registrar_reviewed?: number | boolean;
+  upload_count?: number | string;
+  carried_forward?: number | boolean;
+};
+
+function documentRowFromApiHit(doc: DocumentUpload, hit: ApiDocumentRow): DocumentUpload {
+  return {
+    ...doc,
+    status: "uploaded",
+    uploadedId: hit.id,
+    uploadedAt: hit.uploaded_at,
+    aiStatus: hit.ai_status,
+    registrarDecision: hit.registrar_doc_decision,
+    registrarRemarks: hit.registrar_doc_remarks,
+    registrarReviewed: hit.registrar_reviewed === true || Number(hit.registrar_reviewed ?? 0) === 1,
+    uploadCount: Math.max(0, Number(hit.upload_count ?? 0) || 0),
+    carriedForward: hit.carried_forward === true || Number(hit.carried_forward ?? 0) === 1,
+  };
+}
+
+/** Map API rows (machine or human type keys) onto the enrollment step requirements. */
+function mergeDocumentsFromApiRows(prev: DocumentUpload[], rows: ApiDocumentRow[]): DocumentUpload[] {
+  const mapByType = new Map<string, ApiDocumentRow>();
+  for (const d of rows) {
+    const key = normalizeRequirementKey(String(d.type || ""));
+    if (key && !mapByType.has(key)) {
+      mapByType.set(key, d);
+    }
+  }
+  return prev.map((doc) => {
+    const hit = mapByType.get(normalizeRequirementKey(doc.name));
+    return hit ? documentRowFromApiHit(doc, hit) : doc;
+  });
 }
 
 interface EnrollmentFormData {
@@ -165,14 +452,143 @@ interface EnrollmentFormData {
   confirmInformation: boolean;
 }
 
+type PriorApprovedMeta = {
+  grade_level: string;
+  grade_level_number: number;
+  strand: string;
+  school_year: string;
+  form_data?: Partial<EnrollmentFormData>;
+};
+
+/** Pre-fill returning students from their last enrolled application. */
+function applyReEnrollmentFormPrefill(
+  base: EnrollmentFormData,
+  priorForm: Partial<EnrollmentFormData> | undefined,
+  prior: PriorApprovedMeta | null,
+  options?: { promoteGrade?: boolean }
+): EnrollmentFormData {
+  const promoteGrade = options?.promoteGrade !== false;
+  const merged: EnrollmentFormData = { ...base, ...(priorForm ?? {}) };
+
+  const g = prior?.grade_level_number ?? 0;
+  if (promoteGrade) {
+    if (g === 11) merged.gradeLevel = "12";
+    else if (g >= 12) merged.gradeLevel = "12";
+  }
+
+  const strandFromRecord = (prior?.strand ?? "").trim();
+  if (strandFromRecord) {
+    merged.strand = strandFromRecord;
+  } else if ((priorForm?.strand ?? "").trim()) {
+    merged.strand = String(priorForm?.strand).trim();
+  }
+
+  merged.enrollmentStatus = "old";
+  merged.confirmInformation = false;
+
+  return merged;
+}
+
+/** Set when the student confirms they want to proceed to the new SY / Grade 12 enrollment. */
+const GRADE12_ENROLLMENT_CONSENT_KEY = "intellidocs_grade12_enrollment_sy";
+
+function isGrade12PrefillLocked(input: {
+  grade12PromotionActive: boolean;
+  schoolYearCurrent: string | null;
+  priorApprovedSchoolYear: string | undefined;
+  showNewEnrollmentForm: boolean;
+  hasConsentedToNewSy: boolean;
+  gradeLevel: string;
+  enrollmentStatus: string;
+}): boolean {
+  const isGrade12PromotionFlow =
+    input.gradeLevel === "12" &&
+    (input.grade12PromotionActive ||
+      (input.schoolYearCurrent !== null &&
+        (input.priorApprovedSchoolYear ?? "") !== "" &&
+        input.priorApprovedSchoolYear !== input.schoolYearCurrent &&
+        (input.showNewEnrollmentForm || input.hasConsentedToNewSy)));
+
+  const isUpcomingGrade12Reenrollment =
+    input.showNewEnrollmentForm &&
+    input.gradeLevel === "12" &&
+    input.enrollmentStatus === "old";
+
+  return isGrade12PromotionFlow || isUpcomingGrade12Reenrollment;
+}
+
+const lockedPrefillInputClass = " bg-gray-100 text-gray-700";
+const lockedPrefillSelectClass =
+  "bg-gray-100 text-gray-700 cursor-not-allowed disabled:opacity-100";
+
+const INITIAL_ENROLLMENT_FORM_DATA: EnrollmentFormData = {
+  enrollmentStatus: "",
+  givenName: "",
+  middleName: "",
+  middleInitial: "",
+  lastName: "",
+  extensionName: "",
+  gender: "",
+  contactNumber: "",
+  email: "",
+  lrn: "",
+  blockLotHouseNo: "",
+  street: "",
+  compoundSubdivisionVillage: "",
+  barangay: "",
+  municipality: "",
+  birthDate: "",
+  birthPlace: "",
+  religion: "",
+  gradeLevel: "",
+  strand: "HUMSS",
+  preferredSchedule: "",
+  motherGivenName: "",
+  motherMaidenMiddleName: "",
+  motherMaidenLastName: "",
+  motherContactNumber: "",
+  motherOccupation: "",
+  fatherGivenName: "",
+  fatherMiddleName: "",
+  fatherLastName: "",
+  fatherContactNumber: "",
+  fatherOccupation: "",
+  hasGuardian: false,
+  guardianGivenName: "",
+  guardianMiddleName: "",
+  guardianLastName: "",
+  guardianContactNumber: "",
+  relationshipToGuardian: "",
+  emergencyContact: "",
+  previousSchoolAttended: "",
+  schoolType: "",
+  gradeLevelAtPreviousSchool: "",
+  sectionAtPreviousSchool: "",
+  lastSchoolYearAttended: "",
+  hasReferralCode: false,
+  referralCardControlNumber: "",
+  referrerName: "",
+  referrerContactNumber: "",
+  modeOfPayment: "",
+  voucherNo: "",
+  confirmInformation: false,
+};
+
 export function StudentEnrollment() {
-  const enrollmentAllowed = useEnrollmentAllowed();
-  const [, setSearchParams] = useSearchParams();
-  const shsBirthDateBounds = useMemo(() => birthDateBoundsForShs(SHS_MIN_AGE_YEARS), []);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const enrollmentAllowedFromSettings = useEnrollmentAllowed();
+  const [enrollmentMetaLoaded, setEnrollmentMetaLoaded] = useState(false);
+  // (moved) useSearchParams is declared above so we can read query params
+  const shsBirthDateBounds = useMemo(
+    () => birthDateBoundsForShs(SHS_MIN_AGE_YEARS, SHS_MAX_AGE_YEARS),
+    [],
+  );
   const [currentStep, setCurrentStep] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
   const [isEnrollmentLocked, setIsEnrollmentLocked] = useState(false);
   const [enrollmentId, setEnrollmentId] = useState<number | null>(null);
+  /** Student declaration that uploads are genuine (stored in DB like DPA consent). */
+  const [documentsAuthenticityConfirmed, setDocumentsAuthenticityConfirmed] = useState(false);
   // Status-card state: drives the post-submission UI on this page so the
   // student sees the actual decision (Enrolled / Rejected / Under review)
   // instead of a generic "Processing" message after the registrar acts.
@@ -182,92 +598,53 @@ export function StudentEnrollment() {
   const [enrollmentGradeLevel, setEnrollmentGradeLevel] = useState<string>('');
   const [enrollmentStrand, setEnrollmentStrand] = useState<string>('');
   const [schoolYearCurrent, setSchoolYearCurrent] = useState<string | null>(null);
-  const [priorApproved, setPriorApproved] = useState<{
-    grade_level: string;
-    grade_level_number: number;
-    strand: string;
-    school_year: string;
-  } | null>(null);
+  const [priorApproved, setPriorApproved] = useState<PriorApprovedMeta | null>(null);
+  const [currentStudentSection, setCurrentStudentSection] = useState<string | null>(null);
+  const [priorReenrollFormData, setPriorReenrollFormData] = useState<Partial<EnrollmentFormData> | null>(null);
   const [isGraduate, setIsGraduate] = useState(false);
   const [reEnrollmentEligible, setReEnrollmentEligible] = useState(false);
+  const [newSchoolYearReenrollment, setNewSchoolYearReenrollment] = useState(false);
+  const [needsGrade12Confirmation, setNeedsGrade12Confirmation] = useState(false);
+  const [grade12PromotionActive, setGrade12PromotionActive] = useState(false);
   const [showNewEnrollmentForm, setShowNewEnrollmentForm] = useState(false);
-  const [formData, setFormData] = useState<EnrollmentFormData>({
-    enrollmentStatus: '',
-    givenName: '',
-    middleName: '',
-    middleInitial: '',
-    lastName: '',
-    extensionName: '',
-    gender: '',
-    contactNumber: '',
-    email: '',
-    lrn: '',
-    blockLotHouseNo: '',
-    street: '',
-    compoundSubdivisionVillage: '',
-    barangay: '',
-    municipality: '',
-    birthDate: '',
-    birthPlace: '',
-    religion: '',
-    gradeLevel: '',
-    strand: 'HUMSS',
-    preferredSchedule: '',
-    motherGivenName: '',
-    motherMaidenMiddleName: '',
-    motherMaidenLastName: '',
-    motherContactNumber: '',
-    motherOccupation: '',
-    fatherGivenName: '',
-    fatherMiddleName: '',
-    fatherLastName: '',
-    fatherContactNumber: '',
-    fatherOccupation: '',
-    hasGuardian: false,
-    guardianGivenName: '',
-    guardianMiddleName: '',
-    guardianLastName: '',
-    guardianContactNumber: '',
-    relationshipToGuardian: '',
-    emergencyContact: '',
-    previousSchoolAttended: '',
-    schoolType: '',
-    gradeLevelAtPreviousSchool: '',
-    sectionAtPreviousSchool: '',
-    lastSchoolYearAttended: '',
-    hasReferralCode: false,
-    referralCardControlNumber: '',
-    referrerName: '',
-    referrerContactNumber: '',
-    modeOfPayment: '',
-    voucherNo: '',
-    confirmInformation: false,
-  });
+  const [isStartingGrade12, setIsStartingGrade12] = useState(false);
+  const [isDecliningGrade12, setIsDecliningGrade12] = useState(false);
+  const [missingParentDialogOpen, setMissingParentDialogOpen] = useState(false);
+  const [missingParentParts, setMissingParentParts] = useState<string[]>([]);
+  const [formData, setFormData] = useState<EnrollmentFormData>(INITIAL_ENROLLMENT_FORM_DATA);
+  const submitInFlightRef = useRef(false);
 
-  const NCR_CITIES = [
-    "Caloocan City",
-    "Las Piñas City",
-    "Makati City",
-    "Malabon City",
-    "Mandaluyong City",
-    "Manila",
-    "Marikina City",
-    "Muntinlupa City",
-    "Navotas City",
-    "Parañaque City",
-    "Pasay City",
-    "Pasig City",
-    "Pateros",
-    "Quezon City",
-    "San Juan City",
-    "Taguig City",
-    "Valenzuela City",
-  ] as const;
+  const hasOpenSchoolYear =
+    enrollmentAllowedFromSettings === true ||
+    (schoolYearCurrent !== null && schoolYearCurrent !== '');
+
+  const enrollmentGateReady =
+    enrollmentMetaLoaded && enrollmentAllowedFromSettings !== null;
+
+  const enrollmentBlocked = enrollmentGateReady && !hasOpenSchoolYear;
+
+  /** While settings load, trust enrollment API if it already returned an open SY. */
+  const enrollmentAllowed =
+    enrollmentAllowedFromSettings === null
+      ? schoolYearCurrent !== null && schoolYearCurrent !== ''
+      : hasOpenSchoolYear;
+
+  const addressBarangayOptions = useMemo(
+    () => getBarangaysForMunicipality(formData.municipality),
+    [formData.municipality],
+  );
+
+  const lastSchoolYearOptions = useMemo(() => getSchoolYearAttendedOptions({ count: 5 }), []);
+
+  const selectFieldClass =
+    "w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]";
 
   const isBirthPlaceOther =
     formData.birthPlace &&
     formData.birthPlace !== "" &&
-    !NCR_CITIES.some((c) => c.toLowerCase() === formData.birthPlace.toLowerCase());
+    !NCR_MUNICIPALITIES.some(
+      (c) => c.toLowerCase() === formData.birthPlace.toLowerCase(),
+    );
 
   const [documents, setDocuments] = useState<DocumentUpload[]>([
     { name: 'PSA Birth Certificate', file: null, status: 'missing', required: true, requiredFor: 'all' },
@@ -277,6 +654,8 @@ export function StudentEnrollment() {
     { name: 'Transcript of Records (TOR)', file: null, status: 'missing', required: true, requiredFor: 'transferee' },
     { name: '2x2 Picture (White Background)', file: null, status: 'missing', required: true, requiredFor: 'all' },
   ]);
+
+  const [enrollmentReloadKey, setEnrollmentReloadKey] = useState(0);
 
   useEffect(() => {
     const loadEnrollment = async () => {
@@ -295,6 +674,8 @@ export function StudentEnrollment() {
             grade_level?: string;
             strand?: string;
             registrar_remarks?: string;
+            document_authenticity_confirmed?: boolean;
+            document_authenticity_confirmed_at?: string | null;
           } | null;
           school_year_current?: string | null;
           prior_approved?: {
@@ -302,30 +683,161 @@ export function StudentEnrollment() {
             grade_level_number?: number;
             strand?: string;
             school_year?: string;
+            form_data?: Partial<EnrollmentFormData>;
           } | null;
           is_graduate?: boolean;
           re_enrollment_eligible?: boolean;
+          new_school_year_reenrollment?: boolean;
+          needs_grade12_confirmation?: boolean;
+          grade12_promotion_active?: boolean;
+          prefill_form_data?: Partial<EnrollmentFormData>;
+          student_section?: { section?: string | null; shift?: string | null };
           error?: string;
         };
         if (!res.ok || !json.success) {
           if (json.error) toast.error(json.error);
           return;
         }
-        if (json.enrollment?.form_data) {
-          setFormData(prev => ({ ...prev, ...(json.enrollment?.form_data ?? {}) }));
+        const priorMeta: PriorApprovedMeta | null = json.prior_approved
+          ? {
+              grade_level: String(json.prior_approved.grade_level ?? ""),
+              grade_level_number: Number(json.prior_approved.grade_level_number ?? 0) || 0,
+              strand: String(json.prior_approved.strand ?? ""),
+              school_year: String(json.prior_approved.school_year ?? ""),
+              form_data: json.prior_approved.form_data,
+            }
+          : null;
+
+        const isNewSyOpen = Boolean(json.new_school_year_reenrollment);
+        const needsConfirm = Boolean(json.needs_grade12_confirmation);
+        setNewSchoolYearReenrollment(isNewSyOpen);
+        setNeedsGrade12Confirmation(needsConfirm);
+        setGrade12PromotionActive(Boolean(json.grade12_promotion_active));
+
+        const priorFormFromApi =
+          (json.prefill_form_data as Partial<EnrollmentFormData> | undefined) ??
+          (json.prior_approved?.form_data as Partial<EnrollmentFormData> | undefined) ??
+          (json.enrollment?.form_data as Partial<EnrollmentFormData> | undefined);
+        if (priorFormFromApi && Object.keys(priorFormFromApi).length > 0) {
+          setPriorReenrollFormData(priorFormFromApi);
         }
+        setCurrentStudentSection((json.student_section?.section ?? "").trim() || null);
+
+        const reEnrollEligible = Boolean(json.re_enrollment_eligible);
+        const rowSy = (json.enrollment?.school_year ?? "").toString();
+        const currentSy = (json.school_year_current ?? "").toString();
+        const rowStatus = (json.enrollment?.status ?? "").toLowerCase().trim();
+        const hasCurrentSyApplication =
+          rowSy !== "" && currentSy !== "" && rowSy === currentSy;
+        const isDraftCurrentSy =
+          hasCurrentSyApplication && (rowStatus === "draft" || rowStatus === "");
+        const isSubmittedCurrentSy =
+          hasCurrentSyApplication &&
+          (rowStatus === "pending" ||
+            rowStatus === "under_review" ||
+            rowStatus === "under review" ||
+            rowStatus === "review" ||
+            rowStatus === "approved" ||
+            rowStatus === "enrolled");
+        const isInProgressCurrentSy =
+          hasCurrentSyApplication &&
+          (isDraftCurrentSy ||
+            rowStatus === "pending" ||
+            rowStatus === "under_review" ||
+            rowStatus === "review" ||
+            rowStatus === "rejected");
+
+        const storedConsentSy = localStorage.getItem(GRADE12_ENROLLMENT_CONSENT_KEY) ?? "";
+        let hasConsentedToNewSy =
+          storedConsentSy !== "" && currentSy !== "" && storedConsentSy === currentSy;
+
+        // Stale browser consent must not skip the Grade 12 prompt when no
+        // enrollment row exists yet for the open school year.
+        if (needsConfirm && hasConsentedToNewSy && !hasCurrentSyApplication) {
+          localStorage.removeItem(GRADE12_ENROLLMENT_CONSENT_KEY);
+          hasConsentedToNewSy = false;
+        }
+
+        if (needsConfirm) {
+          if (isDraftCurrentSy) {
+            setShowNewEnrollmentForm(true);
+          } else {
+            setShowNewEnrollmentForm(false);
+            if (rowStatus === "enrolled" || rowStatus === "approved") {
+              localStorage.removeItem(GRADE12_ENROLLMENT_CONSENT_KEY);
+            }
+          }
+        } else if (isDraftCurrentSy && hasConsentedToNewSy) {
+          setShowNewEnrollmentForm(true);
+        } else if (isSubmittedCurrentSy) {
+          setShowNewEnrollmentForm(false);
+        }
+
+        if (json.enrollment?.form_data && (isInProgressCurrentSy || !isNewSyOpen)) {
+          setFormData(prev => {
+            const merged = { ...prev, ...(json.enrollment?.form_data ?? {}) };
+            if (isInProgressCurrentSy && priorFormFromApi && isNewSyOpen) {
+              return applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
+                promoteGrade: true,
+              });
+            }
+            if (reEnrollEligible && priorFormFromApi && !isNewSyOpen) {
+              return applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
+                promoteGrade: false,
+              });
+            }
+            return merged;
+          });
+        } else if (isInProgressCurrentSy && priorFormFromApi && isNewSyOpen) {
+          setFormData(prev =>
+            applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, { promoteGrade: true })
+          );
+        } else if (reEnrollEligible && priorFormFromApi && !isNewSyOpen) {
+          setFormData(prev =>
+            applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, { promoteGrade: false })
+          );
+        }
+
         if (json.enrollment?.id) {
           setEnrollmentId(Number(json.enrollment.id));
         }
-        if (json.enrollment && json.enrollment.can_edit === false) {
+        if (json.enrollment?.document_authenticity_confirmed) {
+          setDocumentsAuthenticityConfirmed(true);
+        } else {
+          setDocumentsAuthenticityConfirmed(false);
+        }
+
+        // Allow document resubmissions even when the enrollment row is locked.
+        // We unlock via query param and force step 4 below.
+        const resubmit = searchParams.get('resubmit') === '1';
+        if (resubmit) {
+          setIsEnrollmentLocked(false);
+          localStorage.removeItem('studentEnrollmentLocked');
+        } else if (json.enrollment?.can_edit === false) {
           setIsEnrollmentLocked(true);
+          setShowNewEnrollmentForm(false);
           localStorage.setItem('studentEnrollmentLocked', '1');
         } else {
           setIsEnrollmentLocked(false);
           localStorage.removeItem('studentEnrollmentLocked');
         }
-        if (json.enrollment?.current_step && json.enrollment.current_step >= 1 && json.enrollment.current_step <= 6) {
+
+        let docsEnrollmentId =
+          isInProgressCurrentSy && json.enrollment?.id ? Number(json.enrollment.id) : 0;
+        const forcedStep = Number(searchParams.get('step') || '') || 0;
+        if (searchParams.get('resubmit') === '1') {
+          setCurrentStep(4);
+        } else if (forcedStep >= 1 && forcedStep <= 6) {
+          setCurrentStep(forcedStep);
+        } else if (
+          !isNewSyOpen &&
+          json.enrollment?.current_step &&
+          json.enrollment.current_step >= 1 &&
+          json.enrollment.current_step <= 6
+        ) {
           setCurrentStep(json.enrollment.current_step);
+        } else if (isNewSyOpen && !isInProgressCurrentSy) {
+          setCurrentStep(1);
         }
 
         // Surface status / SY context on the page so the locked-out branch
@@ -337,35 +849,34 @@ export function StudentEnrollment() {
         setEnrollmentStrand((json.enrollment?.strand ?? '').toString());
         setEnrollmentRemarks((json.enrollment?.registrar_remarks ?? '').toString());
         setSchoolYearCurrent(json.school_year_current ?? null);
-        setPriorApproved(
-          json.prior_approved
-            ? {
-                grade_level: String(json.prior_approved.grade_level ?? ''),
-                grade_level_number: Number(json.prior_approved.grade_level_number ?? 0) || 0,
-                strand: String(json.prior_approved.strand ?? ''),
-                school_year: String(json.prior_approved.school_year ?? ''),
-              }
-            : null
-        );
+        setPriorApproved(priorMeta);
         setIsGraduate(Boolean(json.is_graduate));
         setReEnrollmentEligible(Boolean(json.re_enrollment_eligible));
 
-        const docsRes = await apiFetch('/api/documents');
+        const docsUrl =
+          docsEnrollmentId > 0
+            ? `/api/documents?enrollment_id=${docsEnrollmentId}`
+            : "/api/documents";
+        const docsRes = await apiFetch(docsUrl);
         const docsText = await docsRes.text();
-        const docsJson = JSON.parse(docsText) as { success?: boolean; documents?: Array<{ id: number; type: string; uploaded_at?: string }> };
+        const docsJson = JSON.parse(docsText) as {
+          success?: boolean;
+          documents?: Array<{
+            id: number;
+            type: string;
+            uploaded_at?: string;
+            ai_status?: string;
+            registrar_doc_decision?: string;
+            registrar_doc_remarks?: string;
+            /** 0/1 from MySQL — true means the registrar manually reviewed this row. */
+            registrar_reviewed?: number | boolean;
+            /** Latest attempt number (defaults to 1 if the column is missing on legacy schemas). */
+            upload_count?: number | string;
+            carried_forward?: number | boolean;
+          }>;
+        };
         if (docsRes.ok && docsJson.success && Array.isArray(docsJson.documents)) {
-          const mapByType = new Map<string, { id: number; uploaded_at?: string }>();
-          for (const d of docsJson.documents) {
-            mapByType.set(String(d.type || '').toLowerCase(), { id: Number(d.id), uploaded_at: d.uploaded_at });
-          }
-          setDocuments(prev =>
-            prev.map((doc) => {
-              const hit = mapByType.get(doc.name.toLowerCase());
-              return hit
-                ? { ...doc, status: 'uploaded', uploadedId: hit.id, uploadedAt: hit.uploaded_at }
-                : doc;
-            })
-          );
+          setDocuments((prev) => mergeDocumentsFromApiRows(prev, docsJson.documents as ApiDocumentRow[]));
         }
 
         const stepFromUrl = new URLSearchParams(window.location.search).get("step");
@@ -386,38 +897,124 @@ export function StudentEnrollment() {
         }
       } catch {
         // keep defaults when no draft exists / parse errors
+      } finally {
+        setEnrollmentMetaLoaded(true);
       }
     };
     loadEnrollment();
-  }, [setSearchParams]);
+  }, [setSearchParams, enrollmentReloadKey]);
 
   const saveEnrollment = async (action: 'save_draft' | 'submit', step: number): Promise<boolean> => {
     setIsSaving(true);
     try {
+      const sanitizedForm = sanitizeEnrollmentFormData({
+        ...formData,
+        municipality: normalizeMunicipalityValue(formData.municipality),
+        barangay: normalizeBarangayValue(formData.municipality, formData.barangay),
+      });
+      setFormData(sanitizedForm);
+      const grade12PrefillLocked = isGrade12PrefillLocked({
+        grade12PromotionActive,
+        schoolYearCurrent,
+        priorApprovedSchoolYear: priorApproved?.school_year,
+        showNewEnrollmentForm,
+        hasConsentedToNewSy:
+          typeof window !== "undefined" &&
+          schoolYearCurrent !== null &&
+          localStorage.getItem(GRADE12_ENROLLMENT_CONSENT_KEY) === schoolYearCurrent,
+        gradeLevel: sanitizedForm.gradeLevel,
+        enrollmentStatus: sanitizedForm.enrollmentStatus,
+      });
       const res = await apiFetch('/api/student/enrollment', {
         method: 'POST',
         body: JSON.stringify({
           action,
           current_step: step,
-          form_data: formData,
+          form_data: sanitizedForm,
+          ...(step >= 4 && (documentsAuthenticityConfirmed || grade12PrefillLocked)
+            ? { documents_authenticity_confirmed: true }
+            : {}),
         }),
       });
       const text = await res.text();
-      const json = JSON.parse(text) as { success?: boolean; error?: string; message?: string };
+      const json = JSON.parse(text) as {
+        success?: boolean;
+        error?: string;
+        message?: string;
+        enrollment_id?: number;
+        status?: string;
+        already_submitted?: boolean;
+        section_assignment?: {
+          assigned?: boolean;
+          section?: string | null;
+          shift?: string | null;
+          kept_section?: boolean;
+          shift_changed?: boolean;
+        };
+      };
       if (!res.ok || !json.success) {
         toast.error(json.error || `Failed to save enrollment (${res.status})`);
         if (res.status === 409) {
+          setEnrollmentStatusRaw('pending');
+          setShowNewEnrollmentForm(false);
           setIsEnrollmentLocked(true);
           localStorage.setItem('studentEnrollmentLocked', '1');
         }
         return false;
       }
       if (action === 'submit') {
+        setEnrollmentStatusRaw((json.status || 'pending').toString());
+        if (schoolYearCurrent) {
+          setEnrollmentSchoolYear(schoolYearCurrent);
+        }
+        setNeedsGrade12Confirmation(false);
+        setShowNewEnrollmentForm(false);
         setIsEnrollmentLocked(true);
         localStorage.setItem('studentEnrollmentLocked', '1');
+        localStorage.removeItem(GRADE12_ENROLLMENT_CONSENT_KEY);
+        if (!json.already_submitted) {
+          toast.success(json.message || 'Enrollment submitted successfully');
+        }
+        const sa = json.section_assignment;
+        if (sa?.assigned && sa.section) {
+          const shiftLabel = sa.shift === "afternoon" ? "afternoon" : "morning";
+          if (sa.shift_changed) {
+            toast.success(
+              `You were placed in section ${sa.section} (${shiftLabel} shift) based on available seats.`,
+            );
+          } else if (sa.kept_section) {
+            toast.success(`You remain in section ${sa.section} (${shiftLabel} shift) for Grade 12.`);
+          }
+        }
+        setEnrollmentReloadKey((key) => key + 1);
       }
       if (json.enrollment_id) {
-        setEnrollmentId(Number(json.enrollment_id));
+        const newId = Number(json.enrollment_id);
+        setEnrollmentId(newId);
+        try {
+          const docsRes = await apiFetch(`/api/documents?enrollment_id=${newId}`);
+          const docsText = await docsRes.text();
+          const docsJson = JSON.parse(docsText) as {
+            success?: boolean;
+            documents?: Array<{
+              id: number;
+              type: string;
+              uploaded_at?: string;
+              ai_status?: string;
+              registrar_doc_decision?: string;
+              registrar_doc_remarks?: string;
+              registrar_reviewed?: number | boolean;
+              upload_count?: number | string;
+            }>;
+          };
+          if (docsRes.ok && docsJson.success && Array.isArray(docsJson.documents)) {
+            setDocuments((prev) =>
+              mergeDocumentsFromApiRows(prev, docsJson.documents as ApiDocumentRow[])
+            );
+          }
+        } catch {
+          // non-fatal; student can still upload manually
+        }
       }
       return true;
     } catch {
@@ -427,6 +1024,151 @@ export function StudentEnrollment() {
       setIsSaving(false);
     }
   };
+
+  const applyUploadedDocuments = (rows: ApiDocumentRow[]) => {
+    setDocuments((prev) => mergeDocumentsFromApiRows(prev, rows));
+  };
+
+  // Grade 12 step 4: refresh documents after server heal marks rollover copies.
+  useEffect(() => {
+    if (currentStep !== 4) return;
+    if (!grade12PromotionActive) return;
+    const eid = enrollmentId;
+    if (!eid) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const docsRes = await apiFetch(`/api/documents?enrollment_id=${eid}`);
+        const docsText = await docsRes.text();
+        const docsJson = JSON.parse(docsText) as {
+          success?: boolean;
+          documents?: Array<{
+            id: number;
+            type: string;
+            uploaded_at?: string;
+            ai_status?: string;
+            registrar_doc_decision?: string;
+            registrar_doc_remarks?: string;
+            registrar_reviewed?: number | boolean;
+            upload_count?: number | string;
+            carried_forward?: number | boolean;
+          }>;
+        };
+        if (cancelled || !docsRes.ok || !docsJson.success || !Array.isArray(docsJson.documents)) {
+          return;
+        }
+        applyUploadedDocuments(docsJson.documents);
+      } catch {
+        // keep existing document state
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentStep, grade12PromotionActive, enrollmentId]);
+
+  const startGrade12Enrollment = useCallback(async () => {
+    setIsStartingGrade12(true);
+    try {
+      const prefill = applyReEnrollmentFormPrefill(
+        INITIAL_ENROLLMENT_FORM_DATA,
+        priorReenrollFormData ?? priorApproved?.form_data ?? {},
+        priorApproved,
+        { promoteGrade: true }
+      );
+      setFormData(prefill);
+      setCurrentStep(1);
+
+      const seedRes = await apiFetch("/api/student/enrollment", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "save_draft",
+          current_step: 1,
+          form_data: prefill,
+        }),
+      });
+      const seedText = await seedRes.text();
+      const seedJson = JSON.parse(seedText) as {
+        success?: boolean;
+        enrollment_id?: number;
+        error?: string;
+      };
+      if (!seedRes.ok || !seedJson.success) {
+        toast.error(seedJson.error || "Could not start your enrollment. Please try again.");
+        return;
+      }
+
+      if (seedJson.enrollment_id) {
+        const newId = Number(seedJson.enrollment_id);
+        setEnrollmentId(newId);
+        try {
+          const docsRes = await apiFetch(`/api/documents?enrollment_id=${newId}`);
+          const docsText = await docsRes.text();
+          const docsJson = JSON.parse(docsText) as {
+            success?: boolean;
+            documents?: Array<{
+              id: number;
+              type: string;
+              uploaded_at?: string;
+              ai_status?: string;
+              registrar_doc_decision?: string;
+              registrar_doc_remarks?: string;
+              registrar_reviewed?: number | boolean;
+              upload_count?: number | string;
+            }>;
+          };
+          if (docsRes.ok && docsJson.success && Array.isArray(docsJson.documents)) {
+            applyUploadedDocuments(docsJson.documents);
+          }
+        } catch {
+          // Documents can be reloaded on the upload step.
+        }
+      }
+
+      if (schoolYearCurrent) {
+        localStorage.setItem(GRADE12_ENROLLMENT_CONSENT_KEY, schoolYearCurrent);
+      }
+      setNeedsGrade12Confirmation(false);
+      setGrade12PromotionActive(true);
+      setShowNewEnrollmentForm(true);
+      setIsEnrollmentLocked(false);
+      localStorage.removeItem("studentEnrollmentLocked");
+      toast.success("Your enrollment form has been pre-filled. Please review each step.");
+    } catch {
+      toast.error("Could not start your enrollment. Please try again.");
+    } finally {
+      setIsStartingGrade12(false);
+    }
+  }, [priorApproved, priorReenrollFormData, schoolYearCurrent]);
+
+  const declineGrade12Continuation = useCallback(async () => {
+    setIsDecliningGrade12(true);
+    try {
+      const res = await apiFetch("/api/student/enrollment", {
+        method: "POST",
+        body: JSON.stringify({ action: "decline_grade12_continuation" }),
+      });
+      const text = await res.text();
+      const json = JSON.parse(text) as { success?: boolean; error?: string; message?: string };
+      if (!res.ok || !json.success) {
+        toast.error(json.error || "Could not save your decision. Please try again.");
+        return;
+      }
+      localStorage.removeItem(GRADE12_ENROLLMENT_CONSENT_KEY);
+      setNeedsGrade12Confirmation(false);
+      setShowNewEnrollmentForm(false);
+      toast.success(
+        json.message ||
+          "Your decision has been recorded. You can still enroll later from this page if you change your mind.",
+      );
+    } catch {
+      toast.error("Could not save your decision. Please try again.");
+    } finally {
+      setIsDecliningGrade12(false);
+    }
+  }, []);
 
   const UPPERCASE_FIELDS = new Set<keyof EnrollmentFormData>([
     'givenName',
@@ -445,23 +1187,66 @@ export function StudentEnrollment() {
     'guardianLastName',
     'motherOccupation',
     'fatherOccupation',
+    'relationshipToGuardian',
     'previousSchoolAttended',
     'sectionAtPreviousSchool',
     'lastSchoolYearAttended',
   ]);
 
   const handleInputChange = (field: keyof EnrollmentFormData, value: string | boolean) => {
-    if (typeof value === 'string' && UPPERCASE_FIELDS.has(field)) {
-      setFormData(prev => ({ ...prev, [field]: value.toUpperCase() }));
+    if (typeof value !== "string") {
+      setFormData((prev) => ({ ...prev, [field]: value }));
       return;
     }
-    setFormData(prev => ({ ...prev, [field]: value }));
+    const sanitized = sanitizeEnrollmentFieldValue(field, value);
+    if (UPPERCASE_FIELDS.has(field)) {
+      setFormData((prev) => ({ ...prev, [field]: sanitized.toUpperCase() }));
+      return;
+    }
+    setFormData((prev) => ({ ...prev, [field]: sanitized }));
+  };
+
+  const handleMunicipalityChange = (municipality: string) => {
+    setFormData((prev) => {
+      const nextMunicipality = sanitizeAddressLabelInput(municipality);
+      const barangays = getBarangaysForMunicipality(nextMunicipality);
+      const knownMunicipality = isKnownNcrMunicipality(nextMunicipality);
+      let nextBarangay = prev.barangay;
+      if (knownMunicipality && barangays.length > 0) {
+        const barangayStillValid =
+          barangays.includes(prev.barangay) ||
+          !!resolveNcrBarangay(nextMunicipality, prev.barangay);
+        if (!barangayStillValid) {
+          nextBarangay = "";
+        }
+      }
+      return { ...prev, municipality: nextMunicipality, barangay: nextBarangay };
+    });
+  };
+
+  const handleBarangayChange = (barangay: string) => {
+    handleInputChange("barangay", sanitizeAddressLabelInput(barangay));
   };
 
   const handleFileUpload = async (index: number, file: File | null) => {
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) {
       toast.error('Maximum file size is 5MB');
+      return;
+    }
+
+    if (isGrade12PromotionFlow && documents[index].status === 'uploaded') {
+      toast.error('Documents from your previous enrollment are locked during Grade 12 registration. Contact the registrar if you need to make a change.');
+      return;
+    }
+
+    const uploadMeta = studentDocumentDisplayMeta(documents[index], {
+      enrollmentFinalized,
+      isGrade12PromotionFlow,
+      isResubmitFlow,
+    });
+    if (documents[index].status === 'uploaded' && !uploadMeta.allowReupload) {
+      toast.error('This document is locked and cannot be replaced. Contact the registrar if you need to make a change.');
       return;
     }
 
@@ -496,10 +1281,67 @@ export function StudentEnrollment() {
         body: form,
       });
       const text = await res.text();
-      const json = JSON.parse(text) as { success?: boolean; error?: string; document?: { id?: number; uploaded_at?: string } };
+      const json = JSON.parse(text) as {
+        success?: boolean;
+        error?: string;
+        level?: number;
+        limit_reached?: boolean;
+        attempts_used?: number;
+        attempt_limit?: number;
+        requirement_label?: string;
+        email_sent?: boolean;
+        document?: {
+          id?: number;
+          uploaded_at?: string;
+          upload_count?: number;
+          attempts_remaining?: number | null;
+          resubmit_attempt?: boolean;
+          attempt_limit?: number;
+        };
+      };
       if (!res.ok || !json.success) {
-        toast.error(json.error || `Upload failed (${res.status})`);
+        // 429 with limit_reached: lock the row, surface a long-form toast
+        // pointing to the email we just sent and the in-person workflow.
+        if (res.status === 429 && json.limit_reached) {
+          toast.error(
+            json.error ||
+              `You've used all ${json.attempt_limit ?? UPLOAD_ATTEMPT_LIMIT} resubmit attempts for this document. Please bring the original to the registrar.`,
+            { duration: 12000 }
+          );
+          setDocuments(prev => {
+            const next = [...prev];
+            next[index] = {
+              ...next[index],
+              // Pin upload_count to the limit so the UI shows "5 of 5" and
+              // the re-upload button stays disabled until the registrar
+              // verifies the document in person.
+              uploadCount: json.attempt_limit ?? UPLOAD_ATTEMPT_LIMIT,
+            };
+            return next;
+          });
+          return;
+        }
+        const msg = json.error || `Upload failed (${res.status})`;
+        if (json.level === 1) {
+          toast.error(`Level 1 — Image quality: ${msg}`, { duration: 8000 });
+        } else {
+          toast.error(msg);
+        }
         return;
+      }
+
+      // Heads-up only after registrar rejection (resubmit phase).
+      const remaining = json.document?.attempts_remaining;
+      if (remaining != null && remaining === 0) {
+        toast.warning(
+          'This was your last resubmit attempt for this requirement. If the registrar still rejects it, you will need to bring the original document in person.',
+          { duration: 10000 }
+        );
+      } else if (remaining != null && remaining > 0 && remaining <= 2) {
+        toast.info(
+          `You have ${remaining} resubmit attempt${remaining === 1 ? '' : 's'} left for this requirement.`,
+          { duration: 6000 }
+        );
       }
 
       setDocuments(prev => {
@@ -510,9 +1352,16 @@ export function StudentEnrollment() {
           status: 'uploaded',
           uploadedId: Number(json.document?.id ?? 0) || undefined,
           uploadedAt: json.document?.uploaded_at ?? new Date().toISOString(),
+          aiStatus: 'pending',
+          registrarDecision: '',
+          registrarRemarks: '',
+          registrarReviewed: false,
+          uploadCount: Math.max(0, Number(json.document?.upload_count ?? 0) || 0),
+          carriedForward: false,
         };
         return next;
       });
+      setDocumentsAuthenticityConfirmed(false);
       toast.success(`${documents[index].name} uploaded successfully`);
     } catch {
       toast.error('Failed to upload document');
@@ -534,6 +1383,9 @@ export function StudentEnrollment() {
       'birthDate',
       'birthPlace',
       'religion',
+      'municipality',
+      'barangay',
+      'street',
     ];
     for (const field of required) {
       if (!formData[field as keyof EnrollmentFormData]) {
@@ -541,35 +1393,67 @@ export function StudentEnrollment() {
         return false;
       }
     }
-    if (!isBirthDateValidForShs(formData.birthDate, SHS_MIN_AGE_YEARS)) {
-      toast.error(
-        `Birth date must show the learner is at least ${SHS_MIN_AGE_YEARS} years old (Senior High eligibility).`,
-      );
+    const birthDateErr = birthDateValidationError(
+      formData.birthDate,
+      SHS_MIN_AGE_YEARS,
+      SHS_MAX_AGE_YEARS,
+    );
+    if (birthDateErr) {
+      toast.error(birthDateErr);
+      return false;
+    }
+    if (!hasValidPersonName(formData.givenName)) {
+      toast.error("First name must contain letters only (no numbers).");
+      return false;
+    }
+    if (!hasValidPersonName(formData.middleName)) {
+      toast.error("Middle name must contain letters only (no numbers).");
+      return false;
+    }
+    if (!hasValidPersonName(formData.lastName)) {
+      toast.error("Last name must contain letters only (no numbers).");
+      return false;
+    }
+    if (
+      formData.extensionName.trim() &&
+      !/^[A-Za-zñÑ.\s,]+$/.test(formData.extensionName.trim())
+    ) {
+      toast.error("Extension name must use letters only (e.g. Jr., III).");
+      return false;
+    }
+    if (!isValidPhilippineMobileNumber(formData.contactNumber)) {
+      toast.error("Contact number must be 11 digits starting with 09.");
+      return false;
+    }
+    if (!isValidEnrollmentLrn(formData.lrn)) {
+      toast.error("LRN must be exactly 12 digits (numbers only).");
+      return false;
+    }
+    if (!hasValidAddressLabel(formData.municipality)) {
+      toast.error("Please enter your city / municipality.");
+      return false;
+    }
+    if (!hasValidAddressLabel(formData.barangay)) {
+      toast.error("Please enter your barangay.");
       return false;
     }
     return true;
   };
 
-  const validateStep2 = (opts?: { confirmMissingParents?: boolean }) => {
+  const getMissingParentParts = (): string[] => {
+    const parts: string[] = [];
+    if (!formData.motherGivenName.trim()) parts.push("Mother");
+    if (!formData.fatherGivenName.trim()) parts.push("Father");
+    return parts;
+  };
+
+  const validateStep2 = () => {
     const motherName = formData.motherGivenName.trim();
     const fatherName = formData.fatherGivenName.trim();
     const guardianName = formData.guardianGivenName.trim();
     const hasMother = motherName.length > 0;
     const hasFather = fatherName.length > 0;
     const hasGuardianFilled = formData.hasGuardian && guardianName.length > 0;
-
-    // Soft validation: if a parent section is missing, confirm before continuing.
-    // (Students from single-parent/guardian-led households can proceed.)
-    const missingParts: string[] = [];
-    if (!hasMother) missingParts.push("Mother");
-    if (!hasFather) missingParts.push("Father");
-
-    if (opts?.confirmMissingParents && missingParts.length > 0) {
-      const ok = window.confirm(
-        `You did not fill in ${missingParts.join(" and ")} information.\n\nDo you want to continue anyway?`,
-      );
-      if (!ok) return false;
-    }
 
     // Still require at least one contact name overall so the registrar has a responsible party.
     if (!hasMother && !hasFather && !hasGuardianFilled) {
@@ -601,6 +1485,91 @@ export function StudentEnrollment() {
       }
     }
 
+    const nameChecks: Array<{ value: string; label: string }> = [];
+    if (hasMother) {
+      nameChecks.push(
+        { value: formData.motherGivenName, label: "Mother's first name" },
+        { value: formData.motherMaidenMiddleName, label: "Mother's middle name" },
+        { value: formData.motherMaidenLastName, label: "Mother's last name" },
+      );
+    }
+    if (hasFather) {
+      nameChecks.push(
+        { value: formData.fatherGivenName, label: "Father's first name" },
+        { value: formData.fatherMiddleName, label: "Father's middle name" },
+        { value: formData.fatherLastName, label: "Father's last name" },
+      );
+    }
+    if (hasGuardianFilled) {
+      nameChecks.push(
+        { value: formData.guardianGivenName, label: "Guardian's first name" },
+        { value: formData.guardianMiddleName, label: "Guardian's middle name" },
+        { value: formData.guardianLastName, label: "Guardian's last name" },
+      );
+    }
+    for (const { value, label } of nameChecks) {
+      if (value.trim() && !hasValidPersonName(value)) {
+        toast.error(`${label} must contain letters only (no numbers).`);
+        return false;
+      }
+    }
+
+    const phoneChecks: Array<{ value: string; label: string }> = [
+      { value: formData.motherContactNumber, label: "Mother's contact number" },
+      { value: formData.fatherContactNumber, label: "Father's contact number" },
+      { value: formData.guardianContactNumber, label: "Guardian's contact number" },
+    ];
+    for (const { value, label } of phoneChecks) {
+      if (value.trim() && !isValidPhilippineMobileNumber(value)) {
+        toast.error(`${label} must be 11 digits starting with 09.`);
+        return false;
+      }
+    }
+
+    const textOnlyChecks: Array<{ value: string; label: string; when?: boolean }> = [
+      { value: formData.motherOccupation, label: "Mother's occupation" },
+      { value: formData.fatherOccupation, label: "Father's occupation" },
+      {
+        value: formData.relationshipToGuardian,
+        label: "Relationship to guardian",
+        when: hasGuardianFilled,
+      },
+    ];
+    for (const { value, label, when } of textOnlyChecks) {
+      if (when === false) continue;
+      if (value.trim() && !hasValidTextOnlyContent(value)) {
+        toast.error(`${label} must contain letters only (no numbers).`);
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  const validateStep3 = () => {
+    if (
+      formData.previousSchoolAttended.trim() &&
+      !hasValidTextOnlyContent(formData.previousSchoolAttended)
+    ) {
+      toast.error("Previous school name must contain letters only (no numbers).");
+      return false;
+    }
+    if (
+      formData.sectionAtPreviousSchool.trim() &&
+      !hasValidSectionLabel(formData.sectionAtPreviousSchool)
+    ) {
+      toast.error(
+        "Section must include letters (e.g. A, 10-A). Long numbers-only values are not allowed.",
+      );
+      return false;
+    }
+    if (
+      formData.lastSchoolYearAttended.trim() &&
+      !isValidSchoolYearAttended(formData.lastSchoolYearAttended)
+    ) {
+      toast.error("Last school year must be a valid year (e.g. 2023 or 2023-2024).");
+      return false;
+    }
     return true;
   };
 
@@ -617,16 +1586,55 @@ export function StudentEnrollment() {
       toast.error(`Please upload all required documents: ${missingDocs.map(d => d.name).join(', ')}`);
       return false;
     }
+    if (!documentsAuthenticityConfirmed) {
+      const grade12PrefillLocked = isGrade12PrefillLocked({
+        grade12PromotionActive,
+        schoolYearCurrent,
+        priorApprovedSchoolYear: priorApproved?.school_year,
+        showNewEnrollmentForm,
+        hasConsentedToNewSy:
+          typeof window !== "undefined" &&
+          schoolYearCurrent !== null &&
+          localStorage.getItem(GRADE12_ENROLLMENT_CONSENT_KEY) === schoolYearCurrent,
+        gradeLevel: formData.gradeLevel,
+        enrollmentStatus: formData.enrollmentStatus,
+      });
+      if (!grade12PrefillLocked) {
+        toast.error(
+          'Please confirm that your uploaded documents are genuine and have not been altered or falsified.',
+        );
+        return false;
+      }
+    }
     return true;
+  };
+
+  const advanceToNextStep = async () => {
+    const ok = await saveEnrollment('save_draft', currentStep);
+    if (!ok) return;
+    setCurrentStep((prev) => Math.min(prev + 1, 6));
   };
 
   const handleNext = async () => {
     if (currentStep === 1 && !validateStep1()) return;
-    if (currentStep === 2 && !validateStep2({ confirmMissingParents: true })) return;
+    if (currentStep === 2) {
+      if (!validateStep2()) return;
+      const missing = getMissingParentParts();
+      if (missing.length > 0) {
+        setMissingParentParts(missing);
+        setMissingParentDialogOpen(true);
+        return;
+      }
+    }
+    if (currentStep === 3 && !validateStep3()) return;
     if (currentStep === 4 && !validateStep4()) return;
-    const ok = await saveEnrollment('save_draft', currentStep);
-    if (!ok) return;
-    setCurrentStep(prev => Math.min(prev + 1, 6));
+    await advanceToNextStep();
+  };
+
+  const handleMissingParentContinue = async () => {
+    setMissingParentDialogOpen(false);
+    setMissingParentParts([]);
+    await advanceToNextStep();
   };
 
   const handleBack = () => {
@@ -634,8 +1642,10 @@ export function StudentEnrollment() {
   };
 
   const handleSubmit = async () => {
+    if (submitInFlightRef.current || isEnrollmentLocked || isSaving) return;
     if (!validateStep1()) return;
-    if (!validateStep2({ confirmMissingParents: false })) return;
+    if (!validateStep2()) return;
+    if (!validateStep3()) return;
     if (!formData.modeOfPayment?.trim()) {
       toast.error('Please select a mode of payment (Payment & Promo step).');
       return;
@@ -644,7 +1654,12 @@ export function StudentEnrollment() {
       toast.error('Please confirm that all information is accurate');
       return;
     }
-    await saveEnrollment('submit', 6);
+    submitInFlightRef.current = true;
+    try {
+      await saveEnrollment('submit', 6);
+    } finally {
+      submitInFlightRef.current = false;
+    }
   };
 
   const tabs = [
@@ -665,16 +1680,94 @@ export function StudentEnrollment() {
   // and the student is eligible to re-enroll, surface a CTA on top of the
   // status card and (on click) start a fresh enrollment for the new SY.
   const status = (enrollmentStatusRaw || '').toLowerCase().trim();
-  const isApproved = status === 'approved';
-  const isRejected = status === 'rejected';
-  const isPending = status === 'pending' || status === 'under_review' || status === 'under review' || status === 'review';
 
   // The "show form" override lets a re-enrollment-eligible student click
   // through to the blank form. Without it, the locked branch wins because
   // the latest row in the DB is still the previous SY's approved row.
-  const lockedView = enrollmentAllowed && isEnrollmentLocked && !showNewEnrollmentForm;
+  // Allow resubmission flow to bypass the locked status card and open the upload step.
+  const isResubmitFlow = searchParams.get('resubmit') === '1';
+  const lockedView = enrollmentAllowed && isEnrollmentLocked && !showNewEnrollmentForm && !isResubmitFlow;
 
-  if (isGraduate && !lockedView) {
+  const promoteToGradeLabel = useMemo(() => {
+    const g = priorApproved?.grade_level_number ?? 0;
+    if (g === 11) return "Grade 12";
+    if (g >= 7 && g < 12) return `Grade ${g + 1}`;
+    if (g >= 12) return "Grade 12";
+    return "the next grade level";
+  }, [priorApproved?.grade_level_number]);
+
+  const hasConsentedToNewSy =
+    typeof window !== "undefined" &&
+    schoolYearCurrent !== null &&
+    localStorage.getItem(GRADE12_ENROLLMENT_CONSENT_KEY) === schoolYearCurrent;
+
+  const isGrade12PromotionFlow =
+    formData.gradeLevel === "12" &&
+    (grade12PromotionActive ||
+      (schoolYearCurrent !== null &&
+        priorApproved?.school_year !== "" &&
+        priorApproved?.school_year !== schoolYearCurrent &&
+        (showNewEnrollmentForm || hasConsentedToNewSy)));
+
+  const hasInProgressCurrentSyEnrollment =
+    schoolYearCurrent !== null &&
+    enrollmentSchoolYear === schoolYearCurrent &&
+    (status === "draft" ||
+      status === "pending" ||
+      status === "under_review" ||
+      status === "under review" ||
+      status === "review" ||
+      status === "rejected");
+
+  const hasSubmittedCurrentSyApplication =
+    schoolYearCurrent !== null &&
+    enrollmentId > 0 &&
+    (status === "enrolled" ||
+      status === "approved" ||
+      status === "pending" ||
+      status === "under_review" ||
+      status === "under review" ||
+      status === "review") &&
+    (enrollmentSchoolYear === schoolYearCurrent ||
+      formData.gradeLevel === "12" ||
+      grade12PromotionActive);
+
+  const showGrade12Prompt =
+    enrollmentAllowed &&
+    needsGrade12Confirmation &&
+    !hasInProgressCurrentSyEnrollment &&
+    !hasSubmittedCurrentSyApplication &&
+    !showNewEnrollmentForm &&
+    !isResubmitFlow &&
+    schoolYearCurrent !== null;
+
+  const isEnrolled =
+    (status === "approved" || status === "enrolled") && !showGrade12Prompt;
+  const isRejected = status === "rejected";
+  const isPending =
+    status === "pending" ||
+    status === "under_review" ||
+    status === "under review" ||
+    status === "review";
+
+  const lockGrade12PrefilledSections = isGrade12PrefillLocked({
+    grade12PromotionActive,
+    schoolYearCurrent,
+    priorApprovedSchoolYear: priorApproved?.school_year,
+    showNewEnrollmentForm,
+    hasConsentedToNewSy,
+    gradeLevel: formData.gradeLevel,
+    enrollmentStatus: formData.enrollmentStatus,
+  });
+
+  const lockEnrollmentHistory = lockGrade12PrefilledSections;
+
+  const isPermanentlyLockedField = lockGrade12PrefilledSections;
+  const lockPreferredScheduleField = lockGrade12PrefilledSections && !isGrade12PromotionFlow;
+
+  const enrollmentFinalized = isEnrolled;
+
+  if (isGraduate && !lockedView && !showGrade12Prompt) {
     return (
       <div className="min-h-[min(520px,calc(100vh-8rem))] flex flex-col items-center justify-center px-6 py-16 bg-gray-50">
         <Card className="w-full max-w-md border border-gray-200 shadow-sm">
@@ -692,31 +1785,107 @@ export function StudentEnrollment() {
     );
   }
 
-  if (lockedView) {
-    const showReEnrollCta = reEnrollmentEligible && schoolYearCurrent;
-    const headerLine = isApproved
-      ? `Enrolled — SY ${enrollmentSchoolYear || '—'}`
-      : isRejected
-        ? `Application rejected — SY ${enrollmentSchoolYear || '—'}`
-        : `Application under review — SY ${enrollmentSchoolYear || '—'}`;
-    const Icon = isApproved ? CheckCircle : isRejected ? AlertCircle : Loader2;
-    const iconClass = isApproved
-      ? 'h-12 w-12 text-[#2D5016] mx-auto mb-6'
-      : isRejected
-        ? 'h-12 w-12 text-[#8B1538] mx-auto mb-6'
-        : 'h-12 w-12 animate-spin text-[#2D5016] mx-auto mb-6';
+  if (showGrade12Prompt) {
+    const priorSy = priorApproved?.school_year || enrollmentSchoolYear;
+    const priorGrade =
+      priorApproved?.grade_level?.replace(/[^0-9]/g, "") ||
+      enrollmentGradeLevel.replace(/[^0-9]/g, "") ||
+      "11";
+    const priorStrand = priorApproved?.strand || enrollmentStrand;
 
     return (
       <div className="min-h-[min(520px,calc(100vh-8rem))] flex flex-col items-center justify-center px-6 py-16 bg-gray-50">
         <Card className="w-full max-w-xl border border-gray-200 shadow-sm">
+          <CardContent className="pt-12 pb-10 px-8 text-center">
+            <GraduationCap className="h-12 w-12 text-[#2D5016] mx-auto mb-6" aria-hidden />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">
+              Continue to {promoteToGradeLabel}?
+            </h2>
+            <p className="text-sm text-gray-600 leading-relaxed text-left">
+              Enrollment for school year <strong>{schoolYearCurrent}</strong> is now open.
+              {priorSy ? (
+                <>
+                  {" "}
+                  You are currently enrolled in <strong>Grade {priorGrade}</strong>
+                  {priorStrand ? ` (${priorStrand})` : ""} for SY <strong>{priorSy}</strong>.
+                </>
+              ) : null}
+            </p>
+            <p className="text-sm text-gray-700 mt-4 text-left">
+              Do you wish to proceed with enrollment for <strong>{promoteToGradeLabel}</strong> in SY{" "}
+              <strong>{schoolYearCurrent}</strong>? If you continue, your previous application will be
+              pre-filled so you can review and update it before submitting.
+            </p>
+            <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
+              <Button
+                type="button"
+                variant="outline"
+                className="border-gray-300"
+                disabled={isStartingGrade12 || isDecliningGrade12}
+                onClick={() => void declineGrade12Continuation()}
+              >
+                {isDecliningGrade12 ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                    Saving…
+                  </>
+                ) : (
+                  "Not continuing to Grade 12"
+                )}
+              </Button>
+              <Button
+                type="button"
+                className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
+                disabled={isStartingGrade12}
+                onClick={() => void startGrade12Enrollment()}
+              >
+                {isStartingGrade12 ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+                    Starting…
+                  </>
+                ) : (
+                  `Yes, proceed to ${promoteToGradeLabel}`
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (lockedView) {
+    const showReEnrollCta = reEnrollmentEligible && schoolYearCurrent && !newSchoolYearReenrollment;
+    const headerLine = isEnrolled
+      ? `Enrolled — SY ${enrollmentSchoolYear || '—'}`
+      : isRejected
+        ? `Application rejected — SY ${enrollmentSchoolYear || '—'}`
+        : `Application under review — SY ${enrollmentSchoolYear || '—'}`;
+    return (
+      <div className="min-h-[min(520px,calc(100vh-8rem))] flex flex-col items-center justify-center px-6 py-16 bg-gray-50">
+        <Card className="w-full max-w-xl border border-gray-200 shadow-sm">
           <CardContent className="pt-12 pb-12 px-8 text-center">
-            <Icon className={iconClass} aria-hidden />
+            {isEnrolled ? (
+              <CheckCircle className="h-12 w-12 text-[#2D5016] mx-auto mb-6" aria-hidden />
+            ) : isRejected ? (
+              <AlertCircle className="h-12 w-12 text-[#8B1538] mx-auto mb-6" aria-hidden />
+            ) : null}
             <h2 className="text-xl font-semibold text-gray-900 mb-2">{headerLine}</h2>
 
-            {isApproved && (
-              <p className="text-sm text-gray-600 leading-relaxed">
-                {`You are enrolled${enrollmentGradeLevel ? ` in Grade ${enrollmentGradeLevel.replace(/[^0-9]/g, '') || enrollmentGradeLevel}` : ''}${enrollmentStrand ? ` ${enrollmentStrand}` : ''} for school year ${enrollmentSchoolYear || ''}.`}
-              </p>
+            {isEnrolled && (
+              <>
+                <p className="text-sm text-gray-600 leading-relaxed">
+                  {`You are enrolled${enrollmentGradeLevel ? ` in Grade ${enrollmentGradeLevel.replace(/[^0-9]/g, '') || enrollmentGradeLevel}` : ''}${enrollmentStrand ? ` ${enrollmentStrand}` : ''} for school year ${enrollmentSchoolYear || ''}.`}
+                </p>
+                <p className="text-sm text-gray-700 mt-3 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-left">
+                  <span className="block text-xs font-semibold text-amber-900 mb-1">
+                    Physical documents
+                  </span>
+                  Hand-deliver the original copies of your required documents to the
+                  registrar's office. Check <strong>Application Status</strong> for your checklist.
+                </p>
+              </>
             )}
 
             {isRejected && (
@@ -747,35 +1916,13 @@ export function StudentEnrollment() {
                 <Button
                   type="button"
                   className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
-                  onClick={() => {
-                    // Suggest the next grade level when the prior approved
-                    // record was for Grade 11, so the student doesn't have
-                    // to reselect it. Strand is intentionally not pre-filled
-                    // because students may switch strands when promoting.
-                    const nextGrade =
-                      priorApproved?.grade_level_number === 11 ? '12' :
-                      priorApproved?.grade_level_number === 12 ? '12' : // unreachable (graduate guard)
-                      '';
-                    setShowNewEnrollmentForm(true);
-                    setIsEnrollmentLocked(false);
-                    localStorage.removeItem('studentEnrollmentLocked');
-                    setCurrentStep(1);
-                    if (nextGrade) {
-                      setFormData(prev => ({
-                        ...prev,
-                        gradeLevel: nextGrade as '11' | '12',
-                        // Clear identity-irrelevant fields that should be
-                        // re-confirmed for the new SY (status of "old"
-                        // student is reasonable to default to).
-                        enrollmentStatus: 'old',
-                      }));
-                    }
-                  }}
+                  onClick={() => void startGrade12Enrollment()}
+                  disabled={isStartingGrade12}
                 >
-                  Enroll for SY {schoolYearCurrent}
+                  {isStartingGrade12 ? "Starting…" : `Proceed to ${promoteToGradeLabel}`}
                 </Button>
                 <p className="text-xs text-gray-500 mt-2">
-                  Your previous enrollment record will be kept on file.
+                  Your previous application will be pre-filled for the new school year.
                 </p>
               </div>
             )}
@@ -785,13 +1932,26 @@ export function StudentEnrollment() {
     );
   }
 
+  if (enrollmentBlocked && !lockedView && !showGrade12Prompt && !isGraduate) {
+    return (
+      <div className="p-6">
+        <EnrollmentGuard
+          message="Enrollment is currently unavailable because there is no active school year. An administrator must open enrollment in School Year Management before you can submit an application."
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-0">
-      {!enrollmentAllowed && (
-        <div className="p-6">
-          <Alert variant="destructive">
-            <AlertDescription>
-              Enrollment is currently unavailable because there is no active school year.
+      {enrollmentAllowed && showNewEnrollmentForm && schoolYearCurrent && !showGrade12Prompt && (
+        <div className="px-6 pt-6">
+          <Alert className="border-[#2D5016]/30 bg-[#2D5016]/5">
+            <AlertDescription className="text-sm text-gray-800">
+              Enrollment for school year <strong>{schoolYearCurrent}</strong> is open.
+              Your application has been pre-filled from
+              {priorApproved?.school_year ? ` SY ${priorApproved.school_year}` : " your last enrollment"}.
+              Review each step, update anything that changed, then submit.
             </AlertDescription>
           </Alert>
         </div>
@@ -868,14 +2028,15 @@ export function StudentEnrollment() {
                   <RequiredLabel className="mb-3 block">Enrollment Status</RequiredLabel>
                   <div className="flex gap-4">
                     {['old', 'new', 'transferee'].map((status) => (
-                      <label key={status} className="flex items-center gap-2 cursor-pointer">
+                      <label key={status} className="flex items-center gap-2">
                         <input
                           type="radio"
                           name="enrollmentStatus"
                           value={status}
                           checked={formData.enrollmentStatus === status}
                           onChange={(e) => handleInputChange('enrollmentStatus', e.target.value)}
-                          className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
+                          disabled={isPermanentlyLockedField}
+                          className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538] disabled:opacity-100"
                         />
                         <span className="capitalize">{status}</span>
                       </label>
@@ -891,7 +2052,8 @@ export function StudentEnrollment() {
                       value={formData.givenName}
                       onChange={(e) => handleInputChange('givenName', e.target.value)}
                       placeholder="Enter first name"
-                      className="uppercase"
+                      disabled={isPermanentlyLockedField}
+                      className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
                   </div>
                   <div className="space-y-2">
@@ -902,7 +2064,8 @@ export function StudentEnrollment() {
                       onChange={(e) => handleInputChange('middleName', e.target.value)}
                       placeholder="Enter middle name"
                       required
-                      className="uppercase"
+                      disabled={isPermanentlyLockedField}
+                      className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
                   </div>
                   <div className="space-y-2">
@@ -914,7 +2077,8 @@ export function StudentEnrollment() {
                       placeholder="M.I."
                       maxLength={2}
                       required
-                      className="uppercase"
+                      disabled={isPermanentlyLockedField}
+                      className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
                   </div>
                   <div className="space-y-2">
@@ -924,7 +2088,8 @@ export function StudentEnrollment() {
                       value={formData.lastName}
                       onChange={(e) => handleInputChange('lastName', e.target.value)}
                       placeholder="Enter last name"
-                      className="uppercase"
+                      disabled={isPermanentlyLockedField}
+                      className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
                   </div>
                   <div className="space-y-2">
@@ -934,7 +2099,8 @@ export function StudentEnrollment() {
                       value={formData.extensionName}
                       onChange={(e) => handleInputChange('extensionName', e.target.value)}
                       placeholder="Jr., Sr., III, etc."
-                      className="uppercase"
+                      disabled={isPermanentlyLockedField}
+                      className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
                   </div>
                   <div className="space-y-2">
@@ -943,7 +2109,12 @@ export function StudentEnrollment() {
                       id="gender"
                       value={formData.gender}
                       onChange={(e) => handleInputChange('gender', e.target.value)}
-                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      disabled={isPermanentlyLockedField}
+                      className={`w-full h-10 px-3 rounded-md border border-gray-300 text-sm ${
+                        isPermanentlyLockedField
+                          ? lockedPrefillSelectClass
+                          : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      }`}
                     >
                       <option value="">Select Gender</option>
                       <option value="Female">Female</option>
@@ -954,9 +2125,13 @@ export function StudentEnrollment() {
                     <RequiredLabel htmlFor="contactNumber">Contact Number</RequiredLabel>
                     <Input
                       id="contactNumber"
+                      type="tel"
+                      inputMode="numeric"
+                      autoComplete="tel"
                       value={formData.contactNumber}
                       onChange={(e) => handleInputChange('contactNumber', e.target.value)}
-                      placeholder="09XX-XXX-XXXX"
+                      placeholder="09XXXXXXXXX"
+                      maxLength={11}
                     />
                   </div>
                   <div className="space-y-2">
@@ -973,10 +2148,14 @@ export function StudentEnrollment() {
                     <RequiredLabel htmlFor="lrn">LRN (Learner Reference Number)</RequiredLabel>
                     <Input
                       id="lrn"
+                      type="text"
+                      inputMode="numeric"
                       value={formData.lrn}
                       onChange={(e) => handleInputChange('lrn', e.target.value)}
                       placeholder="12 digit LRN"
                       maxLength={12}
+                      disabled={isPermanentlyLockedField}
+                      className={isPermanentlyLockedField ? lockedPrefillInputClass.trim() : undefined}
                     />
                   </div>
                 </div>
@@ -1017,23 +2196,30 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="barangay">Barangay</RequiredLabel>
-                    <Input
-                      id="barangay"
-                      value={formData.barangay}
-                      onChange={(e) => handleInputChange('barangay', e.target.value)}
-                      placeholder="Enter barangay"
-                      required
+                    <RequiredLabel htmlFor="municipality">City / Municipality</RequiredLabel>
+                    <Combobox
+                      id="municipality"
+                      value={formData.municipality}
+                      onChange={handleMunicipalityChange}
+                      options={NCR_MUNICIPALITIES}
+                      placeholder="Select or type city / municipality"
+                      ariaLabel="Show city / municipality options"
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="municipality">Municipality</RequiredLabel>
-                    <Input
-                      id="municipality"
-                      value={formData.municipality}
-                      onChange={(e) => handleInputChange('municipality', e.target.value)}
-                      placeholder="Enter municipality"
-                      required
+                    <RequiredLabel htmlFor="barangay">Barangay</RequiredLabel>
+                    <Combobox
+                      id="barangay"
+                      value={formData.barangay}
+                      onChange={handleBarangayChange}
+                      options={addressBarangayOptions}
+                      placeholder={
+                        formData.municipality.trim()
+                          ? "Select or type barangay"
+                          : "Enter city / municipality first"
+                      }
+                      disabled={!formData.municipality.trim()}
+                      ariaLabel="Show barangay options"
                     />
                   </div>
                 </div>
@@ -1054,6 +2240,8 @@ export function StudentEnrollment() {
                       onChange={(e) => handleInputChange('birthDate', e.target.value)}
                       min={shsBirthDateBounds.min}
                       max={shsBirthDateBounds.max}
+                      disabled={isPermanentlyLockedField}
+                      className={isPermanentlyLockedField ? lockedPrefillInputClass.trim() : undefined}
                     />
                   </div>
                   <div className="space-y-2">
@@ -1069,10 +2257,15 @@ export function StudentEnrollment() {
                           handleInputChange("birthPlace", v);
                         }
                       }}
-                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      disabled={isPermanentlyLockedField}
+                      className={`w-full h-10 px-3 rounded-md border border-gray-300 text-sm ${
+                        isPermanentlyLockedField
+                          ? lockedPrefillSelectClass
+                          : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      }`}
                     >
                       <option value="">Select birth place</option>
-                      {NCR_CITIES.map((c) => (
+                      {NCR_MUNICIPALITIES.map((c) => (
                         <option key={c} value={c}>
                           {c}
                         </option>
@@ -1084,6 +2277,8 @@ export function StudentEnrollment() {
                         value={formData.birthPlace}
                         onChange={(e) => handleInputChange("birthPlace", e.target.value)}
                         placeholder="If not in NCR, type your birth place"
+                        disabled={isPermanentlyLockedField}
+                        className={isPermanentlyLockedField ? lockedPrefillInputClass.trim() : undefined}
                       />
                     ) : null}
                   </div>
@@ -1093,7 +2288,12 @@ export function StudentEnrollment() {
                       id="religion"
                       value={formData.religion}
                       onChange={(e) => handleInputChange('religion', e.target.value)}
-                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      disabled={isPermanentlyLockedField}
+                      className={`w-full h-10 px-3 rounded-md border border-gray-300 text-sm ${
+                        isPermanentlyLockedField
+                          ? lockedPrefillSelectClass
+                          : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      }`}
                     >
                       <option value="">Select Religion</option>
                       <option value="Roman Catholic">Roman Catholic</option>
@@ -1113,14 +2313,15 @@ export function StudentEnrollment() {
                     <RequiredLabel>Grade Level to Enroll In</RequiredLabel>
                     <div className="flex gap-4 pt-2">
                       {['11', '12'].map((grade) => (
-                        <label key={grade} className="flex items-center gap-2 cursor-pointer">
+                        <label key={grade} className="flex items-center gap-2">
                           <input
                             type="radio"
                             name="gradeLevel"
                             value={grade}
                             checked={formData.gradeLevel === grade}
                             onChange={(e) => handleInputChange('gradeLevel', e.target.value)}
-                            className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
+                            disabled={isPermanentlyLockedField}
+                            className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538] disabled:opacity-100"
                           />
                           <span>Grade {grade}</span>
                         </label>
@@ -1133,7 +2334,12 @@ export function StudentEnrollment() {
                       id="strand"
                       value={formData.strand}
                       onChange={(e) => handleInputChange('strand', e.target.value)}
-                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      disabled={isPermanentlyLockedField}
+                      className={`w-full h-10 px-3 rounded-md border border-gray-300 text-sm ${
+                        isPermanentlyLockedField
+                          ? lockedPrefillSelectClass
+                          : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      }`}
                     >
                       <option value="STEM">STEM</option>
                       <option value="HUMSS">HUMSS</option>
@@ -1145,11 +2351,23 @@ export function StudentEnrollment() {
                   </div>
                   <div className="space-y-2">
                     <RequiredLabel htmlFor="preferredSchedule">Preferred Schedule</RequiredLabel>
+                    {isGrade12PromotionFlow && currentStudentSection ? (
+                      <p className="text-xs text-gray-600 leading-relaxed">
+                        You stay in section <span className="font-semibold">{currentStudentSection}</span> for Grade 12
+                        unless you change your class time below. If you switch to morning or afternoon, the system
+                        places you in the section with the most available seats for your chosen shift.
+                      </p>
+                    ) : null}
                     <select
                       id="preferredSchedule"
                       value={formData.preferredSchedule}
                       onChange={(e) => handleInputChange('preferredSchedule', e.target.value)}
-                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      disabled={lockPreferredScheduleField}
+                      className={`w-full h-10 px-3 rounded-md border border-gray-300 text-sm ${
+                        lockPreferredScheduleField
+                          ? lockedPrefillSelectClass
+                          : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
+                      }`}
                     >
                       <option value="">Select Schedule</option>
                       <option value="Morning Shift">Morning Shift</option>
@@ -1208,9 +2426,12 @@ export function StudentEnrollment() {
                     <Label htmlFor="motherContactNumber">Mother's Contact Number</Label>
                     <Input
                       id="motherContactNumber"
+                      type="tel"
+                      inputMode="numeric"
                       value={formData.motherContactNumber}
                       onChange={(e) => handleInputChange('motherContactNumber', e.target.value)}
-                      placeholder="09XX-XXX-XXXX"
+                      placeholder="09XXXXXXXXX"
+                      maxLength={11}
                     />
                   </div>
                   <div className="space-y-2">
@@ -1266,9 +2487,12 @@ export function StudentEnrollment() {
                     <Label htmlFor="fatherContactNumber">Father's Contact Number</Label>
                     <Input
                       id="fatherContactNumber"
+                      type="tel"
+                      inputMode="numeric"
                       value={formData.fatherContactNumber}
                       onChange={(e) => handleInputChange('fatherContactNumber', e.target.value)}
-                      placeholder="09XX-XXX-XXXX"
+                      placeholder="09XXXXXXXXX"
+                      maxLength={11}
                     />
                   </div>
                   <div className="space-y-2">
@@ -1338,9 +2562,12 @@ export function StudentEnrollment() {
                         <Label htmlFor="guardianContactNumber">Guardian's Contact Number</Label>
                         <Input
                           id="guardianContactNumber"
+                          type="tel"
+                          inputMode="numeric"
                           value={formData.guardianContactNumber}
                           onChange={(e) => handleInputChange('guardianContactNumber', e.target.value)}
-                          placeholder="09XX-XXX-XXXX"
+                          placeholder="09XXXXXXXXX"
+                          maxLength={11}
                         />
                       </div>
                       <div className="space-y-2">
@@ -1396,21 +2623,25 @@ export function StudentEnrollment() {
                       value={formData.previousSchoolAttended}
                       onChange={(e) => handleInputChange('previousSchoolAttended', e.target.value)}
                       placeholder="Enter previous school name"
-                      className="uppercase"
+                      inputMode="text"
+                      autoComplete="organization"
+                      disabled={lockEnrollmentHistory}
+                      className={`uppercase${lockEnrollmentHistory ? ' bg-gray-100 text-gray-700' : ''}`}
                     />
                   </div>
                   <div className="space-y-2">
                     <Label>School Type</Label>
                     <div className="flex gap-4 pt-2">
                       {['public', 'private'].map((type) => (
-                        <label key={type} className="flex items-center gap-2 cursor-pointer">
+                        <label key={type} className="flex items-center gap-2">
                           <input
                             type="radio"
                             name="schoolType"
                             value={type}
                             checked={formData.schoolType === type}
                             onChange={(e) => handleInputChange('schoolType', e.target.value)}
-                            className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
+                            disabled={lockEnrollmentHistory}
+                            className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538] disabled:opacity-100"
                           />
                           <span className="uppercase">{type}</span>
                         </label>
@@ -1423,7 +2654,10 @@ export function StudentEnrollment() {
                       id="gradeLevelAtPreviousSchool"
                       value={formData.gradeLevelAtPreviousSchool}
                       onChange={(e) => handleInputChange('gradeLevelAtPreviousSchool', e.target.value)}
-                      className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538] uppercase"
+                      disabled={lockEnrollmentHistory}
+                      className={`w-full h-10 px-3 rounded-md border border-gray-300 text-sm uppercase disabled:opacity-100 ${
+                        lockEnrollmentHistory ? 'bg-gray-100 text-gray-700 cursor-not-allowed' : 'bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]'
+                      }`}
                     >
                       <option value="">Select Grade Level</option>
                       <option value="Grade 10">Grade 10</option>
@@ -1437,18 +2671,22 @@ export function StudentEnrollment() {
                       id="sectionAtPreviousSchool"
                       value={formData.sectionAtPreviousSchool}
                       onChange={(e) => handleInputChange('sectionAtPreviousSchool', e.target.value)}
-                      placeholder="Enter section"
-                      className="uppercase"
+                      placeholder="e.g. A, 10-A"
+                      inputMode="text"
+                      disabled={lockEnrollmentHistory}
+                      className={`uppercase${lockEnrollmentHistory ? ' bg-gray-100 text-gray-700' : ''}`}
                     />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="lastSchoolYearAttended">Last School Year Attended</Label>
-                    <Input
+                    <SchoolYearCombobox
                       id="lastSchoolYearAttended"
                       value={formData.lastSchoolYearAttended}
-                      onChange={(e) => handleInputChange('lastSchoolYearAttended', e.target.value)}
-                      placeholder="e.g., 2023-2024"
-                      className="uppercase"
+                      onChange={(value) => handleInputChange("lastSchoolYearAttended", value)}
+                      options={lastSchoolYearOptions}
+                      placeholder="e.g. 2023-2024"
+                      disabled={lockEnrollmentHistory}
+                      className={lockEnrollmentHistory ? '[&_input]:bg-gray-100 [&_input]:text-gray-700' : undefined}
                     />
                   </div>
                 </div>
@@ -1466,31 +2704,91 @@ export function StudentEnrollment() {
                 <CardDescription>Upload scanned copies of your documents (PDF, JPG, PNG)</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <Alert>
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>
-                    Please ensure all documents are clear and readable. Maximum file size: 5MB per document.
-                  </AlertDescription>
-                </Alert>
+                {isResubmitFlow ? (
+                  <Alert className="border-amber-300 bg-amber-50">
+                    <AlertCircle className="h-4 w-4 text-amber-700" />
+                    <AlertDescription className="text-amber-900">
+                      <strong>Resubmission mode.</strong> Approved documents are locked. Only the requirements
+                      flagged for resubmission can be re-uploaded.
+                    </AlertDescription>
+                  </Alert>
+                ) : (
+                  <Alert>
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                      Please ensure all documents are clear and readable. Maximum file size: 5MB per document.
+                    </AlertDescription>
+                  </Alert>
+                )}
 
                 {documents.map((doc, index) => {
                   // Check if document should be displayed
-                  const shouldShow = doc.requiredFor === 'all' || 
+                  const shouldShow = doc.requiredFor === 'all' ||
                     (doc.requiredFor === 'transferee' && formData.enrollmentStatus === 'transferee');
-                  
+
                   if (!shouldShow) return null;
+
+                  const docMeta = studentDocumentDisplayMeta(doc, {
+                    enrollmentFinalized,
+                    isGrade12PromotionFlow,
+                    isResubmitFlow,
+                  });
+                  const docNeedsResubmit = docMeta.needsResubmit;
+                  const docApproved = docMeta.verified;
+                  const isCarriedForward = Boolean(doc.carriedForward);
+                  // In resubmit mode we lock everything that isn't explicitly flagged for resubmission.
+                  const lockedForResubmit =
+                    (isResubmitFlow && !docNeedsResubmit && !docApproved) ||
+                    (enrollmentFinalized && !docNeedsResubmit);
+                  // Attempt-limit tracking: once the student has used up
+                  // every allowed upload, the row is permanently locked and
+                  // the student is told to bring the document in person.
+                  const uploadsUsed = Math.max(0, Number(doc.uploadCount ?? 0));
+                  const uploadLimitReached =
+                    !docApproved &&
+                    uploadsUsed >= UPLOAD_ATTEMPT_LIMIT &&
+                    doc.status === 'uploaded' &&
+                    (docNeedsResubmit || (isResubmitFlow && uploadsUsed > 0));
+                  const showResubmitAttemptCounter =
+                    !docApproved &&
+                    doc.status === 'uploaded' &&
+                    (docNeedsResubmit || (isResubmitFlow && uploadsUsed > 0) || uploadLimitReached);
+                  const attemptsRemaining = Math.max(0, UPLOAD_ATTEMPT_LIMIT - uploadsUsed);
+
+                  const openUploadPicker = () => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.accept = '.pdf,.jpg,.jpeg,.png';
+                    input.onchange = (e) => {
+                      const file = (e.target as HTMLInputElement).files?.[0];
+                      if (file) handleFileUpload(index, file);
+                    };
+                    input.click();
+                  };
 
                   return (
                   <div
                     key={index}
                     className={`p-4 border rounded-lg ${
-                      doc.status === 'uploaded' ? 'border-green-300 bg-green-50' : 'border-gray-300'
+                      uploadLimitReached
+                        ? 'border-amber-400 bg-amber-50'
+                        : docNeedsResubmit
+                          ? 'border-red-300 bg-red-50'
+                          : doc.status === 'uploaded'
+                            ? 'border-green-300 bg-green-50'
+                            : 'border-gray-300'
                     }`}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
                         <FileText className={`w-5 h-5 ${
-                          doc.status === 'uploaded' ? 'text-green-600' : 'text-gray-400'
+                          uploadLimitReached
+                            ? 'text-amber-700'
+                            : docNeedsResubmit
+                              ? 'text-red-600'
+                              : doc.status === 'uploaded'
+                                ? 'text-green-600'
+                                : 'text-gray-400'
                         }`} />
                         <div>
                           <p className="font-medium">
@@ -1502,47 +2800,125 @@ export function StudentEnrollment() {
                           {doc.file && (
                             <p className="text-sm text-gray-600">{doc.file.name}</p>
                           )}
+                          {docNeedsResubmit && doc.registrarRemarks ? (
+                            <p className="text-sm text-red-700 mt-1">
+                              <strong>Registrar's note:</strong> {doc.registrarRemarks}
+                            </p>
+                          ) : null}
+                          {/* Resubmit attempt counter — only after registrar rejection */}
+                          {showResubmitAttemptCounter ? (
+                            <p
+                              className={`text-xs mt-1 ${
+                                uploadLimitReached
+                                  ? 'text-amber-800 font-semibold'
+                                  : attemptsRemaining <= 1 && uploadsUsed > 0
+                                    ? 'text-amber-700'
+                                    : 'text-gray-500'
+                              }`}
+                            >
+                              {uploadLimitReached
+                                ? `Resubmit limit reached (${uploadsUsed} of ${UPLOAD_ATTEMPT_LIMIT}). Bring the original document to the registrar.`
+                                : `${uploadsUsed} of ${UPLOAD_ATTEMPT_LIMIT} resubmit attempts used${
+                                    attemptsRemaining === 1 && uploadsUsed > 0
+                                      ? ' — this is your last allowed attempt'
+                                      : ''
+                                  }.`}
+                            </p>
+                          ) : null}
+                          {uploadLimitReached ? (
+                            <p className="text-xs text-amber-900 mt-1">
+                              We&apos;ve emailed you with instructions for face-to-face verification at
+                              the registrar&apos;s office.
+                            </p>
+                          ) : null}
+                          {isGrade12PromotionFlow && doc.status === 'uploaded' && !docNeedsResubmit ? (
+                            <p className="text-xs text-gray-500 mt-1">
+                              On file from your previous enrollment and already cleared by the registrar.
+                            </p>
+                          ) : null}
+                          {docMeta.showCarriedHint && !uploadLimitReached ? (
+                            <p className="text-xs text-slate-600 mt-1">
+                              On file from your last enrollment. Contact the registrar if you need to update
+                              this document.
+                            </p>
+                          ) : null}
+                          {doc.status === 'uploaded' && !docNeedsResubmit && !docMeta.allowReupload && !isGrade12PromotionFlow ? (
+                            <p className="text-xs text-gray-500 mt-1">
+                              This document is locked and cannot be replaced here.
+                            </p>
+                          ) : null}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        {doc.status === 'uploaded' ? (
+                        {uploadLimitReached ? (
                           <>
-                            <Badge variant="default" className="bg-green-600">
-                              <CheckCircle className="w-3 h-3 mr-1" />
-                              Uploaded
+                            <Badge variant="default" className="bg-amber-600">
+                              <AlertCircle className="w-3 h-3 mr-1" />
+                              Bring to registrar
                             </Badge>
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => {
-                                const input = document.createElement('input');
-                                input.type = 'file';
-                                input.accept = '.pdf,.jpg,.jpeg,.png';
-                                input.onchange = (e) => {
-                                  const file = (e.target as HTMLInputElement).files?.[0];
-                                  if (file) handleFileUpload(index, file);
-                                };
-                                input.click();
-                              }}
+                              disabled
+                              className="cursor-not-allowed opacity-60"
+                              title={`You have used all ${UPLOAD_ATTEMPT_LIMIT} resubmit attempts for this document.`}
                             >
-                              Re-upload
+                              <Upload className="w-4 h-4 mr-2" />
+                              Upload disabled
                             </Button>
                           </>
+                        ) : docNeedsResubmit ? (
+                          <>
+                            <Badge variant="default" className="bg-red-600">
+                              <AlertCircle className="w-3 h-3 mr-1" />
+                              {isGrade12PromotionFlow ? "Contact registrar" : "Resubmission required"}
+                            </Badge>
+                            {!isGrade12PromotionFlow ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-red-600 text-red-700 hover:bg-red-600 hover:text-white"
+                                onClick={openUploadPicker}
+                              >
+                                <Upload className="w-4 h-4 mr-2" />
+                                Re-upload
+                              </Button>
+                            ) : (
+                              <Badge variant="outline" className="border-gray-400 text-gray-600">
+                                Locked
+                              </Badge>
+                            )}
+                          </>
+                        ) : doc.status === 'uploaded' ? (
+                          <>
+                            <Badge variant="default" className={docMeta.badgeClass}>
+                              <CheckCircle className="w-3 h-3 mr-1" />
+                              {docMeta.label}
+                            </Badge>
+                            {lockedForResubmit || !docMeta.allowReupload ? (
+                              <Badge variant="outline" className="border-gray-400 text-gray-600">
+                                {enrollmentFinalized ? "On file" : "Locked"}
+                              </Badge>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={openUploadPicker}
+                              >
+                                Re-upload
+                              </Button>
+                            )}
+                          </>
+                        ) : lockedForResubmit ? (
+                          <Badge variant="outline" className="border-gray-400 text-gray-600">
+                            Locked
+                          </Badge>
                         ) : (
                           <Button
                             variant="outline"
                             size="sm"
                             className="border-[#8B1538] text-[#8B1538] hover:bg-[#8B1538] hover:text-white"
-                            onClick={() => {
-                              const input = document.createElement('input');
-                              input.type = 'file';
-                              input.accept = '.pdf,.jpg,.jpeg,.png';
-                              input.onchange = (e) => {
-                                const file = (e.target as HTMLInputElement).files?.[0];
-                                if (file) handleFileUpload(index, file);
-                              };
-                              input.click();
-                            }}
+                            onClick={openUploadPicker}
                           >
                             <Upload className="w-4 h-4 mr-2" />
                             Upload
@@ -1553,6 +2929,43 @@ export function StudentEnrollment() {
                   </div>
                   );
                 })}
+
+                <div className="mt-6 rounded-lg border border-[#8B1538]/25 bg-[#8B1538]/5 p-4">
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      id="documentsAuthenticityConfirmed"
+                      checked={lockGrade12PrefilledSections || documentsAuthenticityConfirmed}
+                      disabled={lockGrade12PrefilledSections}
+                      onChange={(e) => {
+                        if (!lockGrade12PrefilledSections) {
+                          setDocumentsAuthenticityConfirmed(e.target.checked);
+                        }
+                      }}
+                      className="mt-1 h-4 w-4 shrink-0 rounded border-gray-300 text-[#8B1538] focus:ring-[#8B1538] disabled:opacity-100"
+                    />
+                    <div className="space-y-2 text-sm text-gray-800">
+                      <label
+                        htmlFor="documentsAuthenticityConfirmed"
+                        className={`font-medium${lockGrade12PrefilledSections ? "" : " cursor-pointer"}`}
+                      >
+                        Document authenticity declaration
+                      </label>
+                      <p className="leading-relaxed text-gray-700">
+                        I declare that every document I uploaded for this enrollment application is{" "}
+                        <strong>genuine, original or a true copy</strong>, and has{" "}
+                        <strong>not been tampered with, falsified, or digitally altered</strong> to misrepresent
+                        my records. I understand that submitting fake or manipulated documents may result in
+                        rejection of my application and disciplinary action under school policy and applicable
+                        law.
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        Your confirmation is recorded with a timestamp and IP address, similar to your registration
+                        consent (DPA), as proof of this declaration.
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -1607,9 +3020,12 @@ export function StudentEnrollment() {
                       <Label htmlFor="referrerContactNumber">Referrer's Contact Number</Label>
                       <Input
                         id="referrerContactNumber"
+                        type="tel"
+                        inputMode="numeric"
                         value={formData.referrerContactNumber}
                         onChange={(e) => handleInputChange('referrerContactNumber', e.target.value)}
-                        placeholder="09XX-XXX-XXXX"
+                        placeholder="09XXXXXXXXX"
+                        maxLength={11}
                       />
                     </div>
                   </div>
@@ -1798,7 +3214,12 @@ export function StudentEnrollment() {
           {currentStep < 6 ? (
             <Button
               onClick={handleNext}
-              disabled={isSaving || isEnrollmentLocked || !enrollmentAllowed}
+              disabled={
+                isSaving ||
+                isEnrollmentLocked ||
+                !enrollmentAllowed ||
+                (currentStep === 4 && !documentsAuthenticityConfirmed && !lockGrade12PrefilledSections)
+              }
               className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
             >
               {isSaving ? 'Saving...' : 'Next'}
@@ -1806,6 +3227,7 @@ export function StudentEnrollment() {
             </Button>
           ) : (
             <Button
+              type="button"
               onClick={handleSubmit}
               disabled={!formData.confirmInformation || isSaving || isEnrollmentLocked || !enrollmentAllowed}
               className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1816,6 +3238,38 @@ export function StudentEnrollment() {
           )}
         </div>
       </div>
+
+      <AlertDialog open={missingParentDialogOpen} onOpenChange={setMissingParentDialogOpen}>
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-[#8B1538]">Parent information incomplete</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-gray-600">
+                <p>
+                  You did not fill in{' '}
+                  <span className="font-medium text-gray-900">
+                    {missingParentParts.join(' and ')}
+                  </span>{' '}
+                  information.
+                </p>
+                <p>
+                  You can still continue if this matches your household (for example, single-parent or
+                  guardian-led homes).
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Go back</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
+              onClick={() => void handleMissingParentContinue()}
+            >
+              Continue anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

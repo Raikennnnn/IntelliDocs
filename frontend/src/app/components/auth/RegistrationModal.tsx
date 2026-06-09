@@ -4,6 +4,7 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { X, Mail, Lock, User, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
+import { validatePassword } from "../../lib/passwordPolicy";
 
 interface RegistrationModalProps {
   isOpen: boolean;
@@ -68,8 +69,9 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
       return;
     }
 
-    if (formData.password.length < 8) {
-      toast.error('Password must be at least 8 characters long');
+    const passwordCheck = validatePassword(formData.password);
+    if (!passwordCheck.ok) {
+      toast.error(passwordCheck.message);
       return;
     }
 

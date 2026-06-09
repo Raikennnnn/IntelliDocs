@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, setSessionToken } from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
@@ -8,12 +8,7 @@ import { Alert, AlertDescription } from '../../components/ui/alert';
 import schoolLogo from '../../../assets/logo.png';
 import homePageImage from '../../../assets/homepage-Bxdbuq6s.png';
 
-/**
- * Minimum new-password length. Mirrors the backend rule in
- * `api/auth.php` (`change_password` action) which returns
- * `password_too_short` for anything shorter than 8 characters.
- */
-const MIN_PASSWORD_LENGTH = 8;
+import { MIN_PASSWORD_LENGTH, validatePassword } from '../../lib/passwordPolicy';
 
 /**
  * Default destination when the user lands on the change-password screen
@@ -30,6 +25,8 @@ function describeChangePasswordError(code: string | null | undefined): string {
   switch (code) {
     case 'password_too_short':
       return `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
+    case 'password_too_weak':
+      return 'Password must include letters and numbers and cannot be a single repeated character.';
     case 'Missing user context':
     case 'missing_actor':
       return 'Your session has expired. Please log in again.';
@@ -78,8 +75,9 @@ export function ChangePassword() {
     e.preventDefault();
     setError('');
 
-    if (newPassword.length < MIN_PASSWORD_LENGTH) {
-      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+    const passwordCheck = validatePassword(newPassword);
+    if (!passwordCheck.ok) {
+      setError(passwordCheck.message);
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -98,7 +96,7 @@ export function ChangePassword() {
       });
 
       const data = (await response.json().catch(() => null)) as
-        | { success?: boolean; must_change_password?: boolean; error?: string }
+        | { success?: boolean; must_change_password?: boolean; token?: string | null; error?: string }
         | null;
 
       if (!response.ok || !data?.success) {
@@ -110,7 +108,10 @@ export function ChangePassword() {
           navigate('/login', { replace: true });
           return;
         }
-        setError(describeChangePasswordError(data?.error));
+        setError(
+          data?.message ||
+            describeChangePasswordError(data?.error),
+        );
         return;
       }
 
@@ -119,6 +120,9 @@ export function ChangePassword() {
       // next navigation through. `patchUser` accepts `must_change_password`
       // per the AuthContext contract for this feature.
       patchUser({ must_change_password: false });
+      if (data.token) {
+        setSessionToken(data.token);
+      }
       // Defense in depth: write the cleared flag straight to localStorage
       // as well. ProtectedRoute reads localStorage on mount, and if for any
       // reason this component happens to be rendered outside an

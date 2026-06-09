@@ -7,6 +7,7 @@ import {
 } from "../../components/ui/card";
 import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
+import { Button } from "../../components/ui/button";
 import {
   Activity,
   Search,
@@ -16,106 +17,58 @@ import {
   Eye,
   MessageSquare,
   UserPlus,
+  Loader2,
+  RefreshCw,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  fetchActivityLogs,
+  type ActivityLogEntry,
+  type ActivityLogStats,
+} from "../../lib/activityLogsApi";
 
-interface ActivityLog {
-  id: string;
-  action: string;
-  description: string;
-  user: string;
-  role: string;
-  timestamp: string;
-  type: "upload" | "approval" | "rejection" | "view" | "remark" | "registration";
-  relatedTo?: string;
-}
+const emptyStats: ActivityLogStats = {
+  totalActions: 0,
+  logins: 0,
+  uploads: 0,
+  approvals: 0,
+  rejections: 0,
+  security: 0,
+};
 
 export function ActivityLogs() {
   const [searchTerm, setSearchTerm] = useState("");
+  const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
+  const [stats, setStats] = useState<ActivityLogStats>(emptyStats);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Mock activity logs
-  const activityLogs: ActivityLog[] = [
-    {
-      id: "1",
-      action: "Application Approved",
-      description: "Approved enrollment application for Pedro Reyes",
-      user: "Maria Cruz",
-      role: "Registrar",
-      timestamp: "March 18, 2026 - 3:45 PM",
-      type: "approval",
-      relatedTo: "APP-2026-003",
-    },
-    {
-      id: "2",
-      action: "Document Uploaded",
-      description: "Student uploaded Birth Certificate",
-      user: "Juan Dela Cruz",
-      role: "Student",
-      timestamp: "March 18, 2026 - 2:30 PM",
-      type: "upload",
-      relatedTo: "APP-2026-001",
-    },
-    {
-      id: "3",
-      action: "Remark Added",
-      description: "Added remarks to application: 'Please re-upload SF10 with better quality'",
-      user: "Maria Cruz",
-      role: "Registrar",
-      timestamp: "March 18, 2026 - 1:15 PM",
-      type: "remark",
-      relatedTo: "APP-2026-001",
-    },
-    {
-      id: "4",
-      action: "Application Reviewed",
-      description: "Reviewed documents for application APP-2026-002",
-      user: "Maria Cruz",
-      role: "Registrar",
-      timestamp: "March 18, 2026 - 11:00 AM",
-      type: "view",
-      relatedTo: "APP-2026-002",
-    },
-    {
-      id: "5",
-      action: "Application Rejected",
-      description: "Rejected enrollment application for Ana Garcia - Invalid documents",
-      user: "Maria Cruz",
-      role: "Registrar",
-      timestamp: "March 17, 2026 - 4:30 PM",
-      type: "rejection",
-      relatedTo: "APP-2026-004",
-    },
-    {
-      id: "6",
-      action: "New Registration",
-      description: "New student registered: Carlos Mendoza",
-      user: "Carlos Mendoza",
-      role: "Student",
-      timestamp: "March 17, 2026 - 2:00 PM",
-      type: "registration",
-      relatedTo: "APP-2026-005",
-    },
-    {
-      id: "7",
-      action: "Document Uploaded",
-      description: "Student uploaded Good Moral Certificate",
-      user: "Maria Santos",
-      role: "Student",
-      timestamp: "March 16, 2026 - 3:20 PM",
-      type: "upload",
-      relatedTo: "APP-2026-002",
-    },
-    {
-      id: "8",
-      action: "Application Submitted",
-      description: "Student submitted enrollment application",
-      user: "Maria Santos",
-      role: "Student",
-      timestamp: "March 16, 2026 - 3:00 PM",
-      type: "upload",
-      relatedTo: "APP-2026-002",
-    },
-  ];
+  const loadLogs = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const json = await fetchActivityLogs("registrar", {
+        search: searchTerm,
+        range: "month",
+        limit: 100,
+      });
+      setActivityLogs(Array.isArray(json.logs) ? json.logs : []);
+      setStats(json.stats ?? emptyStats);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load activity logs");
+      setActivityLogs([]);
+      setStats(emptyStats);
+    } finally {
+      setLoading(false);
+    }
+  }, [searchTerm]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadLogs();
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [loadLogs]);
 
   const getActionIcon = (type: string) => {
     switch (type) {
@@ -155,28 +108,19 @@ export function ActivityLogs() {
     }
   };
 
-  const filteredLogs = activityLogs.filter(
-    (log) =>
-      log.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.user.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.relatedTo?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  const stats = {
-    totalActions: activityLogs.length,
-    uploads: activityLogs.filter((l) => l.type === "upload").length,
-    approvals: activityLogs.filter((l) => l.type === "approval").length,
-    rejections: activityLogs.filter((l) => l.type === "rejection").length,
-  };
-
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold text-gray-900">Activity Logs</h2>
-        <p className="text-gray-600">
-          Track all system actions and user activities
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-semibold text-gray-900">Activity Logs</h2>
+          <p className="text-gray-600">
+            Track all system actions and user activities
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => void loadLogs()} disabled={loading}>
+          <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
       </div>
 
       {/* Statistics */}
@@ -238,20 +182,31 @@ export function ActivityLogs() {
         </CardContent>
       </Card>
 
+      {error ? (
+        <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>
+      ) : null}
+
       {/* Activity Timeline */}
       <Card>
         <CardHeader>
           <CardTitle>Recent Activity</CardTitle>
-          <CardDescription>Chronological log of all system actions</CardDescription>
+          <CardDescription>
+            Live log from the `activity_logs` database (last 30 days)
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {filteredLogs.length === 0 ? (
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-gray-600">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                Loading activity logs…
+              </div>
+            ) : activityLogs.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 No activity logs found
               </div>
             ) : (
-              filteredLogs.map((log) => (
+              activityLogs.map((log) => (
                 <div
                   key={log.id}
                   className="p-4 border rounded-lg hover:border-[#8B1538] transition-colors"
@@ -261,18 +216,18 @@ export function ActivityLogs() {
                       {getActionIcon(log.type)}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
                         <h3 className="font-semibold text-gray-900">
                           {log.action}
                         </h3>
                         <Badge className={getActionBadgeColor(log.type)}>
-                          {log.type}
+                          {log.type.replace("_", " ")}
                         </Badge>
                       </div>
                       <p className="text-sm text-gray-600 mb-2">
                         {log.description}
                       </p>
-                      <div className="flex items-center gap-4 text-xs text-gray-500">
+                      <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500">
                         <div>
                           <span className="font-medium">{log.user}</span>
                           <span className="mx-1">•</span>
@@ -285,7 +240,7 @@ export function ActivityLogs() {
                           </>
                         )}
                         <span>•</span>
-                        <span>{log.timestamp}</span>
+                        <span>{log.timestampLabel || log.timestamp}</span>
                       </div>
                     </div>
                   </div>

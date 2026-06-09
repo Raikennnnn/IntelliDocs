@@ -1,8 +1,9 @@
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Users, CheckCircle, AlertCircle, TrendingUp } from 'lucide-react';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import { useSchoolYear } from '../../context/SchoolYearContext';
 
 type StrandRow = {
   name: string;
@@ -11,9 +12,11 @@ type StrandRow = {
 };
 
 export function RegistrarDashboard() {
+  const { enrollmentSchoolYearLabel } = useSchoolYear();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [strands, setStrands] = useState<StrandRow[]>([]);
+  const [schoolYearLabel, setSchoolYearLabel] = useState<string | null>(null);
   const [summary, setSummary] = useState({
     overallQuota: 4000,
     totalApplications: 0,
@@ -21,44 +24,53 @@ export function RegistrarDashboard() {
     remainingSlots: 4000,
   });
 
-  useEffect(() => {
-    const loadOverview = async () => {
-      setLoading(true);
-      setError(null);
+  const loadOverview = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch('/api/registrar/overview');
+      const text = await res.text();
+      let json: any = {};
       try {
-        const res = await apiFetch('/api/registrar/overview');
-        const text = await res.text();
-        let json: any = {};
-        try {
-          json = JSON.parse(text);
-        } catch {
-          throw new Error('Server returned an invalid response');
-        }
-
-        if (!res.ok || !json.success) {
-          setError(json.error || `Failed to load dashboard (${res.status})`);
-          setStrands([]);
-          return;
-        }
-
-        const nextSummary = json.summary ?? {};
-        setSummary({
-          overallQuota: Number(nextSummary.overallQuota ?? 4000),
-          totalApplications: Number(nextSummary.totalApplications ?? 0),
-          totalEnrolled: Number(nextSummary.totalEnrolled ?? 0),
-          remainingSlots: Number(nextSummary.remainingSlots ?? 0),
-        });
-        setStrands(Array.isArray(json.strands) ? json.strands as StrandRow[] : []);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Network error');
-        setStrands([]);
-      } finally {
-        setLoading(false);
+        json = JSON.parse(text);
+      } catch {
+        throw new Error('Server returned an invalid response');
       }
-    };
 
-    loadOverview();
+      if (!res.ok || !json.success) {
+        setError(json.error || `Failed to load dashboard (${res.status})`);
+        setStrands([]);
+        return;
+      }
+
+      const nextSummary = json.summary ?? {};
+      setSchoolYearLabel(typeof json.schoolYearLabel === 'string' ? json.schoolYearLabel : null);
+      setSummary({
+        overallQuota: Number(nextSummary.overallQuota ?? 4000),
+        totalApplications: Number(nextSummary.totalApplications ?? 0),
+        totalEnrolled: Number(nextSummary.totalEnrolled ?? 0),
+        remainingSlots: Number(nextSummary.remainingSlots ?? 0),
+      });
+      setStrands(Array.isArray(json.strands) ? json.strands as StrandRow[] : []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Network error');
+      setStrands([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadOverview();
+  }, [loadOverview, enrollmentSchoolYearLabel]);
+
+  useEffect(() => {
+    const onRefresh = () => {
+      void loadOverview();
+    };
+    window.addEventListener('school-year-settings-changed', onRefresh);
+    return () => window.removeEventListener('school-year-settings-changed', onRefresh);
+  }, [loadOverview]);
 
   const overallQuota = summary.overallQuota;
   const totalEnrolled = summary.totalEnrolled;
@@ -78,7 +90,12 @@ export function RegistrarDashboard() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold text-gray-900">Registrar Dashboard</h2>
-        <p className="text-gray-600">Student Information System Overview</p>
+        <p className="text-gray-600">
+          Student Information System Overview
+          {schoolYearLabel ? (
+            <span className="text-gray-500"> · {schoolYearLabel}</span>
+          ) : null}
+        </p>
       </div>
 
       {error && (

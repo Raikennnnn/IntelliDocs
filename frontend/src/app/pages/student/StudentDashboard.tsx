@@ -126,11 +126,12 @@ export function StudentDashboard() {
 
   const hasEnrollment = !!data?.application?.id && String(data?.application?.id ?? '').trim().length > 0;
   const statusCode = String(data?.application?.status_code ?? '').toLowerCase();
+  const needsResubmission = Boolean(data?.needs_resubmission);
   // Lock ONLY after an actual enrollment submission exists.
   // Brand new accounts should NOT be locked.
   const enrollmentLocked =
     hasEnrollment &&
-    ['pending', 'under review', 'under_review', 'review', 'approved'].includes(statusCode);
+    ['pending', 'under review', 'under_review', 'review', 'approved', 'enrolled'].includes(statusCode);
 
   useEffect(() => {
     if (!data) return;
@@ -138,7 +139,7 @@ export function StudentDashboard() {
     else localStorage.removeItem('studentEnrollmentLocked');
   }, [data, enrollmentLocked]);
 
-  const enrollmentApproved = statusCode === 'approved';
+  const enrollmentApproved = statusCode === 'approved' || statusCode === 'enrolled';
   const payMode = String(data?.application?.mode_of_payment || '').toLowerCase();
   const voucherSaved = String(data?.application?.voucher_no || '').trim();
   const showVoucherCard = enrollmentApproved && payMode && payMode !== 'cash';
@@ -276,6 +277,18 @@ export function StudentDashboard() {
               Continue enrollment
             </Link>
           )}
+          {enrollmentLocked && (
+            <Link
+              to="/student/application-status"
+              className={`inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-semibold ${
+                needsResubmission
+                  ? 'bg-red-600 text-white hover:bg-red-700'
+                  : 'bg-[#8B1538] text-white hover:bg-[#8B1538]/90'
+              }`}
+            >
+              {needsResubmission ? 'Resubmit rejected documents' : 'Check review status'}
+            </Link>
+          )}
           <button
             type="button"
             onClick={() => refetch()}
@@ -288,11 +301,7 @@ export function StudentDashboard() {
 
       {error && (
         <Alert variant="destructive">
-          <AlertDescription>
-            {error}. Run{' '}
-            <code className="text-xs">database_migration_student_portal.sql</code> if the database was
-            not migrated yet.
-          </AlertDescription>
+          <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
@@ -359,6 +368,9 @@ export function StudentDashboard() {
                 <Detail label="Strand" value={data.profile.strand} />
                 <Detail label="Grade level" value={data.profile.grade_level} />
                 <Detail label="School year" value={data.profile.school_year} />
+                {enrollmentApproved && data.profile.school_username ? (
+                  <Detail label="School username" value={data.profile.school_username} />
+                ) : null}
                 <div className="space-y-1 sm:col-span-2 lg:col-span-1">
                   <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
                     Application status

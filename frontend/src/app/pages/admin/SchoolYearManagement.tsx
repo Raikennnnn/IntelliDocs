@@ -20,14 +20,53 @@ import {
   Info
 } from 'lucide-react';
 
+/** Parse "YYYY-YYYY" for date pickers and suggested academic-year bounds. */
+function parseSchoolYearInput(input: string): {
+  startYear: number;
+  endYear: number;
+  suggestedStart: string;
+  suggestedEnd: string;
+  minDate: string;
+  maxDate: string;
+} | null {
+  const match = input.trim().match(/^(\d{4})-(\d{4})$/);
+  if (!match) return null;
+  const startYear = Number(match[1]);
+  const endYear = Number(match[2]);
+  if (!Number.isFinite(startYear) || !Number.isFinite(endYear) || endYear < startYear) {
+    return null;
+  }
+  return {
+    startYear,
+    endYear,
+    suggestedStart: `${startYear}-06-01`,
+    suggestedEnd: `${endYear}-03-31`,
+    minDate: `${startYear}-01-01`,
+    maxDate: `${endYear}-12-31`,
+  };
+}
+
 export function SchoolYearManagement() {
-  const { schoolYears, activeSchoolYear, reloadSchoolYearSettings, ongoingSchoolYearLabel, enrollmentSchoolYearLabel } = useSchoolYear();
+  const {
+    schoolYears,
+    activeSchoolYear,
+    reloadSchoolYearSettings,
+    ongoingSchoolYearLabel,
+    enrollmentSchoolYearLabel,
+    endedSchoolYears,
+  } = useSchoolYear();
   const [isSaving, setIsSaving] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedYear, setSelectedYear] = useState<any>(null);
   const [isActivateDialogOpen, setIsActivateDialogOpen] = useState(false);
   const [isSetOngoingDialogOpen, setIsSetOngoingDialogOpen] = useState(false);
   const [selectedOngoingYear, setSelectedOngoingYear] = useState<any>(null);
+  const [isEndDialogOpen, setIsEndDialogOpen] = useState(false);
+  const [selectedEndYear, setSelectedEndYear] = useState<{ year: string } | null>(null);
+  const [isReopenDialogOpen, setIsReopenDialogOpen] = useState(false);
+  const [selectedReopenYear, setSelectedReopenYear] = useState<{ year: string } | null>(null);
+  const [isCloseEnrollmentDialogOpen, setIsCloseEnrollmentDialogOpen] = useState(false);
+  const [selectedCloseYear, setSelectedCloseYear] = useState<{ year: string } | null>(null);
   
   const [newSchoolYear, setNewSchoolYear] = useState({
     year: '',
@@ -35,6 +74,21 @@ export function SchoolYearManagement() {
     endDate: '',
     status: 'Inactive'
   });
+
+  const parsedNewYear = parseSchoolYearInput(newSchoolYear.year);
+
+  const handleNewSchoolYearFieldChange = (year: string) => {
+    const parsed = parseSchoolYearInput(year);
+    setNewSchoolYear((prev) => {
+      const next = { ...prev, year };
+      if (parsed) {
+        // Pre-fill dates so the native calendar opens on the typed school year.
+        next.startDate = parsed.suggestedStart;
+        next.endDate = parsed.suggestedEnd;
+      }
+      return next;
+    });
+  };
 
   const handleCreateSchoolYear = () => {
     // Validation
@@ -111,14 +165,13 @@ export function SchoolYearManagement() {
     }
   };
 
-  const handleDeactivateSchoolYear = async (schoolYear: { year: string }) => {
-    if (
-      !window.confirm(
-        `Deactivate enrollment for school year ${schoolYear.year}? New student enrollments will be closed until you activate a school year again.`,
-      )
-    ) {
-      return;
-    }
+  const handleCloseEnrollment = (schoolYear: { year: string }) => {
+    setSelectedCloseYear(schoolYear);
+    setIsCloseEnrollmentDialogOpen(true);
+  };
+
+  const confirmCloseEnrollment = async () => {
+    if (!selectedCloseYear?.year) return;
     setIsSaving(true);
     try {
       const res = await apiFetch('/api/school-year', {
@@ -127,14 +180,81 @@ export function SchoolYearManagement() {
       });
       const j = (await res.json()) as { success?: boolean; error?: string };
       if (!res.ok || !j.success) {
-        toast.error(j.error || 'Failed to deactivate');
+        toast.error(j.error || 'Failed to close enrollment');
         return;
       }
-      toast.success('Enrollment closed until a school year is activated again.');
+      toast.success(
+        `Enrollment closed. Use Set Enrollment on ${selectedCloseYear.year} (or another year) to open it again.`,
+      );
       await reloadSchoolYearSettings();
       window.dispatchEvent(new Event('school-year-settings-changed'));
+      setIsCloseEnrollmentDialogOpen(false);
+      setSelectedCloseYear(null);
     } catch {
       toast.error('Failed to update school year');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleReopenEnrollment = (schoolYear: { year: string }) => {
+    setSelectedReopenYear(schoolYear);
+    setIsReopenDialogOpen(true);
+  };
+
+  const confirmReopenEnrollment = async () => {
+    if (!selectedReopenYear?.year) return;
+    setIsSaving(true);
+    try {
+      const res = await apiFetch('/api/school-year', {
+        method: 'PUT',
+        body: JSON.stringify({
+          reopen_school_year: selectedReopenYear.year,
+          open_enrollment: true,
+        }),
+      });
+      const j = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !j.success) {
+        toast.error(j.error || 'Failed to reopen enrollment');
+        return;
+      }
+      toast.success(`Enrollment is open again for ${selectedReopenYear.year}.`);
+      await reloadSchoolYearSettings();
+      window.dispatchEvent(new Event('school-year-settings-changed'));
+      setIsReopenDialogOpen(false);
+      setSelectedReopenYear(null);
+    } catch {
+      toast.error('Failed to reopen enrollment');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleEndSchoolYear = (schoolYear: { year: string }) => {
+    setSelectedEndYear(schoolYear);
+    setIsEndDialogOpen(true);
+  };
+
+  const confirmEndSchoolYear = async () => {
+    if (!selectedEndYear?.year) return;
+    setIsSaving(true);
+    try {
+      const res = await apiFetch('/api/school-year', {
+        method: 'PUT',
+        body: JSON.stringify({ end_school_year: selectedEndYear.year }),
+      });
+      const j = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !j.success) {
+        toast.error(j.error || 'Failed to end school year');
+        return;
+      }
+      toast.success(`School year ${selectedEndYear.year} ended. Rosters for that year are now archived.`);
+      await reloadSchoolYearSettings();
+      window.dispatchEvent(new Event('school-year-settings-changed'));
+      setIsEndDialogOpen(false);
+      setSelectedEndYear(null);
+    } catch {
+      toast.error('Failed to end school year');
     } finally {
       setIsSaving(false);
     }
@@ -192,7 +312,7 @@ export function SchoolYearManagement() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => handleDeactivateSchoolYear(activeSchoolYear)}
+            onClick={() => handleCloseEnrollment(activeSchoolYear)}
             disabled={isSaving}
             className="border-red-600 text-red-600 hover:bg-red-50"
           >
@@ -311,9 +431,15 @@ export function SchoolYearManagement() {
             <div className="text-sm text-blue-800">
               <p className="font-medium">School Year Control Policy</p>
               <ul className="mt-2 space-y-1 list-disc list-inside">
-                <li>Only ONE school year can be active at a time</li>
-                <li>Enrollment requests REQUIRE an active school year</li>
-                <li>Activating a new school year automatically deactivates the previous one</li>
+                <li>Only ONE school year accepts new enrollments at a time (Set Enrollment)</li>
+                <li>
+                  <strong>Close Enrollment</strong> pauses new applications — use <strong>Set Enrollment</strong> on
+                  the same year to open again
+                </li>
+                <li>
+                  <strong>End School Year</strong> archives that year (grey class lists). Use{' '}
+                  <strong>Reopen enrollment</strong> to accept students again
+                </li>
                 <li>Only Admin role can manage school years</li>
               </ul>
             </div>
@@ -334,9 +460,23 @@ export function SchoolYearManagement() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {schoolYears.map((sy) => (
-                  <TableRow key={sy.id} className={sy.status === 'Active' ? 'bg-green-50' : ''}>
-                    <TableCell className="font-semibold text-gray-900">{sy.year}</TableCell>
+                {schoolYears.map((sy) => {
+                  const isEnded = endedSchoolYears.includes(sy.year);
+                  return (
+                  <TableRow
+                    key={sy.id}
+                    className={
+                      sy.status === 'Active' ? 'bg-green-50' : isEnded ? 'bg-gray-50' : ''
+                    }
+                  >
+                    <TableCell className="font-semibold text-gray-900">
+                      {sy.year}
+                      {isEnded ? (
+                        <Badge variant="outline" className="ml-2 text-gray-500 border-gray-400">
+                          Ended
+                        </Badge>
+                      ) : null}
+                    </TableCell>
                     <TableCell className="text-sm text-gray-600">
                       <div className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
@@ -368,7 +508,7 @@ export function SchoolYearManagement() {
                     <TableCell className="text-sm text-gray-600">{sy.createdBy}</TableCell>
                     <TableCell className="text-center">
                       <div className="flex items-center justify-center gap-2 flex-wrap">
-                      {sy.status === 'Inactive' ? (
+                      {sy.status === 'Inactive' && !isEnded ? (
                         <Button
                           size="sm"
                           onClick={() => handleActivateSchoolYear(sy)}
@@ -378,11 +518,21 @@ export function SchoolYearManagement() {
                           <Power className="w-4 h-4 mr-1" />
                           Set Enrollment
                         </Button>
+                      ) : isEnded ? (
+                        <Button
+                          size="sm"
+                          onClick={() => handleReopenEnrollment(sy)}
+                          disabled={isSaving}
+                          className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
+                        >
+                          <Power className="w-4 h-4 mr-1" />
+                          Reopen enrollment
+                        </Button>
                       ) : (
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => handleDeactivateSchoolYear(sy)}
+                          onClick={() => handleCloseEnrollment(sy)}
                           disabled={isSaving}
                           className="border-red-600 text-red-600 hover:bg-red-50"
                         >
@@ -394,15 +544,27 @@ export function SchoolYearManagement() {
                         size="sm"
                         variant="outline"
                         onClick={() => handleSetOngoingSchoolYear(sy)}
-                        disabled={isSaving}
+                        disabled={isSaving || isEnded}
                         className={sy.year === ongoingSchoolYearLabel ? 'border-blue-600 text-blue-700' : ''}
                       >
                         Set Ongoing
                       </Button>
+                      {!isEnded ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleEndSchoolYear(sy)}
+                          disabled={isSaving}
+                          className="border-gray-500 text-gray-600 hover:bg-gray-100"
+                        >
+                          End School Year
+                        </Button>
+                      ) : null}
                       </div>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
@@ -429,10 +591,13 @@ export function SchoolYearManagement() {
                 type="text"
                 placeholder="e.g., 2026-2027"
                 value={newSchoolYear.year}
-                onChange={(e) => setNewSchoolYear({ ...newSchoolYear, year: e.target.value })}
+                onChange={(e) => handleNewSchoolYearFieldChange(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B1538]"
               />
-              <p className="text-xs text-gray-500 mt-1">Format: YYYY-YYYY (e.g., 2026-2027)</p>
+              <p className="text-xs text-gray-500 mt-1">
+                Format: YYYY-YYYY (e.g., 2026-2027). Start and end dates are suggested automatically
+                (June 1 – March 31) when you enter a valid school year.
+              </p>
             </div>
 
             {/* Date Range */}
@@ -444,6 +609,8 @@ export function SchoolYearManagement() {
                 <input
                   type="date"
                   value={newSchoolYear.startDate}
+                  min={parsedNewYear?.minDate}
+                  max={parsedNewYear?.maxDate}
                   onChange={(e) => setNewSchoolYear({ ...newSchoolYear, startDate: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B1538]"
                 />
@@ -455,6 +622,8 @@ export function SchoolYearManagement() {
                 <input
                   type="date"
                   value={newSchoolYear.endDate}
+                  min={parsedNewYear?.minDate}
+                  max={parsedNewYear?.maxDate}
                   onChange={(e) => setNewSchoolYear({ ...newSchoolYear, endDate: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B1538]"
                 />
@@ -527,7 +696,13 @@ export function SchoolYearManagement() {
       </Dialog>
 
       {/* Set Ongoing School Year Dialog */}
-      <Dialog open={isSetOngoingDialogOpen} onOpenChange={setIsSetOngoingDialogOpen}>
+      <Dialog
+        open={isSetOngoingDialogOpen}
+        onOpenChange={(open) => {
+          setIsSetOngoingDialogOpen(open);
+          if (!open && !isSaving) setSelectedOngoingYear(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Set Ongoing School Year {selectedOngoingYear?.year}?</DialogTitle>
@@ -546,6 +721,119 @@ export function SchoolYearManagement() {
               className="bg-[#2563eb] hover:bg-[#2563eb]/90 text-white"
             >
               {isSaving ? 'Saving…' : 'Set Ongoing'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Close enrollment dialog */}
+      <Dialog
+        open={isCloseEnrollmentDialogOpen}
+        onOpenChange={(open) => {
+          setIsCloseEnrollmentDialogOpen(open);
+          if (!open && !isSaving) setSelectedCloseYear(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close enrollment for {selectedCloseYear?.year}?</DialogTitle>
+            <DialogDescription>
+              New student enrollments will stop until you set an enrollment year again. This does not end or
+              archive the school year.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCloseEnrollmentDialogOpen(false)} disabled={isSaving}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void confirmCloseEnrollment()}
+              disabled={isSaving}
+              className="border-red-600 bg-red-600 hover:bg-red-700 text-white"
+            >
+              {isSaving ? 'Closing…' : 'Close Enrollment'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reopen enrollment dialog */}
+      <Dialog
+        open={isReopenDialogOpen}
+        onOpenChange={(open) => {
+          setIsReopenDialogOpen(open);
+          if (!open && !isSaving) setSelectedReopenYear(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reopen enrollment for {selectedReopenYear?.year}?</DialogTitle>
+            <DialogDescription>
+              This removes the ended (archived) status and makes {selectedReopenYear?.year} the active enrollment
+              year so students can apply again.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsReopenDialogOpen(false)} disabled={isSaving}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void confirmReopenEnrollment()}
+              disabled={isSaving}
+              className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
+            >
+              <Power className="w-4 h-4 mr-2" />
+              {isSaving ? 'Opening…' : 'Reopen enrollment'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* End School Year Confirmation Dialog */}
+      <Dialog
+        open={isEndDialogOpen}
+        onOpenChange={(open) => {
+          setIsEndDialogOpen(open);
+          if (!open && !isSaving) setSelectedEndYear(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>End school year {selectedEndYear?.year}?</DialogTitle>
+            <DialogDescription>
+              This archives the school year. Class lists will show student names greyed out for students enrolled in{' '}
+              {selectedEndYear?.year}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-gray-600 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-gray-800">
+                <p className="font-medium">This will:</p>
+                <ul className="mt-2 space-y-1 list-disc list-inside">
+                  <li>Mark {selectedEndYear?.year} as ended (archived)</li>
+                  <li>Grey out student names in section class lists for that year</li>
+                  <li>Clear ongoing and enrollment settings if they use this year</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsEndDialogOpen(false)}
+              disabled={isSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void confirmEndSchoolYear()}
+              disabled={isSaving}
+              className="bg-gray-700 hover:bg-gray-800 text-white"
+            >
+              {isSaving ? 'Ending…' : 'End School Year'}
             </Button>
           </DialogFooter>
         </DialogContent>

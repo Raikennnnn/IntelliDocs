@@ -1,8 +1,10 @@
 import registrationImage from '../../../assets/registerpage.png'
 import { apiFetch } from '../../lib/api';
+import { validatePassword } from '../../lib/passwordPolicy';
 import { useState } from "react";
 import { useNavigate, Link } from "react-router";
 import { Button } from "../../components/ui/button";
+import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle } from "lucide-react";
@@ -21,8 +23,9 @@ export function RegistrationPage() {
   });
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [isLoading, setIsLoading] = useState(false);
-  const [devOtp, setDevOtp] = useState<string | null>(null);
   const [otpDelivery, setOtpDelivery] = useState<'sent' | 'failed' | null>(null);
+  const [termsPrivacyAccepted, setTermsPrivacyAccepted] = useState(false);
+  const [dpaAccepted, setDpaAccepted] = useState(false);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -69,8 +72,19 @@ export function RegistrationPage() {
       return;
     }
 
-    if (formData.password.length < 8) {
-      toast.error('Password must be at least 8 characters long');
+    const passwordCheck = validatePassword(formData.password);
+    if (!passwordCheck.ok) {
+      toast.error(passwordCheck.message);
+      return;
+    }
+
+    if (!termsPrivacyAccepted) {
+      toast.error('Please accept the Terms of Use and Privacy Policy');
+      return;
+    }
+
+    if (!dpaAccepted) {
+      toast.error('Please accept the Data Processing Agreement (DPA)');
       return;
     }
 
@@ -87,12 +101,14 @@ export function RegistrationPage() {
           password: formData.password,
           // Full name is collected later via the enrollment application form;
           // sending an empty string lets the backend skip the legacy validation.
-          full_name: ''
+          full_name: '',
+          terms_privacy_accepted: termsPrivacyAccepted,
+          dpa_accepted: dpaAccepted,
         }),
       });
 
       const responseText = await response.text();
-      let data: { success?: boolean; error?: string; message?: string; otp_delivery?: string; dev_otp?: string } = {};
+      let data: { success?: boolean; error?: string; message?: string; otp_delivery?: string; mail_error?: string } = {};
       try {
         data = JSON.parse(responseText) as { success?: boolean; error?: string };
       } catch {
@@ -100,14 +116,13 @@ export function RegistrationPage() {
       }
 
       if (response.ok && data.success) {
-        setDevOtp(data.dev_otp ?? null);
         setOtpDelivery(data.otp_delivery === 'sent' ? 'sent' : 'failed');
         if (data.otp_delivery === 'sent') {
-          toast.success(data.message || 'Account created! OTP sent.');
+          toast.success(data.message || 'Verification code sent to your email.');
         } else {
-          toast.warning(data.message || 'Account created, but OTP email delivery failed.');
-          if (data.dev_otp) {
-            toast.info(`Dev OTP: ${data.dev_otp}`);
+          toast.warning(data.message || 'Could not send verification email.');
+          if (data.mail_error) {
+            toast.error(data.mail_error, { duration: 8000 });
           }
         }
         setStep('otp');
@@ -137,7 +152,7 @@ export function RegistrationPage() {
         method: 'POST',
         body: JSON.stringify({
           action: 'verify_otp',
-          email: formData.email,
+          email: formData.email.trim().toLowerCase(),
           otp: enteredOtp,
         }),
       });
@@ -149,7 +164,7 @@ export function RegistrationPage() {
         throw new Error('Server returned an invalid response');
       }
       if (response.ok && data.success) {
-        toast.success(data.message || 'Email verified. Please login.');
+        toast.success(data.message || 'Account created. Please sign in.');
         navigate('/login');
       } else {
         toast.error(data.error || `OTP verification failed (${response.status})`);
@@ -242,7 +257,7 @@ export function RegistrationPage() {
                       autoComplete="new-password"
                       value={formData.password}
                       onChange={(e) => handleInputChange('password', e.target.value)}
-                      placeholder="Minimum 8 characters"
+                      placeholder="Letters and numbers, 8+ characters"
                       className="pl-10 pr-10 h-12"
                       required
                     />
@@ -254,6 +269,10 @@ export function RegistrationPage() {
                       {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                     </button>
                   </div>
+                  <p className="mt-1.5 text-xs text-gray-500">
+                    Use at least 8 characters with letters and numbers. Single repeated characters are
+                    not allowed.
+                  </p>
                 </div>
 
                 <div>
@@ -276,21 +295,75 @@ export function RegistrationPage() {
                   </div>
                 </div>
 
-                {/* Terms and Privacy */}
-                <div className="text-sm text-gray-600">
-                  By signing up, I have read and agreed to{' '}
-                  <a href="#" className="text-[#8B1538] hover:underline font-medium">NSDGA Terms of Use</a>{' '}
-                  and{' '}
-                  <a href="#" className="text-[#8B1538] hover:underline font-medium">
-                    Privacy Policy
-                  </a>
-                  .
+                {/* Terms, Privacy, and DPA */}
+                <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Required agreements
+                  </p>
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      id="terms-privacy"
+                      checked={termsPrivacyAccepted}
+                      onCheckedChange={(checked) => setTermsPrivacyAccepted(checked === true)}
+                      className="mt-0.5 size-5 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:bg-[#8B1538] data-[state=checked]:border-[#8B1538] data-[state=checked]:text-white"
+                    />
+                    <div className="text-sm text-gray-700 leading-snug">
+                      <label htmlFor="terms-privacy" className="cursor-pointer font-normal">
+                        I have read and agree to the
+                      </label>{' '}
+                      <Link
+                        to="/legal/terms"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#8B1538] hover:underline font-semibold"
+                      >
+                        NSDGA Terms of Use
+                      </Link>{' '}
+                      <span className="text-gray-600">and</span>{' '}
+                      <Link
+                        to="/legal/privacy"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#8B1538] hover:underline font-semibold"
+                      >
+                        Privacy Policy
+                      </Link>
+                      <span className="text-gray-600">.</span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      id="dpa"
+                      checked={dpaAccepted}
+                      onCheckedChange={(checked) => setDpaAccepted(checked === true)}
+                      className="mt-0.5 size-5 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:bg-[#8B1538] data-[state=checked]:border-[#8B1538] data-[state=checked]:text-white"
+                    />
+                    <div className="text-sm text-gray-700 leading-snug">
+                      <label htmlFor="dpa" className="cursor-pointer font-normal">
+                        I consent to the processing of my personal data as described in the
+                      </label>{' '}
+                      <Link
+                        to="/legal/dpa"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#8B1538] hover:underline font-semibold"
+                      >
+                        Data Processing Agreement (DPA)
+                      </Link>
+                      <span className="text-gray-600">.</span>
+                    </div>
+                  </div>
+                  {(!termsPrivacyAccepted || !dpaAccepted) && (
+                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                      Check both boxes above to continue with registration.
+                    </p>
+                  )}
                 </div>
 
                 <Button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full bg-[#8B1538] hover:bg-[#8B1538]/90 text-white h-12 text-base font-semibold"
+                  className="w-full h-12 text-base font-semibold text-white bg-[#8B1538] hover:bg-[#6d102c] disabled:bg-[#8B1538]/40 disabled:opacity-100"
                 >
                   {isLoading ? 'Processing...' : 'Continue'}
                 </Button>
@@ -311,7 +384,7 @@ export function RegistrationPage() {
                   Verify your email
                 </h1>
                 <p className="text-gray-600">
-                  We've sent a 6-digit code to <span className="font-semibold">{formData.email}</span>
+                  Enter the 6-digit code from your email inbox.
                 </p>
               </div>
 
@@ -336,27 +409,20 @@ export function RegistrationPage() {
                   </div>
                 </div>
 
-                <div className="bg-green-50 border border-[#2D5016]/30 rounded-lg p-4">
-                  <div className="flex items-start gap-3">
-                    <CheckCircle className="w-5 h-5 text-[#2D5016] mt-0.5" />
-                    <div className="text-sm text-gray-800">
-                      {otpDelivery === 'sent' ? (
-                        <>
-                          <p className="font-medium mb-1">Check your inbox for the 6-digit OTP.</p>
-                          <p>Code expires in 10 minutes.</p>
-                        </>
-                      ) : (
-                        <>
-                          <p className="font-medium mb-1">Email delivery is not available on this environment.</p>
-                          <p>Use the dev OTP below or configure SMTP/mail provider.</p>
-                        </>
-                      )}
-                      {devOtp && (
-                        <p className="mt-2 text-[#8B1538] font-semibold">Dev OTP: {devOtp}</p>
-                      )}
+                {otpDelivery === 'sent' ? (
+                  <div className="bg-green-50 border border-[#2D5016]/30 rounded-lg p-4">
+                    <div className="flex items-start gap-3">
+                      <CheckCircle className="w-5 h-5 text-[#2D5016] mt-0.5 shrink-0" />
+                      <p className="text-sm text-gray-800">
+                        Check your email for the 6-digit code. It expires in 10 minutes.
+                      </p>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
+                    We could not send the verification email. Try <strong>Resend OTP</strong> below.
+                  </div>
+                )}
 
                 <Button
                   type="submit"
@@ -379,18 +445,21 @@ export function RegistrationPage() {
                           }),
                         });
                         const text = await response.text();
-                        let data: { success?: boolean; error?: string; message?: string; dev_otp?: string } = {};
+                        let data: { success?: boolean; error?: string; message?: string; otp_delivery?: string; mail_error?: string } = {};
                         try {
-                          data = JSON.parse(text) as { success?: boolean; error?: string; message?: string; dev_otp?: string };
+                          data = JSON.parse(text) as { success?: boolean; error?: string; message?: string; otp_delivery?: string; mail_error?: string };
                         } catch {
                           throw new Error('Server returned an invalid response');
                         }
                         if (response.ok && data.success) {
-                          setDevOtp(data.dev_otp ?? null);
-                          setOtpDelivery(data.dev_otp ? 'failed' : 'sent');
-                          toast.success(data.message || 'OTP resent to your email');
-                          if (data.dev_otp) {
-                            toast.info(`Dev OTP: ${data.dev_otp}`);
+                          setOtpDelivery(data.otp_delivery === 'sent' ? 'sent' : 'failed');
+                          if (data.otp_delivery === 'sent') {
+                            toast.success(data.message || 'OTP resent to your email');
+                          } else {
+                            toast.warning(data.message || 'OTP could not be sent');
+                            if (data.mail_error) {
+                              toast.error(data.mail_error, { duration: 8000 });
+                            }
                           }
                         } else {
                           toast.error(data.error || `Resend failed (${response.status})`);

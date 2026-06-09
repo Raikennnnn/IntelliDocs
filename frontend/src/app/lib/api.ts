@@ -1,4 +1,38 @@
-/** Sends session cookies + X-User-Id from localStorage (needed when PHP session cookie is not forwarded via Vite). */
+/** API client: Bearer session token + legacy X-User-Id during migration. */
+
+const SESSION_TOKEN_KEY = 'session_token';
+
+export function getSessionToken(): string | null {
+  try {
+    const token = localStorage.getItem(SESSION_TOKEN_KEY);
+    if (!token) return null;
+    const normalized = token.trim();
+    return normalized.length > 0 ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setSessionToken(token: string | null): void {
+  try {
+    if (token && token.trim()) {
+      localStorage.setItem(SESSION_TOKEN_KEY, token.trim());
+    } else {
+      localStorage.removeItem(SESSION_TOKEN_KEY);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function clearAuthStorage(): void {
+  try {
+    localStorage.removeItem('user');
+    localStorage.removeItem(SESSION_TOKEN_KEY);
+  } catch {
+    // ignore
+  }
+}
 
 export function getStoredUserId(): string | null {
   try {
@@ -27,6 +61,13 @@ export function getStoredUserId(): string | null {
   }
 }
 
+const AUTH_REDIRECT_CODES = new Set([
+  'session_expired',
+  'session_revoked',
+  'invalid_token',
+  'missing_token',
+]);
+
 /** Resolve announcement / public upload URLs (works in Vite dev and XAMPP). */
 export function publicAssetUrl(url: string | null | undefined): string | null {
   if (url == null || url === '') return null;
@@ -53,8 +94,23 @@ export function publicAssetUrl(url: string | null | undefined): string | null {
   return path;
 }
 
+export function formatApiError(
+  data: { error?: string; code?: string } | null | undefined,
+  fallback: string,
+): string {
+  if (!data) return fallback;
+  if (data.error === 'rate_limited' || data.code === 'rapid_actions') {
+    return 'Too many actions in a short time. Wait about a minute and try again.';
+  }
+  return data.error || fallback;
+}
+
 export function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
+  const token = getSessionToken();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
   const uid = getStoredUserId();
   if (uid) {
     headers.set('X-User-Id', uid);
@@ -68,24 +124,24 @@ export function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     credentials: 'include',
     headers,
   }).then(async (response) => {
-    // Auto-handle idle-session expiry from the server. The security guard
-    // returns HTTP 401 with `{ code: "session_expired" }` once a user has
-    // been idle past SESSION_IDLE_TIMEOUT_MINUTES. We clear the local
-    // session and bounce to /login so the next render can't keep firing
-    // 401s with a stale X-User-Id. We clone the response before reading
-    // to keep the original stream available for the caller.
     if (response.status === 401) {
       try {
         const cloned = response.clone();
         const data = await cloned.json().catch(() => null) as { code?: string } | null;
-        if (data && data.code === 'session_expired') {
-          try { localStorage.removeItem('user'); } catch { /* ignore */ }
+        const code = data?.code;
+        if (code && AUTH_REDIRECT_CODES.has(code)) {
+          clearAuthStorage();
+          if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+            window.location.assign(`/login?reason=${encodeURIComponent(code)}`);
+          }
+        } else if (code === 'session_expired') {
+          clearAuthStorage();
           if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
             window.location.assign('/login?reason=session_expired');
           }
         }
       } catch {
-        // ignore parse errors; fall through with the original response
+        // ignore parse errors
       }
     }
     return response;

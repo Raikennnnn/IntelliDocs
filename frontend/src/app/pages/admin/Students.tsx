@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, Loader2, GraduationCap } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import { useSchoolYear } from '../../context/SchoolYearContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Input } from '../../components/ui/input';
 import { Badge } from '../../components/ui/badge';
@@ -76,6 +77,7 @@ function statusBadgeClass(raw: string): string {
 }
 
 export function Students() {
+  const { enrollmentSchoolYearLabel } = useSchoolYear();
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -136,7 +138,13 @@ export function Students() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedSearch, grade, status, strand, schoolYear]);
+  }, [debouncedSearch, grade, status, strand, schoolYear, enrollmentSchoolYearLabel]);
+
+  useEffect(() => {
+    if (schoolYear === 'current' && enrollmentSchoolYearLabel) {
+      setCurrentSy(enrollmentSchoolYearLabel);
+    }
+  }, [enrollmentSchoolYearLabel, schoolYear]);
 
   // Strand options come from the backend (distinct over the whole table) so
   // they remain stable even when filters narrow the visible rows. Add a

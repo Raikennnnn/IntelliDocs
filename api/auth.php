@@ -8,7 +8,13 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 }
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/mailer.php';
+require_once __DIR__ . '/system_settings_helpers.php';
 require_once __DIR__ . '/user_role.php';
+require_once __DIR__ . '/user_consents.php';
+require_once __DIR__ . '/session_token.php';
+require_once __DIR__ . '/password_policy.php';
+require_once __DIR__ . '/email_deliverability.php';
+require_once __DIR__ . '/pending_registration.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -38,6 +44,8 @@ function columnExists(PDO $pdo, string $table, string $column): bool
     }
 }
 
+require_once __DIR__ . '/email_verification.php';
+
 /**
  * Restrict admin-created accounts to supported UI roles.
  *
@@ -51,24 +59,119 @@ function normalizeAllowedRole(string $role): ?string
 }
 
 /**
- * Looks up the currently authenticated user via X-User-Id header.
+ * Looks up the currently authenticated user via Bearer token or legacy header.
  *
  * @return array<string, mixed>|null
  */
 function getActorUser(PDO $pdo): ?array
 {
-    $actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-    if ($actorId <= 0) {
-        return null;
-    }
-    $actorStmt = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1');
-    $actorStmt->execute([':id' => $actorId]);
-    $actor = $actorStmt->fetch();
+    $actor = tryResolveActorFromRequest($pdo, 'auth');
     if (!$actor) {
         return null;
     }
 
-    return ['id' => $actorId, 'role' => getUserRole($pdo, $actorId)];
+    return ['id' => (int)$actor['id'], 'role' => (string)$actor['role'], 'session_id' => $actor['session_id']];
+}
+
+function maskEmailForOtp(string $email): string
+{
+    if (!str_contains($email, '@')) {
+        return '***';
+    }
+    [$local, $domain] = explode('@', $email, 2);
+    $visible = mb_substr($local, 0, min(2, mb_strlen($local)));
+    return $visible . '***@' . $domain;
+}
+
+/**
+ * @return array<string, mixed>|null
+ */
+function findUserByCredential(PDO $pdo, string $credential): ?array
+{
+    $lookup = strtolower(trim($credential));
+    if ($lookup === '') {
+        return null;
+    }
+
+    $hasSchoolUsernameColumn = columnExists($pdo, 'users', 'school_username');
+    $hasStatus = columnExists($pdo, 'users', 'status');
+    $hasMustChangePasswordColumn = columnExists($pdo, 'users', 'must_change_password');
+
+    $selectCols = ['id', 'username', 'email', 'password', 'full_name'];
+    if ($hasStatus) {
+        $selectCols[] = 'status';
+    }
+    if ($hasSchoolUsernameColumn) {
+        $selectCols[] = 'school_username';
+    }
+    if ($hasMustChangePasswordColumn) {
+        $selectCols[] = 'must_change_password';
+    }
+    foreach (['first_name', 'middle_name', 'last_name', 'extension_name'] as $nameCol) {
+        if (columnExists($pdo, 'users', $nameCol)) {
+            $selectCols[] = $nameCol;
+        }
+    }
+    $colList = implode(', ', $selectCols);
+
+    $stmt = $pdo->prepare("SELECT {$colList} FROM users WHERE email = :email LIMIT 1");
+    $stmt->execute([':email' => $lookup]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$user && $hasSchoolUsernameColumn) {
+        $stmtSchool = $pdo->prepare("SELECT {$colList} FROM users WHERE school_username = :v LIMIT 1");
+        $stmtSchool->execute([':v' => $lookup]);
+        $user = $stmtSchool->fetch(PDO::FETCH_ASSOC);
+    }
+
+    return $user ?: null;
+}
+
+/**
+ * @param array<string, mixed> $user
+ * @return array<string, mixed>
+ */
+function buildAuthUserPayload(PDO $pdo, array $user): array
+{
+    $resolvedRole = getUserRole($pdo, (int)$user['id']);
+
+    return [
+        'id'              => (int)$user['id'],
+        'username'        => (string)($user['username'] ?? ''),
+        'email'           => (string)($user['email'] ?? ''),
+        'school_username' => array_key_exists('school_username', $user) ? $user['school_username'] : null,
+        'full_name'       => (string)($user['full_name'] ?? ''),
+        'first_name'      => array_key_exists('first_name', $user) ? $user['first_name'] : null,
+        'middle_name'     => array_key_exists('middle_name', $user) ? $user['middle_name'] : null,
+        'last_name'       => array_key_exists('last_name', $user) ? $user['last_name'] : null,
+        'extension_name'  => array_key_exists('extension_name', $user) ? $user['extension_name'] : null,
+        'role'            => $resolvedRole,
+    ];
+}
+
+/**
+ * @param array<string, mixed> $user
+ * @return array<string, mixed>
+ */
+function finalizeLoginResponse(PDO $pdo, array $user, string $throttleKey): array
+{
+    $hasMustChangePasswordColumn = columnExists($pdo, 'users', 'must_change_password');
+    $mustChangePassword = false;
+    if ($hasMustChangePasswordColumn && array_key_exists('must_change_password', $user)) {
+        $mustChangePassword = (bool)(int)$user['must_change_password'];
+    }
+
+    $session = createSessionToken($pdo, (int)$user['id']);
+    $legacyOnly = $session === null;
+
+    $response = [
+        'success'              => true,
+        'user'                 => buildAuthUserPayload($pdo, $user),
+        'must_change_password' => $mustChangePassword,
+        'token'                => $session['token'] ?? null,
+        'legacy_auth_only'     => $legacyOnly,
+    ];
+
+    return $response;
 }
 
 function generateOtpCode(): string
@@ -76,18 +179,70 @@ function generateOtpCode(): string
     return str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 }
 
-function storeOtpCode(PDO $pdo, string $email, string $code, int $minutes = 10): void
+function ensureOtpPurposeColumn(PDO $pdo): void
 {
-    $pdo->prepare('UPDATE otp_codes SET used = 1 WHERE email = :email AND used = 0')->execute([
+    if (!columnExists($pdo, 'otp_codes', 'purpose')) {
+        try {
+            $pdo->exec("ALTER TABLE otp_codes ADD COLUMN purpose VARCHAR(20) NOT NULL DEFAULT 'registration' AFTER code");
+        } catch (Throwable $e) {
+            // ignore if concurrent migration
+        }
+    }
+}
+
+function storeOtpCode(PDO $pdo, string $email, string $code, int $minutes = 10, string $purpose = 'registration'): void
+{
+    ensureOtpPurposeColumn($pdo);
+    $pdo->prepare('UPDATE otp_codes SET used = 1 WHERE email = :email AND used = 0 AND purpose = :purpose')->execute([
         ':email' => $email,
+        ':purpose' => $purpose,
     ]);
-    $stmt = $pdo->prepare(
-        'INSERT INTO otp_codes (email, code, expires_at, used) VALUES (:email, :code, DATE_ADD(NOW(), INTERVAL :minutes MINUTE), 0)'
-    );
+    if (columnExists($pdo, 'otp_codes', 'purpose')) {
+        $stmt = $pdo->prepare(
+            'INSERT INTO otp_codes (email, code, purpose, expires_at, used) VALUES (:email, :code, :purpose, DATE_ADD(NOW(), INTERVAL :minutes MINUTE), 0)'
+        );
+        $stmt->bindValue(':purpose', $purpose);
+    } else {
+        $stmt = $pdo->prepare(
+            'INSERT INTO otp_codes (email, code, expires_at, used) VALUES (:email, :code, DATE_ADD(NOW(), INTERVAL :minutes MINUTE), 0)'
+        );
+    }
     $stmt->bindValue(':email', $email);
     $stmt->bindValue(':code', $code);
     $stmt->bindValue(':minutes', $minutes, PDO::PARAM_INT);
     $stmt->execute();
+}
+
+/**
+ * Issue a login MFA code. Reuses a still-valid code from the last 2 minutes
+ * unless $forceNew is set — prevents double-submit / duplicate login requests
+ * from invalidating the OTP the user already received by email.
+ */
+function issueLoginOtp(PDO $pdo, string $email, int $minutes = 10, bool $forceNew = false): string
+{
+    ensureOtpPurposeColumn($pdo);
+    $normalizedEmail = strtolower(trim($email));
+    if (!$forceNew && columnExists($pdo, 'otp_codes', 'purpose')) {
+        $stmt = $pdo->prepare(
+            "SELECT code FROM otp_codes
+              WHERE email = :email
+                AND purpose = 'login'
+                AND used = 0
+                AND expires_at > NOW()
+                AND created_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
+              ORDER BY id DESC
+              LIMIT 1"
+        );
+        $stmt->execute([':email' => $normalizedEmail]);
+        $existing = $stmt->fetchColumn();
+        if ($existing !== false && $existing !== null && $existing !== '') {
+            return (string)$existing;
+        }
+    }
+    $code = generateOtpCode();
+    storeOtpCode($pdo, $normalizedEmail, $code, $minutes, 'login');
+
+    return $code;
 }
 
 function ensureOtpTable(PDO $pdo): void
@@ -97,15 +252,19 @@ function ensureOtpTable(PDO $pdo): void
             id INT AUTO_INCREMENT PRIMARY KEY,
             email VARCHAR(100),
             code VARCHAR(6),
+            purpose VARCHAR(20) NOT NULL DEFAULT 'registration',
             expires_at TIMESTAMP NULL,
             used TINYINT DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ");
+    ensureOtpPurposeColumn($pdo);
 }
 
 if ($action === 'register') {
     ensureOtpTable($pdo);
+    ensurePendingRegistrationsTable($pdo);
+    ensureUserConsentColumns($pdo);
     $username = trim((string)($payload['username'] ?? ''));
     $email = strtolower(trim((string)($payload['email'] ?? '')));
     $password = (string)($payload['password'] ?? '');
@@ -128,14 +287,57 @@ if ($action === 'register') {
         exit;
     }
 
-    if (strlen($password) < 8) {
-        appLogEvent($pdo, 'register_attempt', 'auth', 'failed', null, 'user', null, ['reason' => 'weak_password', 'email' => $email]);
+    $emailDeliverability = validateEmailDeliverable($email);
+    if ($emailDeliverability !== null) {
+        appLogEvent($pdo, 'register_attempt', 'auth', 'failed', null, 'user', null, [
+            'reason' => $emailDeliverability['code'],
+            'email' => $email,
+            'domain' => extractEmailDomain($email),
+        ]);
         http_response_code(422);
-        echo json_encode(['success' => false, 'error' => 'Password must be at least 8 characters']);
+        echo json_encode([
+            'success' => false,
+            'error' => $emailDeliverability['error'],
+            'code' => $emailDeliverability['code'],
+        ]);
+        exit;
+    }
+
+    $passwordCheck = validatePasswordStrength($password);
+    if ($passwordCheck !== null) {
+        appLogEvent($pdo, 'register_attempt', 'auth', 'failed', null, 'user', null, [
+            'reason' => $passwordCheck['code'],
+            'email' => $email,
+        ]);
+        http_response_code(422);
+        echo json_encode([
+            'success' => false,
+            'error' => $passwordCheck['error'],
+            'code' => $passwordCheck['code'],
+        ]);
+        exit;
+    }
+
+    $termsPrivacyAccepted = parseConsentFlag($payload['terms_privacy_accepted'] ?? false);
+    $dpaAccepted = parseConsentFlag($payload['dpa_accepted'] ?? false);
+
+    if (!$termsPrivacyAccepted) {
+        appLogEvent($pdo, 'register_attempt', 'auth', 'failed', null, 'user', null, ['reason' => 'terms_not_accepted', 'email' => $email]);
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'You must accept the Terms of Use and Privacy Policy']);
+        exit;
+    }
+
+    if (!$dpaAccepted) {
+        appLogEvent($pdo, 'register_attempt', 'auth', 'failed', null, 'user', null, ['reason' => 'dpa_not_accepted', 'email' => $email]);
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'You must accept the Data Processing Agreement (DPA)']);
         exit;
     }
 
     try {
+        purgeExpiredPendingRegistrations($pdo);
+
         $checkStmt = $pdo->prepare('SELECT id FROM users WHERE email = :email OR username = :username LIMIT 1');
         $checkStmt->execute([
             ':email' => $email,
@@ -149,33 +351,62 @@ if ($action === 'register') {
             exit;
         }
 
+        if (pendingRegistrationUsernameTaken($pdo, $username, $email)) {
+            appLogEvent($pdo, 'register_attempt', 'auth', 'failed', null, 'user', null, ['reason' => 'pending_username_taken', 'email' => $email]);
+            http_response_code(409);
+            echo json_encode(['success' => false, 'error' => 'Username is already reserved. Try a different email address.']);
+            exit;
+        }
+
         $hash = password_hash($password, PASSWORD_DEFAULT);
-        $userId = insertUserWithRole($pdo, $username, $email, $hash, $fullName, 'student');
-        appLogEvent($pdo, 'register', 'auth', 'success', $userId, 'user', (string)$userId, ['email' => $email, 'role' => 'student']);
+        savePendingRegistration(
+            $pdo,
+            $email,
+            $username,
+            $hash,
+            $fullName,
+            $termsPrivacyAccepted,
+            $dpaAccepted,
+        );
+        appLogEvent($pdo, 'register_pending', 'auth', 'success', null, 'pending_registration', $email, [
+            'email' => $email,
+            'role' => 'student',
+            'terms_privacy_accepted' => true,
+            'dpa_accepted' => true,
+        ]);
 
         $otpCode = generateOtpCode();
-        storeOtpCode($pdo, $email, $otpCode, 10);
-        $queueId = queueEmail($pdo, $email, 'Nuestra Señora De Guia Academy — Email Verification OTP', buildOtpEmailBody($otpCode));
+        $otpMinutes = getOtpExpiryMinutes($pdo);
+        storeOtpCode($pdo, $email, $otpCode, $otpMinutes, 'registration');
+        $queueId = queueEmail($pdo, $email, otpEmailSubject(), buildOtpEmailBodyWithExpiry($pdo, $otpCode));
         $otpSent = processSingleQueuedEmail($pdo, $queueId);
-        appLogEvent($pdo, 'otp_send', 'auth', $otpSent ? 'success' : 'failed', $userId, 'user', (string)$userId, ['email' => $email, 'channel' => 'email']);
+        $mailError = $otpSent ? null : getEmailQueueLastError($pdo, $queueId);
+        appLogEvent($pdo, 'otp_send', 'auth', $otpSent ? 'success' : 'failed', null, 'pending_registration', $email, [
+            'email' => $email,
+            'channel' => 'email',
+            'mail_error' => $mailError,
+            'purpose' => 'registration',
+        ]);
 
         http_response_code(201);
         $response = [
             'success' => true,
-            'message' => $otpSent ? 'Registration successful. OTP sent to your email.' : 'Registration successful. OTP generated but email delivery failed.',
+            'pending_verification' => true,
+            'message' => $otpSent
+                ? 'Verification code sent. Enter it below to create your account.'
+                : 'Verification code generated but email delivery failed. Use Resend OTP or try again.',
             'otp_delivery' => $otpSent ? 'sent' : 'failed',
-            'user' => [
-                'id' => $userId,
-                'username' => $username,
-                'email' => $email,
-                'full_name' => $fullName,
-                'role' => 'student',
-            ],
+            'email' => $email,
         ];
+        if (!$otpSent && $mailError !== null) {
+            $response['mail_error'] = $mailError;
+        }
         $isLocal = in_array((string)($_SERVER['REMOTE_ADDR'] ?? ''), ['127.0.0.1', '::1'], true);
-        if (!$otpSent && $isLocal) {
-            // Local fallback for dev machines without SMTP.
+        if (!$otpSent && $isLocal && mailDevOtpFallbackEnabled()) {
             $response['dev_otp'] = $otpCode;
+        } elseif ($otpSent && $isLocal && mailLocalOtpInResponseEnabled()) {
+            $response['dev_otp'] = $otpCode;
+            $response['dev_otp_note'] = 'Local development: OTP also sent by email (check Spam / search brevosend.com).';
         }
         echo json_encode($response);
         exit;
@@ -232,9 +463,9 @@ if ($action === 'login') {
     if ($throttleThreshold < 1) {
         $throttleThreshold = 5;
     }
-    $throttleWindowMinutes = (int)(getenv('AUTH_LOGIN_FAILURE_WINDOW_MINUTES') ?: 15);
+    $throttleWindowMinutes = (int)(getenv('AUTH_LOGIN_FAILURE_WINDOW_MINUTES') ?: 5);
     if ($throttleWindowMinutes < 1) {
-        $throttleWindowMinutes = 15;
+        $throttleWindowMinutes = 5;
     }
 
     $loginAttemptsTableExists = false;
@@ -262,6 +493,21 @@ if ($action === 'login') {
 
             if ($recentFailures >= $throttleThreshold) {
                 appLogLoginAttempt($pdo, $email, false);
+                appLogEvent(
+                    $pdo,
+                    'anomaly_excessive_login_failures',
+                    'security',
+                    'flagged',
+                    null,
+                    'user',
+                    null,
+                    [
+                        'email' => $email,
+                        'recent_failures' => $recentFailures,
+                        'threshold' => $throttleThreshold,
+                        'window_minutes' => $throttleWindowMinutes,
+                    ]
+                );
                 appLogEvent(
                     $pdo,
                     'login_attempt',
@@ -307,6 +553,9 @@ if ($action === 'login') {
         }
         if ($hasMustChangePasswordColumn) {
             $selectCols[] = 'must_change_password';
+        }
+        if (columnExists($pdo, 'users', 'email_verified_at')) {
+            $selectCols[] = 'email_verified_at';
         }
         // Guard the structured-name columns the same way: task 8.2 will read
         // them from the login response, but on un-migrated DBs they don't
@@ -360,13 +609,22 @@ if ($action === 'login') {
 
         $resolvedRole = getUserRole($pdo, (int)$user['id']);
 
+        if (!studentEmailVerified($pdo, $user, $resolvedRole)) {
+            appLogLoginAttempt($pdo, $email, false);
+            appLogEvent($pdo, 'login_attempt', 'auth', 'failed', (int)$user['id'], 'user', (string)$user['id'], [
+                'reason' => 'email_not_verified',
+                'email' => $email,
+            ]);
+            http_response_code(403);
+            echo json_encode([
+                'success' => false,
+                'error' => 'email_not_verified',
+                'message' => 'Please complete email verification before signing in. Finish signup and enter your OTP.',
+            ]);
+            exit;
+        }
+
         // Clear the failed-attempt window for this lookup value (Req 11.3).
-        // Marking prior failures as `success = 1` causes the throttle
-        // pre-check on subsequent logins to count zero recent failures, which
-        // is the wire-level meaning of "the counter resets after a successful
-        // login". Wrapped in try/catch and gated on table presence so an
-        // environment without `login_attempts` (or one whose UPDATE is
-        // blocked) still serves the success response.
         if ($loginAttemptsTableExists) {
             try {
                 $clearStmt = $pdo->prepare(
@@ -378,67 +636,60 @@ if ($action === 'login') {
                 );
                 $clearStmt->execute([':email' => $email]);
             } catch (Throwable $e) {
-                // Non-fatal: the next failed attempt will simply count one
-                // more old row toward the threshold; we do not want to fail
-                // a successful login because of a UPDATE permission issue.
             }
         }
 
         appLogLoginAttempt($pdo, $email, true);
-        appLogEvent($pdo, 'login', 'auth', 'success', (int)$user['id'], 'user', (string)$user['id'], ['email' => $email, 'role' => $resolvedRole]);
         touchUserLastLogin($pdo, (int)$user['id']);
 
-        // Reset idle-session clock at login time. Without this, the
-        // sessionGuard in api/security_guard.php compares "now" against a
-        // stale users.last_activity_at left over from the previous session,
-        // which made the very first request after login fail with HTTP 401
-        // session_expired and bounce the user back to /login?reason=session_expired.
-        // Best-effort: column is created lazily and may be absent on
-        // permission-restricted DBs; failure must not block a successful login.
         try {
             require_once __DIR__ . '/security_guard.php';
             ensureUserLastActivityColumn($pdo);
             $resetActivity = $pdo->prepare('UPDATE users SET last_activity_at = NOW() WHERE id = :id LIMIT 1');
             $resetActivity->execute([':id' => (int)$user['id']]);
         } catch (Throwable $e) {
-            // Fall through: a missing column or permission issue means the
-            // sessionGuard will treat the next request as "no prior activity"
-            // (its own fail-open path), which is also acceptable.
         }
 
-        // Build the success response payload using the explicit allow-list
-        // documented in design.md ("Auth_API Extension" → response shape).
-        // Pulling fields by name (rather than echoing the whole row) keeps
-        // the password hash and any future internal columns from leaking,
-        // and gracefully falls back to null when the credentials migration
-        // has not yet added the column on this environment.
-        $userPayload = [
-            'id'              => (int)$user['id'],
-            'username'        => (string)($user['username'] ?? ''),
-            'email'           => (string)($user['email'] ?? ''),
-            'school_username' => array_key_exists('school_username', $user) ? $user['school_username'] : null,
-            'full_name'       => (string)($user['full_name'] ?? ''),
-            'first_name'      => array_key_exists('first_name', $user) ? $user['first_name'] : null,
-            'middle_name'     => array_key_exists('middle_name', $user) ? $user['middle_name'] : null,
-            'last_name'       => array_key_exists('last_name', $user) ? $user['last_name'] : null,
-            'extension_name'  => array_key_exists('extension_name', $user) ? $user['extension_name'] : null,
-            'role'            => $resolvedRole,
-        ];
+        $accountEmail = strtolower(trim((string)($user['email'] ?? '')));
 
-        // `must_change_password` lives at the TOP LEVEL of the response (per
-        // the design's "Response shape (success)" example), not nested under
-        // `user`. When the column is absent on this environment, default to
-        // false — the safe default that keeps un-migrated DBs serving logins.
-        $mustChangePassword = false;
-        if ($hasMustChangePasswordColumn && array_key_exists('must_change_password', $user)) {
-            $mustChangePassword = (bool)(int)$user['must_change_password'];
+        if (loginOtpRequiredForRole($resolvedRole)) {
+            ensureOtpTable($pdo);
+            $otpMinutes = getOtpExpiryMinutes($pdo);
+            $otpCode = issueLoginOtp($pdo, $accountEmail, $otpMinutes, false);
+            $queueId = queueEmail($pdo, $accountEmail, otpEmailSubject(), buildOtpEmailBodyWithExpiry($pdo, $otpCode));
+            $otpSent = processSingleQueuedEmail($pdo, $queueId);
+            $mailError = $otpSent ? null : getEmailQueueLastError($pdo, $queueId);
+            appLogEvent($pdo, 'login_password_verified', 'auth', 'success', (int)$user['id'], 'user', (string)$user['id'], [
+                'email' => $accountEmail,
+                'otp_required' => true,
+            ]);
+            appLogEvent($pdo, 'login_otp_send', 'auth', $otpSent ? 'success' : 'failed', (int)$user['id'], 'user', (string)$user['id'], [
+                'email' => $accountEmail,
+                'mail_error' => $mailError,
+            ]);
+
+            $response = [
+                'success' => true,
+                'requires_otp' => true,
+                'message' => $otpSent
+                    ? 'Password verified. Enter the OTP sent to your email.'
+                    : 'Password verified. OTP generated but email delivery failed.',
+                'email' => $accountEmail,
+                'email_masked' => maskEmailForOtp($accountEmail),
+                'otp_delivery' => $otpSent ? 'sent' : 'failed',
+            ];
+            if (!$otpSent && $mailError !== null) {
+                $response['mail_error'] = $mailError;
+            }
+            $isLocal = in_array((string)($_SERVER['REMOTE_ADDR'] ?? ''), ['127.0.0.1', '::1'], true);
+            if ($isLocal && ((!$otpSent && mailDevOtpFallbackEnabled()) || ($otpSent && mailLocalOtpInResponseEnabled()))) {
+                $response['dev_otp'] = $otpCode;
+            }
+            echo json_encode($response);
+            exit;
         }
 
-        echo json_encode([
-            'success'              => true,
-            'user'                 => $userPayload,
-            'must_change_password' => $mustChangePassword,
-        ]);
+        echo json_encode(finalizeLoginResponse($pdo, $user, $email));
         exit;
     } catch (Throwable $e) {
         appLogLoginAttempt($pdo, $email, false);
@@ -472,10 +723,13 @@ if ($action === 'change_password') {
     // machine-readable error code (`password_too_short`) lets the React
     // change-password screen surface a localized message without parsing
     // free-form English.
-    if (strlen($newPassword) < 8) {
-        appLogEvent($pdo, 'change_password', 'auth', 'failed', $userId, 'user', (string)$userId, ['reason' => 'password_too_short']);
+    $passwordCheck = validatePasswordStrength($newPassword);
+    if ($passwordCheck !== null) {
+        appLogEvent($pdo, 'change_password', 'auth', 'failed', $userId, 'user', (string)$userId, [
+            'reason' => $passwordCheck['code'],
+        ]);
         http_response_code(422);
-        echo json_encode(['success' => false, 'error' => 'password_too_short']);
+        echo json_encode(['success' => false, 'error' => $passwordCheck['code'], 'message' => $passwordCheck['error']]);
         exit;
     }
 
@@ -500,9 +754,14 @@ if ($action === 'change_password') {
 
         appLogEvent($pdo, 'change_password', 'auth', 'success', $userId, 'user', (string)$userId, []);
 
+        revokeAllUserSessions($pdo, $userId);
+        $session = createSessionToken($pdo, $userId);
+
         echo json_encode([
             'success'              => true,
             'must_change_password' => false,
+            'token'                => $session['token'] ?? null,
+            'legacy_auth_only'     => $session === null,
         ]);
         exit;
     } catch (Throwable $e) {
@@ -545,10 +804,18 @@ if ($action === 'create_user') {
         exit;
     }
 
-    if (strlen($password) < 8) {
-        appLogEvent($pdo, 'create_user', 'admin', 'failed', (int)$actor['id'], 'user', null, ['reason' => 'weak_password', 'email' => $email]);
+    $passwordCheck = validatePasswordStrength($password);
+    if ($passwordCheck !== null) {
+        appLogEvent($pdo, 'create_user', 'admin', 'failed', (int)$actor['id'], 'user', null, [
+            'reason' => $passwordCheck['code'],
+            'email' => $email,
+        ]);
         http_response_code(422);
-        echo json_encode(['success' => false, 'error' => 'Password must be at least 8 characters']);
+        echo json_encode([
+            'success' => false,
+            'error' => $passwordCheck['error'],
+            'code' => $passwordCheck['code'],
+        ]);
         exit;
     }
 
@@ -574,6 +841,7 @@ if ($action === 'create_user') {
             $fullName,
             $role
         );
+        markEmailVerified($pdo, $createdId);
         appLogEvent($pdo, 'create_user', 'admin', 'success', (int)$actor['id'], 'user', (string)$createdId, ['email' => $email, 'role' => $role]);
         http_response_code(201);
         echo json_encode([
@@ -596,10 +864,146 @@ if ($action === 'create_user') {
     }
 }
 
+if ($action === 'verify_login_otp') {
+    ensureOtpTable($pdo);
+
+    $email = strtolower(trim((string)($payload['email'] ?? $payload['credential'] ?? '')));
+    $otp = preg_replace('/\D/', '', (string)($payload['otp'] ?? ''));
+
+    if ($email === '' || $otp === '') {
+        appLogEvent($pdo, 'login_otp_verify', 'auth', 'failed', null, 'otp', null, ['reason' => 'missing_fields']);
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'Email and OTP are required']);
+        exit;
+    }
+
+    try {
+        $user = findUserByCredential($pdo, $email);
+        if (!$user) {
+            appLogEvent($pdo, 'login_otp_verify', 'auth', 'failed', null, 'user', null, ['reason' => 'user_not_found']);
+            http_response_code(401);
+            echo json_encode(['success' => false, 'error' => 'invalid_otp']);
+            exit;
+        }
+
+        $accountEmail = strtolower(trim((string)($user['email'] ?? '')));
+        $purposeClause = columnExists($pdo, 'otp_codes', 'purpose')
+            ? " AND purpose = 'login'"
+            : '';
+
+        $stmt = $pdo->prepare(
+            "SELECT id FROM otp_codes
+             WHERE email = :email AND code = :code AND used = 0 AND expires_at >= NOW(){$purposeClause}
+             ORDER BY id DESC LIMIT 1"
+        );
+        $stmt->execute([
+            ':email' => $accountEmail,
+            ':code' => $otp,
+        ]);
+        $otpRow = $stmt->fetch();
+        if (!$otpRow) {
+            appLogEvent($pdo, 'login_otp_verify', 'auth', 'failed', (int)$user['id'], 'otp', null, ['reason' => 'invalid_or_expired']);
+            http_response_code(401);
+            echo json_encode(['success' => false, 'error' => 'invalid_otp']);
+            exit;
+        }
+
+        $pdo->prepare('UPDATE otp_codes SET used = 1 WHERE id = :id')->execute([':id' => (int)$otpRow['id']]);
+        appLogEvent($pdo, 'login_otp_verify', 'auth', 'success', (int)$user['id'], 'otp', (string)$otpRow['id'], []);
+
+        echo json_encode(finalizeLoginResponse($pdo, $user, $accountEmail));
+        exit;
+    } catch (Throwable $e) {
+        appLogEvent($pdo, 'login_otp_verify', 'auth', 'failed', null, 'otp', null, ['reason' => 'server_error']);
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'OTP verification failed']);
+        exit;
+    }
+}
+
+if ($action === 'resend_login_otp') {
+    ensureOtpTable($pdo);
+
+    $credential = strtolower(trim((string)($payload['email'] ?? $payload['credential'] ?? '')));
+    if ($credential === '') {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'Email or username is required']);
+        exit;
+    }
+
+    try {
+        $user = findUserByCredential($pdo, $credential);
+        if (!$user) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'Account not found']);
+            exit;
+        }
+
+        $accountEmail = strtolower(trim((string)($user['email'] ?? '')));
+        if ($accountEmail === '') {
+            http_response_code(422);
+            echo json_encode(['success' => false, 'error' => 'Account has no email on file']);
+            exit;
+        }
+
+        $otpMinutes = getOtpExpiryMinutes($pdo);
+        $otpCode = issueLoginOtp($pdo, $accountEmail, $otpMinutes, true);
+        $queueId = queueEmail($pdo, $accountEmail, otpEmailSubject(), buildOtpEmailBodyWithExpiry($pdo, $otpCode));
+        $sent = processSingleQueuedEmail($pdo, $queueId);
+        $mailError = $sent ? null : getEmailQueueLastError($pdo, $queueId);
+
+        appLogEvent($pdo, 'login_otp_resend', 'auth', $sent ? 'success' : 'failed', (int)$user['id'], 'user', (string)$user['id'], [
+            'email' => $accountEmail,
+            'mail_error' => $mailError,
+        ]);
+
+        $response = [
+            'success' => true,
+            'message' => $sent ? 'A new login code was sent to your email.' : 'New code generated but email delivery failed.',
+            'email' => $accountEmail,
+            'email_masked' => maskEmailForOtp($accountEmail),
+            'otp_delivery' => $sent ? 'sent' : 'failed',
+        ];
+        if (!$sent && $mailError !== null) {
+            $response['mail_error'] = $mailError;
+        }
+        $isLocal = in_array((string)($_SERVER['REMOTE_ADDR'] ?? ''), ['127.0.0.1', '::1'], true);
+        if ($isLocal && ((!$sent && mailDevOtpFallbackEnabled()) || ($sent && mailLocalOtpInResponseEnabled()))) {
+            $response['dev_otp'] = $otpCode;
+        }
+        echo json_encode($response);
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Failed to resend login code']);
+        exit;
+    }
+}
+
+if ($action === 'logout') {
+    if (sessionsTableAvailable($pdo)) {
+        $token = extractBearerToken();
+        if ($token !== null) {
+            $revoked = revokeSessionByToken($pdo, $token);
+            if ($revoked) {
+                appLogEvent($pdo, 'logout_success', 'auth', 'success', (int)$revoked['user_id'], 'session', (string)$revoked['session_id'], []);
+            }
+        }
+    }
+    echo json_encode(['success' => true, 'message' => 'logged_out']);
+    exit;
+}
+
 if ($action === 'verify_otp') {
     ensureOtpTable($pdo);
+    ensureUserConsentColumns($pdo);
+    ensurePendingRegistrationsTable($pdo);
+    if (roleTablesExist($pdo) === false) {
+        ensureRoleTables($pdo);
+        ensureRoleTablesUsernameColumn($pdo);
+    }
     $email = strtolower(trim((string)($payload['email'] ?? '')));
-    $otp = trim((string)($payload['otp'] ?? ''));
+    $otp = preg_replace('/\D/', '', (string)($payload['otp'] ?? ''));
     if ($email === '' || $otp === '') {
         appLogEvent($pdo, 'otp_verify', 'auth', 'failed', null, 'otp', null, ['reason' => 'missing_fields', 'email' => $email]);
         http_response_code(422);
@@ -607,30 +1011,92 @@ if ($action === 'verify_otp') {
         exit;
     }
     try {
+        $purposeClause = columnExists($pdo, 'otp_codes', 'purpose')
+            ? " AND purpose = 'registration'"
+            : '';
         $stmt = $pdo->prepare(
-            'SELECT id FROM otp_codes WHERE email = :email AND code = :code AND used = 0 AND expires_at >= NOW() ORDER BY id DESC LIMIT 1'
+            "SELECT id FROM otp_codes
+              WHERE email = :email AND code = :code AND used = 0 AND expires_at >= NOW()
+                {$purposeClause}
+              ORDER BY id DESC
+              LIMIT 1"
         );
         $stmt->execute([
             ':email' => $email,
             ':code' => $otp,
         ]);
-        $otpRow = $stmt->fetch();
+        $otpRow = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$otpRow) {
             appLogEvent($pdo, 'otp_verify', 'auth', 'failed', null, 'otp', null, ['reason' => 'invalid_or_expired', 'email' => $email]);
             http_response_code(400);
             echo json_encode(['success' => false, 'error' => 'Invalid or expired OTP']);
             exit;
         }
+
+        $existingUserStmt = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
+        $existingUserStmt->execute([':email' => $email]);
+        if ($existingUserStmt->fetch()) {
+            $pdo->prepare('UPDATE otp_codes SET used = 1 WHERE id = :id')->execute([
+                ':id' => (int)$otpRow['id'],
+            ]);
+            deletePendingRegistration($pdo, $email);
+            echo json_encode(['success' => true, 'message' => 'Account already exists. Please sign in.']);
+            exit;
+        }
+
+        $pending = getPendingRegistrationByEmail($pdo, $email);
+        if (!$pending) {
+            appLogEvent($pdo, 'otp_verify', 'auth', 'failed', null, 'otp', null, ['reason' => 'pending_not_found', 'email' => $email]);
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Signup session expired. Please register again.']);
+            exit;
+        }
+
+        $userId = insertUserWithRole(
+            $pdo,
+            (string)$pending['username'],
+            $email,
+            (string)$pending['password_hash'],
+            (string)($pending['full_name'] ?? ''),
+            'student',
+        );
+        markEmailVerified($pdo, $userId);
+        saveUserRegistrationConsents(
+            $pdo,
+            $userId,
+            (bool)(int)($pending['terms_privacy_accepted'] ?? 0),
+            (bool)(int)($pending['dpa_accepted'] ?? 0),
+        );
+        deletePendingRegistration($pdo, $email);
         $pdo->prepare('UPDATE otp_codes SET used = 1 WHERE id = :id')->execute([
             ':id' => (int)$otpRow['id'],
         ]);
-        appLogEvent($pdo, 'otp_verify', 'auth', 'success', null, 'otp', (string)$otpRow['id'], ['email' => $email]);
-        echo json_encode(['success' => true, 'message' => 'OTP verified successfully']);
+
+        appLogEvent($pdo, 'register', 'auth', 'success', $userId, 'user', (string)$userId, [
+            'email' => $email,
+            'role' => 'student',
+            'verified_via' => 'otp',
+        ]);
+        appLogEvent($pdo, 'otp_verify', 'auth', 'success', $userId, 'otp', (string)$otpRow['id'], ['email' => $email]);
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Account created successfully. You can now sign in.',
+            'user' => [
+                'id' => $userId,
+                'email' => $email,
+                'role' => 'student',
+            ],
+        ]);
         exit;
     } catch (Throwable $e) {
-        appLogEvent($pdo, 'otp_verify', 'auth', 'failed', null, 'otp', null, ['reason' => 'server_error', 'email' => $email]);
+        appLogEvent($pdo, 'otp_verify', 'auth', 'failed', null, 'otp', null, [
+            'reason' => 'server_error',
+            'email' => $email,
+            'detail' => $e->getMessage(),
+        ]);
         http_response_code(500);
-        echo json_encode(['success' => false, 'error' => 'OTP verification failed']);
+        echo json_encode(['success' => false, 'error' => 'OTP verification failed. Please try again or register again.']);
         exit;
     }
 }
@@ -645,24 +1111,48 @@ if ($action === 'resend_otp') {
         exit;
     }
     try {
+        purgeExpiredPendingRegistrations($pdo);
+
         $userStmt = $pdo->prepare('SELECT id FROM users WHERE email = :email LIMIT 1');
         $userStmt->execute([':email' => $email]);
-        $user = $userStmt->fetch();
-        if (!$user) {
-            appLogEvent($pdo, 'otp_resend', 'auth', 'failed', null, 'user', null, ['reason' => 'user_not_found', 'email' => $email]);
-            http_response_code(404);
-            echo json_encode(['success' => false, 'error' => 'Account not found for this email']);
+        $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+        if ($user) {
+            appLogEvent($pdo, 'otp_resend', 'auth', 'failed', (int)$user['id'], 'user', (string)$user['id'], ['reason' => 'already_registered', 'email' => $email]);
+            http_response_code(409);
+            echo json_encode(['success' => false, 'error' => 'Account already exists. Please sign in.']);
             exit;
         }
+
+        $pending = getPendingRegistrationByEmail($pdo, $email);
+        if (!$pending) {
+            appLogEvent($pdo, 'otp_resend', 'auth', 'failed', null, 'user', null, ['reason' => 'pending_not_found', 'email' => $email]);
+            http_response_code(404);
+            echo json_encode(['success' => false, 'error' => 'No pending signup found. Please register again.']);
+            exit;
+        }
+
+        touchPendingRegistrationExpiry($pdo, $email);
         $otpCode = generateOtpCode();
-        storeOtpCode($pdo, $email, $otpCode, 10);
-        $queueId = queueEmail($pdo, $email, 'Nuestra Señora De Guia Academy — Email Verification OTP', buildOtpEmailBody($otpCode));
+        $otpMinutes = getOtpExpiryMinutes($pdo);
+        storeOtpCode($pdo, $email, $otpCode, $otpMinutes, 'registration');
+        $queueId = queueEmail($pdo, $email, otpEmailSubject(), buildOtpEmailBodyWithExpiry($pdo, $otpCode));
         $sent = processSingleQueuedEmail($pdo, $queueId);
-        appLogEvent($pdo, 'otp_resend', 'auth', $sent ? 'success' : 'failed', (int)$user['id'], 'user', (string)$user['id'], ['email' => $email]);
+        $mailError = $sent ? null : getEmailQueueLastError($pdo, $queueId);
+        appLogEvent($pdo, 'otp_resend', 'auth', $sent ? 'success' : 'failed', null, 'pending_registration', $email, [
+            'email' => $email,
+            'mail_error' => $mailError,
+            'purpose' => 'registration',
+        ]);
         $response = ['success' => true, 'message' => $sent ? 'OTP resent successfully' : 'OTP regenerated but email delivery failed', 'otp_delivery' => $sent ? 'sent' : 'failed'];
+        if (!$sent && $mailError !== null) {
+            $response['mail_error'] = $mailError;
+        }
         $isLocal = in_array((string)($_SERVER['REMOTE_ADDR'] ?? ''), ['127.0.0.1', '::1'], true);
-        if (!$sent && $isLocal) {
+        if (!$sent && $isLocal && mailDevOtpFallbackEnabled()) {
             $response['dev_otp'] = $otpCode;
+        } elseif ($sent && $isLocal && mailLocalOtpInResponseEnabled()) {
+            $response['dev_otp'] = $otpCode;
+            $response['dev_otp_note'] = 'Local development: OTP also sent by email (check Spam / search brevosend.com).';
         }
         echo json_encode($response);
         exit;

@@ -1,0 +1,19 @@
+Place one image per requirement (same names, any of: .jpg .jpeg .png .webp):
+
+application-form.jpg
+report-card-sf9.jpg
+sf10-form137.jpg
+psa-birth-certificate.jpg
+id-picture-2x2.jpg
+good-moral-certificate.jpg
+transcript-tor.jpg
+
+After `npm run build`, copy these files into dist/admission-samples/ as well if you deploy only the dist folder.
+
+Windows tip: If "Hide extensions for known file types" is on, naming a file "id-picture-2x2.jpg" can create "id-picture-2x2.jpg.jpg". Turn on "File name extensions" in View, or name the file "id-picture-2x2" only and let Windows add .jpg.
+
+You can also copy the same files into frontend/src/app/assets/admission-samples/ so Vite bundles them (helps if the site is served under a subpath).
+
+If public-folder images still 404 under XAMPP, set in frontend/.env:
+VITE_ADMISSION_SAMPLES_BASE=/your/path/to/frontend/dist/
+(trailing slash optional; must be the URL path where admission-samples/ lives)

@@ -7,6 +7,7 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
     exit;
 }
 require_once __DIR__ . '/logging.php';
+require_once __DIR__ . '/enrollment_status_helpers.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
     http_response_code(405);
@@ -44,31 +45,23 @@ function toUiStatus(string $status): string
     if ($normalized === 'approved') {
         return 'Approved';
     }
+    if ($normalized === 'enrolled') {
+        return 'Enrolled';
+    }
     if ($normalized === 'rejected') {
         return 'Rejected';
+    }
+    if ($normalized === 'draft') {
+        return 'Pending';
     }
     return 'Pending';
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    appLogEvent($pdo, 'registrar_applications', 'registrar', 'failed', null, 'endpoint', 'registrar/applications', ['reason' => 'missing_user_context']);
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-
-$actorStmt = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1');
-$actorStmt->execute([':id' => $actorId]);
-$actor = $actorStmt->fetch();
-if (!$actor) {
-    appLogEvent($pdo, 'registrar_applications', 'registrar', 'failed', $actorId, 'endpoint', 'registrar/applications', ['reason' => 'invalid_user']);
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Invalid user']);
-    exit;
-}
-
-$actorRole = getUserRole($pdo, $actorId);
+require_once __DIR__ . '/api_auth.php';
+require_once __DIR__ . '/permission_guard.php';
+$actor = apiRequireActor($pdo, 'registrar/applications');
+$actorId = $actor['id'];
+$actorRole = $actor['role'];
 if (!in_array($actorRole, ['registrar', 'admin'], true)) {
     appLogEvent($pdo, 'registrar_applications', 'registrar', 'failed', $actorId, 'endpoint', 'registrar/applications', ['reason' => 'access_denied', 'role' => $actorRole]);
     http_response_code(403);
@@ -76,8 +69,7 @@ if (!in_array($actorRole, ['registrar', 'admin'], true)) {
     exit;
 }
 
-require_once __DIR__ . '/security_guard.php';
-runAuthenticatedSecurityGuards($pdo, $actorId, 'registrar/applications');
+requireActorPermission($pdo, $actor, 'viewApplications');
 
 if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
     echo json_encode(['success' => true, 'applications' => []]);
@@ -94,17 +86,17 @@ $hasReviewedFlag = tableExists($pdo, 'documents')
     && columnExists($pdo, 'documents', 'registrar_reviewed');
 $hasAiStatus = tableExists($pdo, 'documents')
     && columnExists($pdo, 'documents', 'ai_status');
+$hasDocType = tableExists($pdo, 'documents')
+    && columnExists($pdo, 'documents', 'type');
 
-// Prefer the registrar's manual reviewed flag when the column exists; fall back to the
-// AI verified count for un-migrated environments so this endpoint never crashes.
+// Progress on the applications list reflects only the registrar's manual
+// "Mark as reviewed" action — not AI auto-verification.
 if ($hasReviewedFlag) {
-    $verifiedClause = 'SUM(CASE WHEN registrar_reviewed = 1 THEN 1 ELSE 0 END)';
     $verifiedClauseAliased = 'SUM(CASE WHEN d.registrar_reviewed = 1 THEN 1 ELSE 0 END)';
 } elseif ($hasAiStatus) {
-    $verifiedClause = "SUM(CASE WHEN ai_status = 'verified' THEN 1 ELSE 0 END)";
-    $verifiedClauseAliased = "SUM(CASE WHEN d.ai_status = 'verified' THEN 1 ELSE 0 END)";
+    // Legacy fallback when the reviewed column has not been migrated yet.
+    $verifiedClauseAliased = '0';
 } else {
-    $verifiedClause = '0';
     $verifiedClauseAliased = '0';
 }
 
@@ -114,6 +106,8 @@ try {
     // student moves to the dedicated Students page; surfacing them here
     // would clutter the registrar's review queue with already-decided
     // cases. Rejected applications stay so the registrar can audit them.
+    // One in-flight application per student (newest row) so an older enrolled
+    // record does not hide a current Grade 12 draft/pending application.
     $sql = "
         SELECT
             e.*,
@@ -124,7 +118,12 @@ try {
             u.id AS user_id
         FROM enrollments e
         INNER JOIN users u ON u.id = e.user_id
-        WHERE LOWER(e.status) IN ('pending', 'under_review', 'under review', 'review', 'rejected', 'draft')
+        INNER JOIN (
+            SELECT user_id, MAX(id) AS latest_id
+            FROM enrollments
+            WHERE LOWER(status) IN ('pending', 'under_review', 'under review', 'review', 'rejected', 'draft')
+            GROUP BY user_id
+        ) open_apps ON open_apps.latest_id = e.id
         ORDER BY e.id DESC
     ";
 
@@ -138,10 +137,25 @@ try {
         $documentsVerified = 0;
 
         if ($docUsesEnrollmentId) {
+            // Dedupe by requirement type so legacy duplicate uploads (created
+            // before the "replace on re-upload" fix) don't inflate the
+            // denominator on the registrar's progress bar. The derived
+            // `latest` table keeps only the newest document id per type and
+            // then the outer query joins back to read its verified flag.
+            // When the `type` column is missing for legacy schemas we fall
+            // back to grouping by id so each row stays distinct.
+            $groupByExpr = $hasDocType ? 'type' : 'id';
             $countStmt = $pdo->prepare(
-                'SELECT COUNT(*) AS total_docs, ' . $verifiedClause . ' AS verified_docs
-                 FROM documents
-                 WHERE enrollment_id = :enrollment_id'
+                'SELECT
+                    COUNT(*) AS total_docs,
+                    ' . $verifiedClauseAliased . ' AS verified_docs
+                 FROM documents d
+                 INNER JOIN (
+                     SELECT MAX(id) AS latest_id
+                     FROM documents
+                     WHERE enrollment_id = :enrollment_id
+                     GROUP BY ' . $groupByExpr . '
+                 ) latest ON d.id = latest.latest_id'
             );
             $countStmt->execute([
                 ':enrollment_id' => $enrollmentId,
@@ -150,16 +164,28 @@ try {
             $totalDocuments = (int)($count['total_docs'] ?? 0);
             $documentsVerified = (int)($count['verified_docs'] ?? 0);
         } elseif ($docUsesStudentId) {
+            // Same dedupe strategy as the enrollment_id branch, but starting
+            // from the user's student row when this deployment links
+            // documents through student_id instead of enrollment_id.
+            $groupByExpr = $hasDocType ? 'd2.type' : 'd2.id';
             $countStmt = $pdo->prepare(
                 'SELECT
-                    COUNT(d.id) AS total_docs,
+                    COUNT(*) AS total_docs,
                     ' . $verifiedClauseAliased . ' AS verified_docs
                  FROM students s
                  LEFT JOIN documents d ON d.student_id = s.id
+                 INNER JOIN (
+                     SELECT MAX(d2.id) AS latest_id
+                     FROM students s2
+                     INNER JOIN documents d2 ON d2.student_id = s2.id
+                     WHERE s2.user_id = :user_id_inner
+                     GROUP BY ' . $groupByExpr . '
+                 ) latest ON d.id = latest.latest_id
                  WHERE s.user_id = :user_id'
             );
             $countStmt->execute([
                 ':user_id' => $userId,
+                ':user_id_inner' => $userId,
             ]);
             $count = $countStmt->fetch() ?: [];
             $totalDocuments = (int)($count['total_docs'] ?? 0);

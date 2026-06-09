@@ -22,15 +22,10 @@ function columnExistsDoc(PDO $pdo, string $table, string $column): bool
     return (bool)$stmt->fetchColumn();
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    http_response_code(401);
-    header('Content-Type: application/json');
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-
-$role = getUserRole($pdo, $actorId);
+require_once __DIR__ . '/api_auth.php';
+$actor = apiRequireActor($pdo, 'document-file');
+$actorId = $actor['id'];
+$role = $actor['role'];
 if (!in_array($role, ['registrar', 'admin'], true)) {
     http_response_code(403);
     header('Content-Type: application/json');

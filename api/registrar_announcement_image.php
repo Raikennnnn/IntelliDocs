@@ -25,14 +25,10 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? '')) !== 'POST') {
     exit;
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-
-$role = getUserRole($pdo, $actorId);
+require_once __DIR__ . '/api_auth.php';
+$actor = apiRequireActor($pdo, 'registrar/announcement-image');
+$actorId = $actor['id'];
+$role = $actor['role'];
 if (!in_array($role, ['registrar', 'admin'], true)) {
     http_response_code(403);
     echo json_encode(['success' => false, 'error' => 'Access denied']);

@@ -13,6 +13,18 @@ require_once __DIR__ . '/school_year_helpers.php';
 
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
+function requireAdminActor(PDO $pdo, string $label): int
+{
+    require_once __DIR__ . '/api_auth.php';
+    $actor = apiRequireActor($pdo, $label);
+    if ($actor['role'] !== 'admin' && !userIsAdmin($pdo, $actor['id'])) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Access denied. School year management requires an admin account.']);
+        exit;
+    }
+    return $actor['id'];
+}
+
 function ensureSchoolYearsTable(PDO $pdo): void
 {
     $pdo->exec('
@@ -41,7 +53,7 @@ function countApprovedEnrollmentsForYear(PDO $pdo, string $year): int
     if (!tableExistsLocal($pdo, 'enrollments')) {
         return 0;
     }
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM enrollments WHERE school_year = :y AND LOWER(TRIM(status)) = 'approved'");
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM enrollments WHERE school_year = :y AND LOWER(TRIM(status)) IN ('approved', 'enrolled')");
     $stmt->execute([':y' => $year]);
     return (int)$stmt->fetchColumn();
 }
@@ -70,6 +82,7 @@ function listSchoolYearRecords(PDO $pdo, ?string $activeYear): array
 if ($method === 'GET') {
     $ongoing = getOngoingSchoolYear($pdo);
     $enrollment = getEnrollmentSchoolYear($pdo);
+    $ended = getEndedSchoolYears($pdo);
     $records = listSchoolYearRecords($pdo, $enrollment);
     echo json_encode([
         'success' => true,
@@ -77,23 +90,16 @@ if ($method === 'GET') {
         'enrollment_school_year' => $enrollment,
         'active_school_year' => $enrollment, // backward compat for older frontends
         'enrollment_enabled' => $enrollment !== null,
+        'ended_school_years' => $ended,
         'school_years' => $records,
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 if ($method === 'POST') {
-    $actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-    if ($actorId <= 0) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'error' => 'Missing user context']);
-        exit;
-    }
-    if (getUserRole($pdo, $actorId) !== 'admin') {
-        http_response_code(403);
-        echo json_encode(['success' => false, 'error' => 'Access denied']);
-        exit;
-    }
+    $actorId = requireAdminActor($pdo, 'admin/school-year');
+    require_once __DIR__ . '/permission_guard.php';
+    requireActorPermission($pdo, ['role' => 'admin', 'id' => $actorId], 'configureSystem', false);
     $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
     if (!is_array($payload)) {
         http_response_code(400);
@@ -161,17 +167,9 @@ if ($method === 'POST') {
 }
 
 if ($method === 'PUT') {
-    $actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-    if ($actorId <= 0) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'error' => 'Missing user context']);
-        exit;
-    }
-    if (getUserRole($pdo, $actorId) !== 'admin') {
-        http_response_code(403);
-        echo json_encode(['success' => false, 'error' => 'Access denied']);
-        exit;
-    }
+    $actorId = requireAdminActor($pdo, 'admin/school-year');
+    require_once __DIR__ . '/permission_guard.php';
+    requireActorPermission($pdo, ['role' => 'admin', 'id' => $actorId], 'configureSystem', false);
 
     $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
     if (!is_array($payload)) {
@@ -183,10 +181,12 @@ if ($method === 'PUT') {
     $hasOngoing = array_key_exists('ongoing_school_year', $payload);
     $hasEnrollment = array_key_exists('enrollment_school_year', $payload);
     $hasLegacyActive = array_key_exists('active_school_year', $payload);
+    $hasEndYear = array_key_exists('end_school_year', $payload);
+    $hasReopenYear = array_key_exists('reopen_school_year', $payload);
 
-    if (!$hasOngoing && !$hasEnrollment && !$hasLegacyActive) {
+    if (!$hasOngoing && !$hasEnrollment && !$hasLegacyActive && !$hasEndYear && !$hasReopenYear) {
         http_response_code(422);
-        echo json_encode(['success' => false, 'error' => 'ongoing_school_year or enrollment_school_year is required']);
+        echo json_encode(['success' => false, 'error' => 'ongoing_school_year, enrollment_school_year, end_school_year, or reopen_school_year is required']);
         exit;
     }
 
@@ -213,6 +213,52 @@ if ($method === 'PUT') {
     }
 
     try {
+        if ($hasEndYear) {
+            $toEnd = $parse($payload['end_school_year'], 'end_school_year');
+            if ($toEnd === '') {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'error' => 'end_school_year cannot be empty']);
+                exit;
+            }
+            endSchoolYear($pdo, $toEnd);
+            appLogEvent($pdo, 'admin_school_year_end', 'admin', 'success', $actorId, 'school_years', $toEnd, []);
+        }
+        if ($hasReopenYear) {
+            $toReopen = $parse($payload['reopen_school_year'], 'reopen_school_year');
+            if ($toReopen === '') {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'error' => 'reopen_school_year cannot be empty']);
+                exit;
+            }
+            reopenSchoolYear($pdo, $toReopen);
+            $openEnrollment = !empty($payload['open_enrollment']);
+            if ($openEnrollment) {
+                setEnrollmentSchoolYearSetting($pdo, $toReopen);
+            }
+            appLogEvent($pdo, 'admin_school_year_reopen', 'admin', 'success', $actorId, 'school_years', $toReopen, [
+                'open_enrollment' => $openEnrollment,
+            ]);
+        }
+        if ($toSetOngoing !== null && $toSetOngoing !== '') {
+            if (isSchoolYearEnded($pdo, $toSetOngoing)) {
+                http_response_code(422);
+                echo json_encode([
+                    'success' => false,
+                    'error'   => 'Cannot set an ended school year as ongoing. Choose a different year or create a new one.',
+                ]);
+                exit;
+            }
+        }
+        if ($toSetEnrollment !== null && $toSetEnrollment !== '') {
+            if (isSchoolYearEnded($pdo, $toSetEnrollment)) {
+                http_response_code(422);
+                echo json_encode([
+                    'success' => false,
+                    'error'   => 'Cannot open enrollment for an ended school year. Choose a year that is not ended, or create a new school year.',
+                ]);
+                exit;
+            }
+        }
         if ($toSetOngoing !== null) {
             if ($toSetOngoing === '') setOngoingSchoolYearSetting($pdo, null);
             else setOngoingSchoolYearSetting($pdo, $toSetOngoing);
@@ -229,17 +275,21 @@ if ($method === 'PUT') {
 
     $ongoing = getOngoingSchoolYear($pdo);
     $enrollment = getEnrollmentSchoolYear($pdo);
-    appLogEvent($pdo, 'admin_school_year_update', 'admin', 'success', $actorId, 'settings', 'school_year', [
-        'ongoing_school_year' => $ongoing,
-        'enrollment_school_year' => $enrollment,
-        'enrollment_enabled' => $enrollment !== null,
-    ]);
+    $ended = getEndedSchoolYears($pdo);
+    if (!$hasEndYear && !$hasReopenYear) {
+        appLogEvent($pdo, 'admin_school_year_update', 'admin', 'success', $actorId, 'settings', 'school_year', [
+            'ongoing_school_year' => $ongoing,
+            'enrollment_school_year' => $enrollment,
+            'enrollment_enabled' => $enrollment !== null,
+        ]);
+    }
     echo json_encode([
         'success' => true,
         'ongoing_school_year' => $ongoing,
         'enrollment_school_year' => $enrollment,
         'active_school_year' => $enrollment,
         'enrollment_enabled' => $enrollment !== null,
+        'ended_school_years' => $ended,
         'school_years' => listSchoolYearRecords($pdo, $enrollment),
     ], JSON_UNESCAPED_UNICODE);
     exit;

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, ReactNode, useEffect, useCallback, useMemo } from 'react';
 import { apiFetch } from '../lib/api';
 
 export interface SchoolYear {
@@ -19,6 +19,7 @@ interface SchoolYearContextType {
   enrollmentEnabled: boolean;
   ongoingSchoolYearLabel: string | null;
   enrollmentSchoolYearLabel: string | null;
+  endedSchoolYears: string[];
   settingsLoaded: boolean;
   reloadSchoolYearSettings: () => Promise<void>;
   setActiveSchoolYear: (year: SchoolYear) => void;
@@ -53,6 +54,7 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [ongoingSchoolYearLabel, setOngoingSchoolYearLabel] = useState<string | null>(null);
   const [enrollmentSchoolYearLabel, setEnrollmentSchoolYearLabel] = useState<string | null>(null);
+  const [endedSchoolYears, setEndedSchoolYears] = useState<string[]>([]);
 
   const reloadSchoolYearSettings = useCallback(async () => {
     try {
@@ -63,12 +65,14 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
         active_school_year?: string | null;
         ongoing_school_year?: string | null;
         enrollment_school_year?: string | null;
+        ended_school_years?: string[];
         school_years?: any[];
       };
       if (j.success) {
         setEnrollmentEnabled(!!j.enrollment_enabled);
         setOngoingSchoolYearLabel(j.ongoing_school_year ?? null);
         setEnrollmentSchoolYearLabel(j.enrollment_school_year ?? j.active_school_year ?? null);
+        setEndedSchoolYears(Array.isArray(j.ended_school_years) ? j.ended_school_years : []);
         if (Array.isArray(j.school_years)) {
           setSchoolYears(normalizeSchoolYearRows(j.school_years, (j.enrollment_school_year ?? j.active_school_year) ?? null));
         } else {
@@ -100,7 +104,24 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('school-year-settings-changed', onRefresh);
   }, [reloadSchoolYearSettings]);
 
-  const activeSchoolYear = schoolYears.find((sy) => sy.status === 'Active');
+  const activeSchoolYear = useMemo(() => {
+    const fromList = schoolYears.find((sy) => sy.status === 'Active');
+    if (fromList) return fromList;
+    // Enrollment may be open via app_settings even if school_years list is empty or stale.
+    if (enrollmentEnabled && enrollmentSchoolYearLabel) {
+      return {
+        id: 0,
+        year: enrollmentSchoolYearLabel,
+        status: 'Active' as const,
+        startDate: '',
+        endDate: '',
+        enrolledStudents: 0,
+        createdBy: '',
+        createdDate: '',
+      };
+    }
+    return undefined;
+  }, [schoolYears, enrollmentEnabled, enrollmentSchoolYearLabel]);
 
   const setActiveSchoolYear = (year: SchoolYear) => {
     setSchoolYears((prevYears) =>
@@ -129,6 +150,7 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
         enrollmentEnabled,
         ongoingSchoolYearLabel,
         enrollmentSchoolYearLabel,
+        endedSchoolYears,
         settingsLoaded,
         reloadSchoolYearSettings,
         setActiveSchoolYear,
@@ -150,11 +172,13 @@ export function useSchoolYear() {
 }
 
 /**
- * True when the server reports an active school year and enrollment is enabled.
+ * True when the server reports enrollment is open for a school year.
+ * Uses enrollment_school_year from settings (not only the school_years table row).
  */
 export function useEnrollmentAllowed() {
-  const { activeSchoolYear, enrollmentEnabled } = useSchoolYear();
-  return enrollmentEnabled && !!activeSchoolYear;
+  const { enrollmentEnabled, enrollmentSchoolYearLabel, settingsLoaded } = useSchoolYear();
+  if (!settingsLoaded) return null;
+  return enrollmentEnabled && !!enrollmentSchoolYearLabel;
 }
 
 export function useSchoolYearOptions() {

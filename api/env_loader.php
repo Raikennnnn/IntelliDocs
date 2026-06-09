@@ -38,10 +38,9 @@ function loadProjectEnv(?string $envPath = null): void
             $value = substr($value, 1, -1);
         }
 
-        if (getenv($key) === false) {
-            putenv($key . '=' . $value);
-            $_ENV[$key] = $value;
-            $_SERVER[$key] = $value;
-        }
+        // Project `env` always wins over stale/empty Apache process env.
+        putenv($key . '=' . $value);
+        $_ENV[$key] = $value;
+        $_SERVER[$key] = $value;
     }
 }

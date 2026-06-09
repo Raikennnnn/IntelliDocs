@@ -38,13 +38,20 @@ function columnExists(PDO $pdo, string $table, string $column): bool
     }
 }
 
-/** Human-readable status for the student portal (e.g. approved → Enrolled). */
+/**
+ * Human-readable status for the student portal.
+ *
+ * Once the registrar approves the enrollment form the student is enrolled.
+ * Legacy rows may still carry `approved` in the database — show those as
+ * Enrolled too. Physical-document collection is tracked separately.
+ */
 function studentEnrollmentDisplayStatus(string $normalized): string
 {
     $n = strtolower(trim($normalized));
     return match ($n) {
-        'approved' => 'Enrolled',
+        'approved', 'enrolled' => 'Enrolled',
         'rejected' => 'Rejected',
+        'cancelled' => 'Cancelled',
         'pending' => 'Pending review',
         'under_review', 'under review', 'review' => 'Under review',
         'draft' => 'Draft',
@@ -153,6 +160,59 @@ function guardianDisplayFromEnrollmentForm(array $fd): array
 }
 
 /**
+ * True when enrollment form_data has the required personal + parent/guardian fields
+ * (mirrors StudentEnrollment validateStep1 + validateStep2 minimum).
+ *
+ * @param array<string, mixed> $fd
+ */
+function enrollmentProfileComplete(array $fd): bool
+{
+    if ($fd === []) {
+        return false;
+    }
+
+    $required = [
+        'enrollmentStatus',
+        'givenName',
+        'lastName',
+        'gender',
+        'contactNumber',
+        'email',
+        'lrn',
+        'gradeLevel',
+        'strand',
+        'preferredSchedule',
+        'birthDate',
+        'birthPlace',
+        'religion',
+        'municipality',
+        'barangay',
+        'street',
+    ];
+    foreach ($required as $field) {
+        if (trim((string)($fd[$field] ?? '')) === '') {
+            return false;
+        }
+    }
+
+    $mother = trim((string)($fd['motherGivenName'] ?? ''));
+    $father = trim((string)($fd['fatherGivenName'] ?? ''));
+    $hasGuardian = !empty($fd['hasGuardian']);
+    $guardian = trim((string)($fd['guardianGivenName'] ?? ''));
+    $hasGuardianFilled = $hasGuardian && $guardian !== '';
+
+    if ($mother === '' && $father === '' && !$hasGuardianFilled) {
+        return false;
+    }
+
+    if (trim((string)($fd['emergencyContact'] ?? '')) === '') {
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * @param array<string, string> $fromUser
  * @param array<string, string> $fromForm
  *
@@ -212,21 +272,15 @@ function syncEnrollmentFormContact(PDO $pdo, int $userId, array $updates): void
     ]);
 }
 
-$userId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($userId <= 0) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-
-if (getUserRole($pdo, $userId) !== 'student') {
+require_once __DIR__ . '/api_auth.php';
+require_once __DIR__ . '/permission_guard.php';
+$actor = apiRequireActor($pdo, 'student/me');
+$userId = $actor['id'];
+if ($actor['role'] !== 'student') {
     http_response_code(403);
     echo json_encode(['success' => false, 'error' => 'Access denied']);
     exit;
 }
-
-require_once __DIR__ . '/security_guard.php';
-runAuthenticatedSecurityGuards($pdo, $userId, 'student/me');
 
 if (!tableExists($pdo, 'users')) {
     http_response_code(500);
@@ -246,6 +300,7 @@ try {
     }
 
     if ($method === 'PATCH' || $method === 'PUT') {
+        requireActorPermission($pdo, $actor, 'editProfile', false);
         $rawBody = file_get_contents('php://input') ?: '';
         $payload = json_decode($rawBody !== '' ? $rawBody : '{}', true);
         if (!is_array($payload)) {
@@ -335,16 +390,41 @@ try {
 
     $enrollment = null;
     if (tableExists($pdo, 'enrollments')) {
-        $enrollmentStmt = $pdo->prepare('SELECT * FROM enrollments WHERE user_id = :user_id ORDER BY id DESC LIMIT 1');
-        $enrollmentStmt->execute([':user_id' => $userId]);
-        $enrollment = $enrollmentStmt->fetch() ?: null;
+        require_once __DIR__ . '/enrollment_status_helpers.php';
+        require_once __DIR__ . '/school_year_helpers.php';
+        $enrollment = pickPrimaryEnrollmentRow($pdo, $userId, getEnrollmentSchoolYear($pdo));
+        if (is_array($enrollment)) {
+            revertAutoEnrolledNewSyApplication($pdo, $userId, $enrollment);
+            stripNonGrade12CarriedDocuments($pdo, $userId, $enrollment);
+            autoEnrollReturningGrade12Rollover($pdo, $userId, $enrollment);
+            repairEnrollmentStatusIfCredentialsIssued($pdo, $userId, $enrollment);
+            healGrade12CarriedDocuments($pdo, $userId, $enrollment);
+            $enrollmentIdForHeal = (int)($enrollment['id'] ?? 0);
+            if ($enrollmentIdForHeal > 0) {
+                healClearedDocumentUploadCounts($pdo, $enrollmentIdForHeal);
+            }
+        }
     }
 
     $documentRows = [];
     if (tableExists($pdo, 'documents')) {
         $eid = (is_array($enrollment) && !empty($enrollment['id'])) ? (int)$enrollment['id'] : 0;
+        $hasDocRemarks = columnExists($pdo, 'documents', 'registrar_doc_remarks');
+        $selectDocRemarks = $hasDocRemarks ? 'registrar_doc_remarks' : "'' AS registrar_doc_remarks";
+        // Include the registrar-side review flag so the student page can show
+        // "Reviewed" once the registrar has manually checked a document, even
+        // before the application as a whole has been approved.
+        $hasReviewedFlag = columnExists($pdo, 'documents', 'registrar_reviewed');
+        $selectReviewed = $hasReviewedFlag ? 'registrar_reviewed' : '0 AS registrar_reviewed';
+        $hasDocDecision = columnExists($pdo, 'documents', 'registrar_doc_decision');
+        $selectDocDecision = $hasDocDecision ? 'registrar_doc_decision' : "'' AS registrar_doc_decision";
+        $hasCarriedForward = columnExists($pdo, 'documents', 'carried_forward');
+        $selectCarriedForward = $hasCarriedForward ? 'carried_forward' : '0 AS carried_forward';
         if ($eid > 0 && columnExists($pdo, 'documents', 'enrollment_id')) {
-            $docEnr = $pdo->prepare('SELECT type, original_name, ai_status FROM documents WHERE enrollment_id = :eid ORDER BY id DESC');
+            $docEnr = $pdo->prepare(
+                'SELECT id, type, original_name, ai_status, ' . $selectReviewed . ', ' . $selectDocDecision . ', '
+                . $selectDocRemarks . ', ' . $selectCarriedForward . ' FROM documents WHERE enrollment_id = :eid ORDER BY id DESC'
+            );
             $docEnr->execute([':eid' => $eid]);
             $documentRows = array_merge($documentRows, $docEnr->fetchAll() ?: []);
         }
@@ -353,7 +433,10 @@ try {
             $studentIdStmt->execute([':user_id' => $userId]);
             $studentId = (int)($studentIdStmt->fetchColumn() ?: 0);
             if ($studentId > 0) {
-                $docStmt = $pdo->prepare('SELECT type, original_name, ai_status FROM documents WHERE student_id = :student_id ORDER BY id DESC');
+                $docStmt = $pdo->prepare(
+                    'SELECT id, type, original_name, ai_status, ' . $selectReviewed . ', ' . $selectDocDecision . ', '
+                    . $selectDocRemarks . ', ' . $selectCarriedForward . ' FROM documents WHERE student_id = :student_id ORDER BY id DESC'
+                );
                 $docStmt->execute([':student_id' => $studentId]);
                 $documentRows = array_merge($documentRows, $docStmt->fetchAll() ?: []);
             }
@@ -366,11 +449,11 @@ try {
     $enrollmentStatusNorm = $hasEnrollment
         ? strtolower(trim((string)($enrollment['status'] ?? '')))
         : '';
-    $isApproved = $enrollmentStatusNorm === 'approved';
+    $isApproved = in_array($enrollmentStatusNorm, ['approved', 'enrolled'], true);
     $isRejected = $enrollmentStatusNorm === 'rejected';
     $submittedForReview = $hasEnrollment
         && $enrollmentStatusNorm !== ''
-        && $enrollmentStatusNorm !== 'draft';
+        && !in_array($enrollmentStatusNorm, ['draft', 'cancelled'], true);
 
     $enrollmentFormData = [];
     if ($hasEnrollment && !empty($enrollment['enrollment_steps'])) {
@@ -477,14 +560,44 @@ try {
         $guardian = mergeGuardianForPortal($guardian, guardianDisplayFromEnrollmentForm($enrollmentFormData));
     }
 
-    $hasDocUploads = count($documentRows) > 0;
-    // Requirements satisfied if files exist on enrollment, or application already submitted to registrar.
-    $documentsDone = $hasDocUploads || $submittedForReview;
+    // Keep only the latest upload per document type (documents are returned newest-first).
+    $latestDocsByType = [];
+    foreach ($documentRows as $r) {
+        $t = strtolower(trim((string)($r['type'] ?? '')));
+        if ($t === '') $t = 'document';
+        if (!array_key_exists($t, $latestDocsByType)) {
+            $latestDocsByType[$t] = $r;
+        }
+    }
+    $latestDocs = array_values($latestDocsByType);
+
+    $hasDocUploads = count($latestDocs) > 0;
+    $hasRejectedDocs = false;
+    foreach ($latestDocs as $r) {
+        $st = strtolower(trim((string)($r['ai_status'] ?? 'pending')));
+        if ($st === 'rejected') {
+            $hasRejectedDocs = true;
+            break;
+        }
+    }
+    // "Completed" only when latest docs are not rejected (student must re-upload to clear rejections).
+    $documentsDone = $hasDocUploads && !$hasRejectedDocs;
+
+    $profileComplete = $submittedForReview
+        || $isApproved
+        || enrollmentProfileComplete($enrollmentFormData);
+
+    $profileStepStatus = 'pending';
+    if ($profileComplete) {
+        $profileStepStatus = 'completed';
+    } elseif ($hasEnrollment) {
+        $profileStepStatus = 'current';
+    }
 
     $documentsStepStatus = 'pending';
     if ($documentsDone) {
         $documentsStepStatus = 'completed';
-    } elseif ($hasEnrollment) {
+    } elseif ($profileComplete && $hasEnrollment) {
         $documentsStepStatus = 'current';
     }
 
@@ -502,7 +615,7 @@ try {
     }
 
     $steps = [
-        ['key' => 'profile', 'title' => 'Profile Information', 'status' => 'completed'],
+        ['key' => 'profile', 'title' => 'Profile Information', 'status' => $profileStepStatus],
         ['key' => 'documents', 'title' => 'Document Submission', 'status' => $documentsStepStatus],
         ['key' => 'review', 'title' => 'Registrar Review', 'status' => $reviewStepStatus],
         ['key' => 'final', 'title' => $finalTitle, 'status' => $finalStepStatus],
@@ -517,19 +630,70 @@ try {
     $totalSteps = count($steps);
     $percent = (int)floor(($completedCount / max($totalSteps, 1)) * 100);
 
-    $documents = array_map(static function (array $row): array {
+    // Human-readable label for each requirement type, so the student portal can
+    // show "PSA Birth Certificate" instead of the technical key or a raw filename
+    // like "psa tamper 1.jpg".
+    $requirementLabelFor = static function (string $type): string {
+        $t = strtolower(trim($type));
+        switch ($t) {
+            case 'birth_certificate':
+            case 'birthcert':
+            case 'psa':
+                return 'PSA Birth Certificate';
+            case 'good_moral':
+            case 'goodmoral':
+                return 'Good Moral Certificate';
+            case 'sf9':
+            case 'report_card':
+                return 'SF9 / Report Card';
+            case 'form137':
+            case 'sf10':
+                return 'SF10 / Form 137';
+            case 'photo_2x2':
+            case 'id_picture':
+            case 'picture_2x2':
+                return '2x2 Picture (White Background)';
+            case '':
+            case 'document':
+                return 'Document';
+            default:
+                // Fallback: turn "snake_case" / "kebab-case" into Title Case.
+                $pretty = preg_replace('/[_\-]+/', ' ', $t) ?? $t;
+                return ucwords(trim($pretty));
+        }
+    };
+
+    $documents = array_map(static function (array $row) use ($requirementLabelFor): array {
+        $type = (string)($row['type'] ?? '');
+        $registrarReviewed = (int)($row['registrar_reviewed'] ?? 0) === 1;
+        $decision = strtolower(trim((string)($row['registrar_doc_decision'] ?? '')));
         return [
-            'name' => (string)($row['original_name'] ?? $row['type'] ?? 'Document'),
+            // Filename of the uploaded file (kept for backwards-compat with the
+            // existing UI; shown as a small subtitle on the student portal).
+            'name' => (string)($row['original_name'] ?? $type ?? 'Document'),
+            // Machine key (e.g. "birth_certificate") for any future UI logic.
+            'type' => $type,
+            // Human-readable requirement label, e.g. "PSA Birth Certificate".
+            'requirementLabel' => $requirementLabelFor($type),
             'status' => (string)($row['ai_status'] ?? 'pending'),
-            'remarks' => '',
+            // True once the registrar has manually marked the document as
+            // reviewed. Lets the student portal show "Reviewed" instead of
+            // "Pending" even before the whole application is approved.
+            'registrarReviewed' => $registrarReviewed,
+            'registrarDecision' => $decision,
+            'remarks' => (string)($row['registrar_doc_remarks'] ?? ''),
+            'carriedForward' => (int)($row['carried_forward'] ?? 0) === 1,
         ];
-    }, $documentRows);
+    }, $latestDocs);
 
     $modeOfPayment = (string)($enrollmentFormData['modeOfPayment'] ?? '');
     $voucherNo = (string)($enrollmentFormData['voucherNo'] ?? '');
 
     $application = [
         'id' => $hasEnrollment ? (string)($enrollment['id'] ?? '') : '',
+        'display_id' => $hasEnrollment
+            ? 'APP-' . date('Y') . '-' . str_pad((string)($enrollment['id'] ?? ''), 3, '0', STR_PAD_LEFT)
+            : '',
         'status' => $applicationStatusDisplay,
         /** Lowercase normalized DB status for UI logic (e.g. approved, pending). */
         'status_code' => $hasEnrollment ? $enrollmentStatusNorm : '',
@@ -554,6 +718,11 @@ try {
         'application' => $application,
         'school_username' => $schoolUsername,
         'must_change_password' => $mustChangePassword,
+        // Suppress resubmission prompts once the registrar has approved or
+        // fully enrolled the student — per-document rejections are stale.
+        'needs_resubmission' => $hasRejectedDocs
+            && $enrollmentStatusNorm !== 'approved'
+            && $enrollmentStatusNorm !== 'enrolled',
     ]);
 } catch (Throwable $e) {
     http_response_code(500);

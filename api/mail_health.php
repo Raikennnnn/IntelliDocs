@@ -33,12 +33,14 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/mailer.php';
 require_once __DIR__ . '/user_role.php';
+require_once __DIR__ . '/system_settings_helpers.php';
 
 header('Content-Type: application/json');
 
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
 if ($method === 'GET') {
+    applySystemMailEnvOverrides($pdo);
     $report = checkMailerReadiness();
     echo json_encode([
         'success' => $report['ready'],
@@ -54,13 +56,10 @@ if ($method !== 'POST') {
 }
 
 // Admin-only beyond this point.
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-$role = getUserRole($pdo, $actorId);
+require_once __DIR__ . '/api_auth.php';
+$actor = apiRequireActor($pdo, 'mail-health');
+$actorId = $actor['id'];
+$role = $actor['role'];
 if ($role !== 'admin') {
     appLogEvent($pdo, 'mail_health_probe', 'admin', 'failed', $actorId, 'endpoint', 'mail-health', ['reason' => 'forbidden']);
     http_response_code(403);
@@ -74,6 +73,8 @@ if (!is_array($payload)) {
     echo json_encode(['success' => false, 'error' => 'Invalid JSON payload']);
     exit;
 }
+
+applySystemMailEnvOverrides($pdo);
 
 $recipient = strtolower(trim((string)($payload['recipient'] ?? '')));
 if ($recipient === '' || !filter_var($recipient, FILTER_VALIDATE_EMAIL)) {

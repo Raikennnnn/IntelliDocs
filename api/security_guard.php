@@ -21,7 +21,7 @@ declare(strict_types=1);
  *
  *   SESSION_IDLE_TIMEOUT_MINUTES   default 30
  *   RAPID_ACTION_WINDOW_MINUTES    default 2
- *   RAPID_ACTION_THRESHOLD         default 10
+ *   RAPID_ACTION_THRESHOLD         default 15 (sensitive actions only)
  *   APP_ACTIVE_HOURS_START         default 00:00 (always-on)
  *   APP_ACTIVE_HOURS_END           default 23:59
  *
@@ -127,6 +127,38 @@ if (!function_exists('sessionGuard')) {
 // 2. Rapid-action throttle (anomaly detection rule #4)
 // ---------------------------------------------------------------------------
 
+if (!function_exists('rapidActionGuardSensitiveActions')) {
+    /**
+     * Only these actions count toward the rapid-action limit. Routine registrar
+     * work (document_review, loading an application, draft saves) is excluded
+     * so reviewing all five uploads in one session does not trip a false positive.
+     *
+     * @return list<string>
+     */
+    function rapidActionGuardSensitiveActions(): array
+    {
+        return [
+            'admin_delete_user',
+            'admin_update_user',
+            'create_user',
+            'change_password',
+            'registrar_decision',
+            'issue_credentials',
+            'section_create',
+            'section_delete',
+            'section_reassign',
+            'student_enrollment_submit',
+            'student_enrollment_cancel',
+            'document_upload',
+            'document_decision',
+            'registrar_announcement_create',
+            'registrar_announcement_update',
+            'registrar_announcement_delete',
+            'cohort_rebuild',
+        ];
+    }
+}
+
 if (!function_exists('rapidActionGuard')) {
     /**
      * Short-circuit with HTTP 429 when the actor has exceeded the configured
@@ -134,12 +166,9 @@ if (!function_exists('rapidActionGuard')) {
      * from the IntelliDocs anomaly rules table. Reads `activity_logs.created_at`
      * so it works without any new schema.
      *
-     * Scope: this only counts user-initiated mutations on the current request
-     * (POST/PUT/PATCH/DELETE), and the COUNT query excludes the guard's own
-     * bookkeeping rows (`anomaly_*`, `login*`, `logout*`, page-load reads
-     * recorded by handlers that log every successful GET). Without those
-     * exclusions, a single dashboard render could fan out to 8+ GETs and
-     * trip the limit on the very first page load.
+     * Scope: counts only sensitive mutations (see rapidActionGuardSensitiveActions).
+     * Routine registrar document review, application loads, and draft saves are
+     * not counted — those were causing false rate_limited errors during review.
      */
     function rapidActionGuard(PDO $pdo, int $userId, string $endpointLabel): void
     {
@@ -154,8 +183,8 @@ if (!function_exists('rapidActionGuard')) {
 
         $window = (int)(getenv('RAPID_ACTION_WINDOW_MINUTES') ?: 2);
         if ($window < 1) $window = 2;
-        $threshold = (int)(getenv('RAPID_ACTION_THRESHOLD') ?: 30);
-        if ($threshold < 1) $threshold = 30;
+        $threshold = (int)(getenv('RAPID_ACTION_THRESHOLD') ?: 15);
+        if ($threshold < 1) $threshold = 15;
 
         try {
             // activity_logs is created lazily by ensureLoggingTables(); if
@@ -166,16 +195,18 @@ if (!function_exists('rapidActionGuard')) {
             $stmt->execute([':t' => 'activity_logs']);
             if (!$stmt->fetchColumn()) return;
 
-            // Exclude the guard's own anomaly rows and pure auth/heartbeat
-            // events so a flood of those cannot rate-limit the user.
+            $sensitive = rapidActionGuardSensitiveActions();
+            if ($sensitive === []) {
+                return;
+            }
+            $placeholders = implode(',', array_fill(0, count($sensitive), '?'));
             $countStmt = $pdo->prepare(
                 "SELECT COUNT(*) FROM activity_logs
-                 WHERE actor_user_id = :uid
+                 WHERE actor_user_id = ?
                    AND created_at >= (NOW() - INTERVAL {$window} MINUTE)
-                   AND action NOT LIKE 'anomaly_%'
-                   AND action NOT IN ('login', 'login_attempt', 'login_success', 'logout', 'logout_success')"
+                   AND action IN ({$placeholders})"
             );
-            $countStmt->execute([':uid' => $userId]);
+            $countStmt->execute(array_merge([$userId], $sensitive));
             $count = (int)$countStmt->fetchColumn();
             if ($count > $threshold) {
                 appLogEvent(

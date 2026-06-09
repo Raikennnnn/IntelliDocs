@@ -12,6 +12,7 @@ CREATE TABLE users (
   email VARCHAR(100) UNIQUE NOT NULL,
   password VARCHAR(255) NOT NULL,
   full_name VARCHAR(100),
+  email_verified_at TIMESTAMP NULL DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -35,6 +36,39 @@ CREATE TABLE student_users (
   username VARCHAR(64) NOT NULL DEFAULT '',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_student_users_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One row per user: Terms of Use + Privacy Policy + DPA at registration.
+CREATE TABLE user_registration_consents (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  terms_of_use_accepted TINYINT(1) NOT NULL DEFAULT 0,
+  privacy_policy_accepted TINYINT(1) NOT NULL DEFAULT 0,
+  dpa_accepted TINYINT(1) NOT NULL DEFAULT 0,
+  accepted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ip_address VARCHAR(64) NULL,
+  user_agent VARCHAR(512) NULL,
+  source VARCHAR(40) NOT NULL DEFAULT 'registration',
+  UNIQUE KEY uniq_registration_consent_user (user_id),
+  INDEX idx_registration_consent_at (accepted_at),
+  CONSTRAINT fk_registration_consent_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One row per enrollment: student declares uploads are genuine (Requirements Upload step).
+CREATE TABLE enrollment_document_authenticity_consents (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  enrollment_id INT NOT NULL,
+  user_id INT NOT NULL,
+  school_year VARCHAR(30) NULL,
+  authenticity_confirmed TINYINT(1) NOT NULL DEFAULT 1,
+  confirmed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ip_address VARCHAR(64) NULL,
+  user_agent VARCHAR(512) NULL,
+  source VARCHAR(40) NOT NULL DEFAULT 'enrollment_step_4',
+  UNIQUE KEY uniq_doc_auth_enrollment (enrollment_id),
+  INDEX idx_doc_auth_user (user_id),
+  INDEX idx_doc_auth_confirmed_at (confirmed_at),
+  CONSTRAINT fk_doc_auth_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Default Admin / IT account (password: admin123)
@@ -85,10 +119,27 @@ CREATE TABLE otp_codes (
   id INT AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(100),
   code VARCHAR(6),
+  purpose VARCHAR(20) NOT NULL DEFAULT 'registration',
   expires_at TIMESTAMP,
   used TINYINT DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Signup held until OTP verification (no users row until verify_otp succeeds)
+CREATE TABLE pending_registrations (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(100) NOT NULL,
+  username VARCHAR(50) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  full_name VARCHAR(100) NOT NULL DEFAULT '',
+  terms_privacy_accepted TINYINT(1) NOT NULL DEFAULT 1,
+  dpa_accepted TINYINT(1) NOT NULL DEFAULT 1,
+  expires_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_pending_email (email),
+  UNIQUE KEY uniq_pending_username (username),
+  INDEX idx_pending_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Local security/activity logging (without SIEM)
 CREATE TABLE IF NOT EXISTS activity_logs (

@@ -20,6 +20,10 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/user_role.php';
+require_once __DIR__ . '/enrollment_status_helpers.php';
+require_once __DIR__ . '/school_year_helpers.php';
+require_once __DIR__ . '/section_grade_helpers.php';
+require_once __DIR__ . '/physical_docs_helpers.php';
 
 header('Content-Type: application/json');
 
@@ -40,21 +44,18 @@ if (!function_exists('columnExists')) {
     }
 }
 
-$actorId = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
-if ($actorId <= 0) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'Missing user context']);
-    exit;
-}
-$role = getUserRole($pdo, $actorId);
-if (!in_array($role, ['registrar', 'admin'], true)) {
+require_once __DIR__ . '/api_auth.php';
+require_once __DIR__ . '/permission_guard.php';
+$actor = apiRequireActor($pdo, 'registrar/students');
+$actorId = $actor['id'];
+$actorRole = $actor['role'];
+if (!in_array($actorRole, ['registrar', 'admin'], true)) {
     http_response_code(403);
     echo json_encode(['success' => false, 'error' => 'Access denied']);
     exit;
 }
 
-require_once __DIR__ . '/security_guard.php';
-runAuthenticatedSecurityGuards($pdo, $actorId, 'registrar/students');
+requireActorPermission($pdo, $actor, 'viewApplications');
 
 if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
     http_response_code(503);
@@ -197,8 +198,98 @@ if ($method !== 'GET') {
 }
 
 $singleUserId = (int)($_GET['user_id'] ?? 0);
+$enrollmentIdFilter = (int)($_GET['enrollment_id'] ?? 0);
+
+$viewSyRaw = trim((string)($_GET['school_year'] ?? ''));
+if (strtolower($viewSyRaw) === 'all') {
+    $viewSy = '';
+} elseif ($viewSyRaw === '' || strtolower($viewSyRaw) === 'current') {
+    $viewSy = rosterEnrollmentContext($pdo)['school_year'];
+} elseif (preg_match('/^\d{4}-\d{4}$/', $viewSyRaw) === 1) {
+    $viewSy = $viewSyRaw;
+} else {
+    $viewSy = '';
+}
+
+/**
+ * @return list<string> YYYY-YYYY labels, newest first
+ */
+function registrarStudentSchoolYearOptions(PDO $pdo): array
+{
+    $years = [];
+    if (tableExists($pdo, 'school_years') && columnExists($pdo, 'school_years', 'year')) {
+        $rows = $pdo->query('SELECT year FROM school_years ORDER BY year DESC')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($rows as $row) {
+            $y = trim((string)($row['year'] ?? ''));
+            if ($y !== '' && preg_match('/^\d{4}-\d{4}$/', $y) === 1) {
+                $years[$y] = true;
+            }
+        }
+    }
+    if (tableExists($pdo, 'enrollments') && columnExists($pdo, 'enrollments', 'school_year')) {
+        $rows = $pdo->query(
+            "SELECT DISTINCT TRIM(school_year) AS sy FROM enrollments
+              WHERE TRIM(COALESCE(school_year, '')) <> ''
+                AND LOWER(TRIM(COALESCE(status, ''))) IN ('approved', 'enrolled')
+              ORDER BY sy DESC"
+        )->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($rows as $row) {
+            $y = trim((string)($row['sy'] ?? ''));
+            if ($y !== '' && preg_match('/^\d{4}-\d{4}$/', $y) === 1) {
+                $years[$y] = true;
+            }
+        }
+    }
+    $list = array_keys($years);
+    rsort($list, SORT_STRING);
+
+    return $list;
+}
+
+// Per-student section + shift come from the `students` table that gets
+// populated by the section auto-assignment helper. The columns are
+// optional so the SELECT degrades gracefully when the schema migration
+// hasn't run yet on this database.
+$hasStudentsTable = tableExists($pdo, 'students');
+$selectCurrentSection = $hasStudentsTable && columnExists($pdo, 'students', 'section')
+    ? '(SELECT s.section FROM students s WHERE s.user_id = u.id ORDER BY s.id DESC LIMIT 1) AS current_section'
+    : "NULL AS current_section";
+$selectCurrentShift = $hasStudentsTable && columnExists($pdo, 'students', 'section_shift')
+    ? '(SELECT s.section_shift FROM students s WHERE s.user_id = u.id ORDER BY s.id DESC LIMIT 1) AS current_shift'
+    : "NULL AS current_shift";
+
+$selectPhysicalDocsComplete = columnExists($pdo, 'enrollments', 'physical_docs_completed_at')
+    ? 'e.physical_docs_completed_at'
+    : 'NULL AS physical_docs_completed_at';
 
 try {
+    // One :view_sy placeholder only — PDO rejects duplicate named params in native prepares.
+    $enrollmentPick = "
+        SELECT e2.id FROM enrollments e2
+         WHERE e2.user_id = u.id
+           AND LOWER(TRIM(COALESCE(e2.status, ''))) IN ('approved', 'enrolled')
+         ORDER BY
+           (TRIM(COALESCE(e2.school_year, '')) = :view_sy) DESC,
+           e2.id DESC
+         LIMIT 1
+    ";
+
+    $useSpecificEnrollment = false;
+    if ($singleUserId > 0 && $enrollmentIdFilter > 0) {
+        $enrollmentOwnerStmt = $pdo->prepare(
+            'SELECT 1 FROM enrollments WHERE id = :eid AND user_id = :uid LIMIT 1'
+        );
+        $enrollmentOwnerStmt->execute([
+            ':eid' => $enrollmentIdFilter,
+            ':uid' => $singleUserId,
+        ]);
+        $useSpecificEnrollment = (bool)$enrollmentOwnerStmt->fetchColumn();
+    }
+
+    $enrollmentJoin = $useSpecificEnrollment
+        ? 'e.id = :enrollment_id'
+        : "e.id = ({$enrollmentPick})";
+
     $sql = "
         SELECT
             e.id AS enrollment_id,
@@ -210,6 +301,7 @@ try {
             {$selectUpdatedAt},
             e.enrollment_steps,
             {$selectRegistrarRemarks},
+            {$selectPhysicalDocsComplete},
             u.id AS user_id,
             u.email,
             u.full_name,
@@ -224,12 +316,25 @@ try {
             {$selectGender},
             {$selectPhone},
             {$selectAddress},
-            {$selectReligion}
-        FROM enrollments e
-        INNER JOIN users u ON u.id = e.user_id
-        WHERE LOWER(e.status) IN ('approved', 'enrolled')
+            {$selectReligion},
+            {$selectCurrentSection},
+            {$selectCurrentShift}
+        FROM users u
+        INNER JOIN enrollments e ON e.user_id = u.id
+           AND {$enrollmentJoin}
+        WHERE 1=1
     ";
     $params = [];
+    if (!$useSpecificEnrollment) {
+        $params[':view_sy'] = $viewSy;
+    }
+    if ($useSpecificEnrollment) {
+        $params[':enrollment_id'] = $enrollmentIdFilter;
+    }
+    if ($viewSy !== '' && ($singleUserId <= 0 || !$useSpecificEnrollment)) {
+        $sql .= " AND TRIM(COALESCE(e.school_year, '')) = :view_sy_match";
+        $params[':view_sy_match'] = $viewSy;
+    }
     if ($singleUserId > 0) {
         $sql .= ' AND u.id = :uid';
         $params[':uid'] = $singleUserId;
@@ -240,8 +345,40 @@ try {
     $stmt->execute($params);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
+    $physicalDocsCompleteByEnrollment = batchEnrollmentPhysicalDocsComplete($pdo, $rows);
+    if (
+        columnExists($pdo, 'enrollments', 'physical_docs_completed_at')
+        && tableExists($pdo, 'enrollment_physical_docs')
+    ) {
+        foreach ($rows as &$row) {
+            $enrollmentId = (int)($row['enrollment_id'] ?? 0);
+            if ($enrollmentId <= 0) {
+                continue;
+            }
+            if (empty($physicalDocsCompleteByEnrollment[$enrollmentId])) {
+                continue;
+            }
+            if (!empty($row['physical_docs_completed_at'])) {
+                continue;
+            }
+            syncEnrollmentPhysicalDocsCompletion(
+                $pdo,
+                $enrollmentId,
+                null,
+                (string)($row['enrollment_steps'] ?? '{}'),
+                strtolower(trim((string)($row['enrollment_status'] ?? '')))
+            );
+            $stampStmt = $pdo->prepare(
+                'SELECT physical_docs_completed_at FROM enrollments WHERE id = :id LIMIT 1'
+            );
+            $stampStmt->execute([':id' => $enrollmentId]);
+            $row['physical_docs_completed_at'] = $stampStmt->fetchColumn() ?: null;
+        }
+        unset($row);
+    }
+
     // For single mode, also fetch documents.
-    $shapeRow = function (array $row) use ($pdo): array {
+    $shapeRow = function (array $row) use ($pdo, $physicalDocsCompleteByEnrollment): array {
         $form = [];
         $steps = json_decode((string)($row['enrollment_steps'] ?? '{}'), true);
         if (is_array($steps) && isset($steps['form_data']) && is_array($steps['form_data'])) {
@@ -262,11 +399,12 @@ try {
             'schoolUsername' => isset($row['school_username']) && $row['school_username'] !== null ? (string)$row['school_username'] : null,
             'mustChangePassword' => (int)($row['must_change_password'] ?? 0) === 1,
             'lastLoginAt' => $row['last_login_at'] ?? null,
-            // Raw status from `enrollments.status` so the UI can render the
-            // right badge: "approved" = pending physical-doc collection,
-            // "enrolled" = registrar received every required physical doc.
-            'enrollmentStatus' => strtolower(trim((string)($row['enrollment_status'] ?? 'approved'))),
-            'status' => strtolower(trim((string)($row['enrollment_status'] ?? 'approved'))) === 'enrolled' ? 'Enrolled' : 'Pending physical docs',
+            // Student is enrolled once the registrar approves the application.
+            // Physical-document collection is tracked separately.
+            'enrollmentStatus' => strtolower(trim((string)($row['enrollment_status'] ?? 'enrolled'))),
+            'status' => 'Enrolled',
+            'physicalDocsComplete' => !empty($physicalDocsCompleteByEnrollment[(int)$row['enrollment_id']]),
+            'physicalDocsCompletedAt' => $row['physical_docs_completed_at'] ?? null,
             'strand' => $strand,
             'gradeLevel' => $grade,
             'schoolYear' => (string)($row['school_year'] ?? ''),
@@ -289,6 +427,26 @@ try {
             'religion' => (string)($row['religion'] ?? '') ?: (string)($form['religion'] ?? ''),
             'previousSchool' => (string)($form['previousSchoolAttended'] ?? $form['previousSchool'] ?? ''),
             'lastSchoolYearAttended' => (string)($form['lastSchoolYearAttended'] ?? ''),
+            // Current class placement. `currentShift` falls back to the
+            // student's enrollment-form preference when the registrar
+            // hasn't explicitly set it yet (legacy rows pre-migration).
+            'currentSection' => (string)($row['current_section'] ?? '') ?: null,
+            'currentShift'   => (function () use ($row, $form) {
+                $stored = strtolower(trim((string)($row['current_shift'] ?? '')));
+                if (in_array($stored, ['morning', 'afternoon'], true)) {
+                    return $stored;
+                }
+                $pref = strtolower(trim((string)($form['preferredSchedule'] ?? '')));
+                if (strpos($pref, 'afternoon') !== false) return 'afternoon';
+                if (strpos($pref, 'morning') !== false)   return 'morning';
+                return null;
+            })(),
+            'preferredShift' => (function () use ($form) {
+                $pref = strtolower(trim((string)($form['preferredSchedule'] ?? '')));
+                if (strpos($pref, 'afternoon') !== false) return 'afternoon';
+                if (strpos($pref, 'morning') !== false)   return 'morning';
+                return null;
+            })(),
         ];
     };
 
@@ -320,9 +478,29 @@ try {
             } else {
                 $docs = [];
             }
+
+            // Dedupe documents by requirement type so legacy duplicate uploads
+            // (created before the "replace on re-upload" fix landed) don't
+            // double-count requirements on the approved-student detail view.
+            // Rows are ordered by id DESC, so the first occurrence of each
+            // type is the latest version of that document.
+            $seenTypes = [];
+            $dedupedDocs = [];
             foreach ($docs as $doc) {
-                $st = strtolower((string)($doc['ai_status'] ?? 'pending'));
-                $ui = $st === 'verified' ? 'Verified' : ($st === 'rejected' || $st === 'tampered' ? 'Flagged' : 'Under Review');
+                $typeKey = strtolower(trim((string)($doc['type'] ?? '')));
+                if ($typeKey === '') {
+                    $typeKey = '__id_' . (string)($doc['id'] ?? uniqid('', true));
+                }
+                if (isset($seenTypes[$typeKey])) {
+                    continue;
+                }
+                $seenTypes[$typeKey] = true;
+                $dedupedDocs[] = $doc;
+            }
+            $docs = $dedupedDocs;
+
+            foreach ($docs as $doc) {
+                $ui = documentRegistrarUiStatus($doc);
                 $documents[] = [
                     'id' => (int)$doc['id'],
                     'type' => (string)($doc['type'] ?? ''),
@@ -348,10 +526,17 @@ try {
         $students[] = $shapeRow($row);
     }
     appLogEvent($pdo, 'registrar_students', 'registrar', 'success', $actorId, 'endpoint', 'students', ['count' => count($students)]);
+    $activeEnrollmentSy = getEnrollmentSchoolYear($pdo);
     echo json_encode([
         'success' => true,
         'students' => $students,
         'features' => ['credentials' => $hasSchoolUsername],
+        'filters' => [
+            'school_year_options' => registrarStudentSchoolYearOptions($pdo),
+            'enrollment_school_year_current' => $activeEnrollmentSy,
+            'school_year_applied' => $viewSy !== '' ? $viewSy : null,
+            'school_year_mode' => strtolower($viewSyRaw) === 'all' ? 'all' : ($viewSy !== '' ? 'year' : 'all'),
+        ],
     ]);
 } catch (Throwable $e) {
     appLogEvent($pdo, 'registrar_students', 'registrar', 'failed', $actorId, 'endpoint', 'students', ['reason' => 'server_error', 'message' => $e->getMessage()]);

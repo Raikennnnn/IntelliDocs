@@ -7,6 +7,7 @@ import {
 } from "../../components/ui/card";
 import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
+import { Button } from "../../components/ui/button";
 import {
   Activity,
   Search,
@@ -18,127 +19,60 @@ import {
   Settings,
   Shield,
   Filter,
+  Loader2,
+  RefreshCw,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  fetchActivityLogs,
+  type ActivityLogEntry,
+  type ActivityLogStats,
+} from "../../lib/activityLogsApi";
 
-interface ActivityLog {
-  id: string;
-  action: string;
-  description: string;
-  user: string;
-  role: string;
-  ipAddress: string;
-  timestamp: string;
-  type: "login" | "upload" | "approval" | "rejection" | "user_management" | "system_config" | "security";
-}
+const emptyStats: ActivityLogStats = {
+  totalActions: 0,
+  logins: 0,
+  uploads: 0,
+  approvals: 0,
+  rejections: 0,
+  security: 0,
+};
 
 export function ActivityLogs() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState<string>("All");
+  const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
+  const [stats, setStats] = useState<ActivityLogStats>(emptyStats);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Mock activity logs
-  const activityLogs: ActivityLog[] = [
-    {
-      id: "1",
-      action: "User Login",
-      description: "Successful login to Admin portal",
-      user: "Admin User",
-      role: "Admin",
-      ipAddress: "192.168.1.100",
-      timestamp: "March 18, 2026 - 4:00 PM",
-      type: "login",
-    },
-    {
-      id: "2",
-      action: "Application Approved",
-      description: "Approved enrollment application for Pedro Reyes",
-      user: "Maria Cruz",
-      role: "Registrar",
-      ipAddress: "192.168.1.105",
-      timestamp: "March 18, 2026 - 3:45 PM",
-      type: "approval",
-    },
-    {
-      id: "3",
-      action: "New User Created",
-      description: "Created new Registrar account: Jane Doe",
-      user: "Admin User",
-      role: "Admin",
-      ipAddress: "192.168.1.100",
-      timestamp: "March 18, 2026 - 3:30 PM",
-      type: "user_management",
-    },
-    {
-      id: "4",
-      action: "Document Uploaded",
-      description: "Student uploaded Birth Certificate",
-      user: "Juan Dela Cruz",
-      role: "Student",
-      ipAddress: "192.168.1.150",
-      timestamp: "March 18, 2026 - 2:30 PM",
-      type: "upload",
-    },
-    {
-      id: "5",
-      action: "System Configuration Updated",
-      description: "Updated OTP email configuration settings",
-      user: "Admin User",
-      role: "Admin",
-      ipAddress: "192.168.1.100",
-      timestamp: "March 18, 2026 - 1:00 PM",
-      type: "system_config",
-    },
-    {
-      id: "6",
-      action: "User Login",
-      description: "Successful login to Registrar portal",
-      user: "Maria Cruz",
-      role: "Registrar",
-      ipAddress: "192.168.1.105",
-      timestamp: "March 18, 2026 - 9:00 AM",
-      type: "login",
-    },
-    {
-      id: "7",
-      action: "Application Rejected",
-      description: "Rejected enrollment application - Invalid documents",
-      user: "Maria Cruz",
-      role: "Registrar",
-      ipAddress: "192.168.1.105",
-      timestamp: "March 17, 2026 - 4:30 PM",
-      type: "rejection",
-    },
-    {
-      id: "8",
-      action: "Failed Login Attempt",
-      description: "Failed login attempt - Invalid credentials",
-      user: "Unknown",
-      role: "N/A",
-      ipAddress: "203.0.113.45",
-      timestamp: "March 17, 2026 - 3:15 PM",
-      type: "security",
-    },
-    {
-      id: "9",
-      action: "User Deactivated",
-      description: "Deactivated student account: Carlos Mendoza",
-      user: "Admin User",
-      role: "Admin",
-      ipAddress: "192.168.1.100",
-      timestamp: "March 17, 2026 - 2:00 PM",
-      type: "user_management",
-    },
-    {
-      id: "10",
-      action: "User Login",
-      description: "Successful login to Student portal",
-      user: "Pedro Reyes",
-      role: "Student",
-      ipAddress: "192.168.1.160",
-      timestamp: "March 17, 2026 - 10:30 AM",
-      type: "login",
-    },
-  ];
+  const loadLogs = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const json = await fetchActivityLogs("admin", {
+        search: searchTerm,
+        type: filterType === "All" ? "all" : filterType,
+        range: "month",
+        limit: 100,
+      });
+      setActivityLogs(Array.isArray(json.logs) ? json.logs : []);
+      setStats(json.stats ?? emptyStats);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load activity logs");
+      setActivityLogs([]);
+      setStats(emptyStats);
+    } finally {
+      setLoading(false);
+    }
+  }, [searchTerm, filterType]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadLogs();
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [loadLogs]);
 
   const getActionIcon = (type: string) => {
     switch (type) {
@@ -182,32 +116,19 @@ export function ActivityLogs() {
     }
   };
 
-  const filteredLogs = activityLogs.filter((log) => {
-    const matchesSearch =
-      log.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.user.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.ipAddress.includes(searchTerm);
-    const matchesFilter =
-      filterType === "All" || log.type === filterType.toLowerCase().replace(" ", "_");
-    return matchesSearch && matchesFilter;
-  });
-
-  const stats = {
-    totalActions: activityLogs.length,
-    logins: activityLogs.filter((l) => l.type === "login").length,
-    uploads: activityLogs.filter((l) => l.type === "upload").length,
-    approvals: activityLogs.filter((l) => l.type === "approval").length,
-    security: activityLogs.filter((l) => l.type === "security").length,
-  };
-
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold text-gray-900">Activity Logs</h2>
-        <p className="text-gray-600">
-          System-wide activity tracking and audit trail
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-semibold text-gray-900">Activity Logs</h2>
+          <p className="text-gray-600">
+            System-wide activity tracking and audit trail
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => void loadLogs()} disabled={loading}>
+          <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
       </div>
 
       {/* Statistics */}
@@ -298,22 +219,31 @@ export function ActivityLogs() {
         </CardContent>
       </Card>
 
+      {error ? (
+        <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>
+      ) : null}
+
       {/* Activity Timeline */}
       <Card>
         <CardHeader>
           <CardTitle>Activity Timeline</CardTitle>
           <CardDescription>
-            Complete audit trail of all system activities
+            Live audit trail from the `activity_logs` database (last 30 days)
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {filteredLogs.length === 0 ? (
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 py-10 text-gray-600">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                Loading activity logs…
+              </div>
+            ) : activityLogs.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
-                No activity logs found
+                No activity logs found for the selected filters
               </div>
             ) : (
-              filteredLogs.map((log) => (
+              activityLogs.map((log) => (
                 <div
                   key={log.id}
                   className={`p-4 border rounded-lg hover:border-[#8B1538] transition-colors ${
@@ -325,7 +255,7 @@ export function ActivityLogs() {
                       {getActionIcon(log.type)}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-2">
+                      <div className="flex items-center gap-2 mb-2 flex-wrap">
                         <h3 className="font-semibold text-gray-900">
                           {log.action}
                         </h3>
@@ -339,7 +269,7 @@ export function ActivityLogs() {
                       <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500">
                         <div>
                           <span className="font-medium">{log.user}</span>
-                          {log.role !== "N/A" && (
+                          {log.role !== "System" && log.role !== "N/A" && (
                             <>
                               <span className="mx-1">•</span>
                               <span className="capitalize">{log.role}</span>
@@ -349,7 +279,7 @@ export function ActivityLogs() {
                         <span>•</span>
                         <span className="font-mono">{log.ipAddress}</span>
                         <span>•</span>
-                        <span>{log.timestamp}</span>
+                        <span>{log.timestampLabel || log.timestamp}</span>
                       </div>
                     </div>
                   </div>

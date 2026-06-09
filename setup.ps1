@@ -381,7 +381,9 @@ if ($SkipDatabase) {
             'database_migration_student_portal.sql',
             'database_migration_documents_upload.sql',
             'database_migration_credentials.sql',
-            'database_migration_physical_docs.sql'
+            'database_migration_physical_docs.sql',
+            'database_migration_document_authenticity_consent.sql',
+            'database_migration_enrollment_status_draft.sql'
         )
 
         $applied = 0
