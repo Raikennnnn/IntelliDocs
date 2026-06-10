@@ -12,7 +12,7 @@ declare(strict_types=1);
  *
  * Notes:
  * - If a setting row exists and is an empty string, that feature is explicitly disabled by admin.
- * - If a setting row is missing entirely, we fall back to a computed PH-style school year.
+ * - If a setting row is missing entirely, the year is treated as not configured (null).
  */
 
 function ensureAppSettingsTable(PDO $pdo): void
@@ -66,7 +66,7 @@ function getOngoingSchoolYear(PDO $pdo): ?string
 {
     $r = readSchoolYearSetting($pdo, 'ongoing_school_year');
     if ($r['exists'] === false) {
-        return fallbackComputedSchoolYear();
+        return null;
     }
     $val = (string)($r['value'] ?? '');
     if ($val === '') return null;
@@ -88,7 +88,7 @@ function getEnrollmentSchoolYear(PDO $pdo): ?string
     // Backward compat: older projects stored this as active_school_year.
     $old = readSchoolYearSetting($pdo, 'active_school_year');
     if ($old['exists'] === false) {
-        return fallbackComputedSchoolYear();
+        return null;
     }
     $val = (string)($old['value'] ?? '');
     if ($val === '') return null;
