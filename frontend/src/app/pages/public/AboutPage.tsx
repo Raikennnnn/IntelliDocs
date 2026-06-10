@@ -1,62 +1,17 @@
-import { Link } from 'react-router';
 import { Footer } from '../../components/Footer';
-import imgImageNuestraSenoraDeGuiaAcademy from '../../../assets/logo.png';
+import { LandingNavbar } from '../../components/LandingNavbar';
 import aboutPageHero from '../../../assets/aboutpage-C52rUoUG.png';
 import svgPaths from '../../../imports/svg-avo07mw5zs';
 
 export function AboutPage() {
   return (
-    <div className="bg-white min-h-screen">
-      {/* Navigation */}
-      <div className="bg-[rgba(255,255,255,0.95)] h-[64px] shadow-[0px_4px_6px_0px_rgba(0,0,0,0.1),0px_2px_4px_0px_rgba(0,0,0,0.1)] sticky top-0 z-50">
-        <div className="max-w-[1280px] mx-auto h-full flex items-center justify-between px-8">
-          {/* Logo */}
-          <Link to="/landing" className="flex items-center gap-3">
-            {/* TODO: Replace with official NSGDA logo image */}
-            <div className="size-[40px]">
-              <img 
-                alt="School Logo" 
-                className="w-full h-full object-contain" 
-                src={imgImageNuestraSenoraDeGuiaAcademy} 
-              />
-            </div>
-            <div>
-              <p className="font-bold text-[18px] text-[#8b1538] leading-tight">
-                Nuestra Señora De Guia
-              </p>
-              <p className="font-semibold text-[12px] text-[#2d5016]">
-                Academy of Marikina
-              </p>
-            </div>
-          </Link>
-
-          {/* Navigation Links */}
-          <div className="flex items-center gap-8">
-            <Link to="/landing" className="font-medium text-[16px] text-[#364153] hover:text-[#8b1538]">
-              Home
-            </Link>
-            <Link to="/about" className="font-medium text-[16px] text-[#364153] hover:text-[#8b1538]">
-              About
-            </Link>
-            <Link to="/admissions" className="font-medium text-[16px] text-[#364153] hover:text-[#8b1538]">
-              Admissions
-            </Link>
-            <Link to="/contact" className="font-medium text-[16px] text-[#364153] hover:text-[#8b1538]">
-              Contact Us
-            </Link>
-            <Link to="/login">
-              <div className="bg-[#2d5016] h-[36px] rounded-[8px] px-6 flex items-center justify-center hover:bg-[#2d5016]/90 transition-colors">
-                <p className="font-medium text-[14px] text-white">Login</p>
-              </div>
-            </Link>
-          </div>
-        </div>
-      </div>
+    <div className="min-h-screen overflow-x-hidden bg-white">
+      <LandingNavbar />
 
       {/* Main Content Container */}
       <div className="bg-[#f9fafb]">
         {/* Hero Section with Background Image */}
-        <section className="relative h-[600px] overflow-hidden">
+        <section className="relative min-h-[420px] overflow-hidden sm:min-h-[520px] lg:h-[600px]">
           {/* Background Image */}
           <div className="absolute inset-0 overflow-hidden pointer-events-none">
             {/* TODO: Replace with legitimate hero background photo (e.g., school building) */}
@@ -71,20 +26,20 @@ export function AboutPage() {
           <div className="absolute inset-0 bg-black/70" />
 
           {/* Hero Content */}
-          <div className="relative h-full max-w-[1280px] mx-auto px-8 flex items-center">
+          <div className="relative mx-auto flex h-full max-w-[1280px] items-center px-4 py-8 sm:px-6 lg:px-8">
             {/* Red Background Box with Content */}
-            <div className="relative w-full p-12">
+            <div className="relative w-full p-4 sm:p-8 lg:p-12">
               {/* Background layer with opacity */}
-              <div className="absolute inset-0 bg-[#8b1538] border-[0.909px] border-[rgba(0,0,0,0.1)] border-solid opacity-50 rounded-[14px] shadow-[0px_10px_15px_0px_rgba(0,0,0,0.1),0px_4px_6px_0px_rgba(0,0,0,0.1)] m-[0px] p-[100px]" />
+              <div className="absolute inset-0 rounded-[14px] border border-[rgba(0,0,0,0.1)] bg-[#8b1538] opacity-50 shadow-[0px_10px_15px_0px_rgba(0,0,0,0.1),0px_4px_6px_0px_rgba(0,0,0,0.1)]" />
               
               {/* Content layer at full opacity */}
-              <div className="relative flex items-center gap-16">
+              <div className="relative flex flex-col items-start gap-6 lg:flex-row lg:items-center lg:gap-16">
                 {/* Left Side - Heading */}
-                <div className="flex-shrink-0">
-                  <h1 className="font-bold text-[64px] text-white leading-[1.1] mb-2 font-[Inter]">
+                <div className="shrink-0">
+                  <h1 className="mb-1 font-[Inter] text-4xl font-bold leading-tight text-white sm:text-5xl lg:text-[64px]">
                     About
                   </h1>
-                  <p className="font-bold text-[96px] text-white leading-[1] font-[Inter]">
+                  <p className="font-[Inter] text-5xl font-bold leading-none text-white sm:text-6xl lg:text-[96px]">
                     NSDGA
                   </p>
                 </div>
@@ -106,7 +61,7 @@ export function AboutPage() {
         </section>
 
         {/* Mission and Vision Cards */}
-        <section className="max-w-[1280px] mx-auto px-8 py-16">
+        <section className="mx-auto max-w-[1280px] px-4 py-12 sm:px-6 lg:px-8 lg:py-16">
           <div className="grid md:grid-cols-2 gap-8">
             {/* Mission Card */}
             <div className="bg-white border border-[rgba(0,0,0,0.1)] rounded-[14px] shadow-[0px_10px_15px_0px_rgba(0,0,0,0.1),0px_4px_6px_0px_rgba(0,0,0,0.1)] p-8">

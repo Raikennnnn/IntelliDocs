@@ -179,7 +179,7 @@ export function RegistrationPage() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       {/* School Header Bar */}
-      <div className="bg-[#8B1538] py-3 px-6 flex-shrink-0">
+      <div className="flex-shrink-0 bg-[#8B1538] px-4 py-3 sm:px-6">
         {/* TODO: Replace with official NSGDA logo image */}
         <div className="flex items-center gap-3">
           <img 
@@ -199,7 +199,7 @@ export function RegistrationPage() {
       {/* Main Content */}
       <div className="flex flex-1 overflow-hidden">
       {/* Left Side - Form */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-white overflow-y-auto">
+      <div className="flex w-full items-center justify-center overflow-y-auto bg-white p-4 sm:p-8 lg:w-1/2">
         <div className="w-full max-w-md">
           {/* Back Button */}
           <button

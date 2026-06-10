@@ -2,8 +2,8 @@ import { Link } from 'react-router';
 import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { Footer } from '../../components/Footer';
+import { LandingNavbar } from '../../components/LandingNavbar';
 import { publicAssetUrl } from '../../lib/api';
-import imgImageNuestraSenoraDeGuiaAcademy from '../../../assets/logo.png';
 
 type EventItem = {
   id?: string;
@@ -51,45 +51,10 @@ export function EventsPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="sticky top-0 z-50 h-[64px] bg-[rgba(255,255,255,0.95)] shadow-[0px_4px_6px_0px_rgba(0,0,0,0.1),0px_2px_4px_0px_rgba(0,0,0,0.1)]">
-        <div className="mx-auto flex h-full max-w-[1280px] items-center justify-between px-8">
-          <Link to="/landing" className="flex items-center gap-3">
-            <div className="size-[40px]">
-              <img
-                alt="School Logo"
-                className="h-full w-full object-contain"
-                src={imgImageNuestraSenoraDeGuiaAcademy}
-              />
-            </div>
-            <div>
-              <p className="text-[18px] font-bold leading-tight text-[#8b1538]">Nuestra Señora De Guia</p>
-              <p className="text-[12px] font-semibold text-[#2d5016]">Academy of Marikina</p>
-            </div>
-          </Link>
-          <div className="flex items-center gap-8">
-            <Link to="/landing" className="text-[16px] font-medium text-[#364153] hover:text-[#8b1538]">
-              Home
-            </Link>
-            <Link to="/about" className="text-[16px] font-medium text-[#364153] hover:text-[#8b1538]">
-              About
-            </Link>
-            <Link to="/admissions" className="text-[16px] font-medium text-[#364153] hover:text-[#8b1538]">
-              Admissions
-            </Link>
-            <Link to="/contact" className="text-[16px] font-medium text-[#364153] hover:text-[#8b1538]">
-              Contact Us
-            </Link>
-            <Link to="/login">
-              <div className="flex h-[36px] items-center justify-center rounded-[8px] bg-[#2d5016] px-6 hover:bg-[#2d5016]/90">
-                <p className="text-[14px] font-medium text-white">Login</p>
-              </div>
-            </Link>
-          </div>
-        </div>
-      </div>
+    <div className="min-h-screen overflow-x-hidden bg-gray-50">
+      <LandingNavbar />
 
-      <div className="mx-auto max-w-[1280px] px-8 py-12">
+      <div className="mx-auto max-w-[1280px] px-4 py-10 sm:px-6 lg:px-8 lg:py-12">
         <Link
           to="/landing"
           className="mb-8 inline-flex items-center gap-2 text-sm font-semibold text-[#8b1538] hover:underline"
