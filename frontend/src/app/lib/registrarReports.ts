@@ -1,4 +1,5 @@
 import { apiFetch } from './api';
+import { buildFormalReportDocumentHtml } from './formalReportDocument';
 
 export type RegistrarReportType =
   | 'applicants'
@@ -46,32 +47,12 @@ function buildPrintHtml(
   columns: string[],
   rows: Array<Record<string, string>>,
 ): string {
-  const esc = (v: string) =>
-    v
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  const head = columns.map((c) => `<th>${esc(c)}</th>`).join('');
-  const body = rows
-    .map((row) => {
-      const cells = columns.map((c) => `<td>${esc(String(row[c] ?? ''))}</td>`).join('');
-      return `<tr>${cells}</tr>`;
-    })
-    .join('');
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
-<style>
-body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#111}
-h1{font-size:20px;margin:0 0 4px} p.meta{font-size:12px;color:#555;margin:0 0 16px}
-table{width:100%;border-collapse:collapse;font-size:11px}
-th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;vertical-align:top}
-th{background:#f3f4f6} @media print{body{margin:12px} button{display:none}}
-</style></head><body>
-<h1>${esc(title)}</h1>
-<p class="meta">${esc(subtitle)} · Generated ${esc(new Date().toLocaleString())}</p>
-<button type="button" onclick="window.print()">Print</button>
-<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
-</body></html>`;
+  return buildFormalReportDocumentHtml({
+    title,
+    schoolYearLabel: subtitle,
+    columns,
+    rows,
+  });
 }
 
 export async function fetchRegistrarReport(

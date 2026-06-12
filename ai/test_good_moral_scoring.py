@@ -43,7 +43,6 @@ def build_good_moral_checks(passed: dict[str, bool]) -> list[dict]:
         "Name label",
         "School name keyword",
         "Date/issuance text found",
-        "Authority/signature keyword (Principal/Registrar)",
     ]
     return [{"field": f, "ok": bool(passed.get(f, False))} for f in fields]
 
@@ -54,18 +53,17 @@ def assert_eq(label: str, got, expected) -> None:
 
 
 def main() -> None:
-    # Scenario from screenshot: missing principal only (after removing To Whom)
+    # Scenario: one label keyword missing (signature is covered by visual scan, not doc_checks)
     checks = build_good_moral_checks(
         {
             "Good moral / moral character keyword": True,
             "Certification/Certificate keyword": True,
             "Name label": True,
-            "School name keyword": True,
+            "School name keyword": False,
             "Date/issuance text found": True,
-            "Authority/signature keyword (Principal/Registrar)": False,
         }
     )
-    assert_eq("good moral check count", len(checks), 6)
+    assert_eq("good moral check count", len(checks), 5)
     ocr = 0.85
     field_checks = [{"field": "Name", "ok": True}, {"field": "Previous school", "ok": True}]
     l2 = l2_from_checks(checks, field_checks, ocr)
@@ -79,7 +77,7 @@ def main() -> None:
     if l2_pass:
         assert "0% concern" in summary
     else:
-        assert "Authority/signature" in summary
+        assert "School name" in summary
 
     # Old scenario (7 checks, missing to_whom + principal) reproduced for comparison
     old_checks = [
@@ -138,7 +136,7 @@ def main() -> None:
     assert_eq("name mismatch fails level", mismatch_lv["pass"], False)
     assert_eq("name mismatch concern > 0", mismatch_lv["score"] > 0, True)
     assert "Name" in mismatch_lv["summary"]
-    assert "Authority" not in mismatch_lv["summary"]
+    assert "School name" not in mismatch_lv["summary"]
 
     # Signature scan is shown in cross-check but must not inflate enrollment MM %.
     sig_fail_checks = [
@@ -206,7 +204,7 @@ def main() -> None:
     assert "Missing: LRN detected" not in issue_blob
 
     print("OK — good moral scoring is consistent:")
-    print(f"  6-check model (1 missing): L2={l2}%, summary={summary}")
+    print(f"  5-check model (1 missing): L2={l2}%, summary={summary}")
     print(f"  7-check legacy model (2 missing): L2={old_l2}%")
     print(f"  name mismatch concern: {mismatch_lv['score']}% — {mismatch_lv['summary']}")
     print(f"  composite confidence={l2}% (stored ai_score basis)")

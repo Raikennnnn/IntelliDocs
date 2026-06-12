@@ -23,6 +23,8 @@ export type SecurityLevels = {
   alert_level?: number;
   highest_level_passed: number;
   quality_enforced_at_upload?: boolean;
+  /** 2×2 ID photos: image quality + AI tamper only (no enrollment mismatch). */
+  photo_only_checks?: boolean;
 };
 
 type SecurityLevelsPanelProps = {
@@ -31,8 +33,9 @@ type SecurityLevelsPanelProps = {
   className?: string;
 };
 
-/** Image quality is enforced at upload — hide Level 1 from verification UI (incl. legacy AI payloads). */
-function verificationLevels(levels: SecurityLevel[]): SecurityLevel[] {
+/** Image quality is enforced at upload — hide Level 1 unless this is a photo-only verification. */
+function verificationLevels(levels: SecurityLevel[], security?: SecurityLevels | null): SecurityLevel[] {
+  if (security?.photo_only_checks) return levels;
   return levels.filter((lv) => !/image quality/i.test(lv.title));
 }
 
@@ -51,6 +54,8 @@ function resolveAlertLevel(security: SecurityLevels | null | undefined, levels: 
 
 function displayLevelTitle(title: string, compact?: boolean): string {
   if (compact) {
+    if (/image quality/i.test(title)) return "Quality";
+    if (/ai tamper|authenticity/i.test(title)) return "AI check";
     if (/mismatch|enrollment.*match|document.*match/i.test(title)) return "Mismatch (MM)";
     if (/tamper|integrity/i.test(title)) return "Tamper (T)";
   }
@@ -62,20 +67,24 @@ function displayLevelTitle(title: string, compact?: boolean): string {
 }
 
 export function SecurityLevelsPanel({ security, compact, className }: SecurityLevelsPanelProps) {
-  const levels = security?.levels?.length ? verificationLevels(security.levels) : [];
+  const levels = security?.levels?.length ? verificationLevels(security.levels, security) : [];
+  const photoOnly = security?.photo_only_checks === true;
 
   if (!levels.length) {
     return (
       <p className={cn("text-sm text-gray-500", className)}>
-        Verification levels will appear after AI runs (mismatch check → tamper check).
+        {photoOnly
+          ? "Verification levels will appear after AI runs (image quality → AI tamper check)."
+          : "Verification levels will appear after AI runs (mismatch check → tamper check)."}
       </p>
     );
   }
 
   const totalLevels = levels.length;
   const uploadPreChecked =
-    security?.quality_enforced_at_upload !== false ||
-    (security?.levels?.length ?? 0) > levels.length;
+    !photoOnly &&
+    (security?.quality_enforced_at_upload !== false ||
+      (security?.levels?.length ?? 0) > levels.length);
   const alertLevel = resolveAlertLevel(security, levels);
 
   const alertFooter = (() => {
@@ -83,6 +92,12 @@ export function SecurityLevelsPanel({ security, compact, className }: SecurityLe
       return uploadPreChecked
         ? "Security level: 0 — no issues detected (image quality checked at upload)."
         : "Security level: 0 — no issues detected.";
+    }
+    if (photoOnly) {
+      if (alertLevel === 1) {
+        return "Security level: 1 — image quality concern detected.";
+      }
+      return "Security level: 2 — AI tamper or synthetic-image concern detected.";
     }
     if (alertLevel === 1) {
       const mismatchOnly =

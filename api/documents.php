@@ -23,6 +23,19 @@ function columnExists(PDO $pdo, string $table, string $column): bool
     return (bool)$stmt->fetchColumn();
 }
 
+function describeUploadError(int $code): string
+{
+    return match ($code) {
+        UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'File is too large. Maximum size is 5MB — try compressing the image or saving as JPG.',
+        UPLOAD_ERR_PARTIAL => 'Upload was interrupted. Please try again.',
+        UPLOAD_ERR_NO_FILE => 'No file was received. Please choose a file and try again.',
+        UPLOAD_ERR_NO_TMP_DIR => 'Server upload folder is misconfigured. Contact the registrar.',
+        UPLOAD_ERR_CANT_WRITE => 'Server could not save the upload. Contact the registrar.',
+        UPLOAD_ERR_EXTENSION => 'This file type is blocked by the server.',
+        default => 'Invalid file upload',
+    };
+}
+
 /** @return array{id: int, role: string} */
 function requireDocumentActor(): array
 {
@@ -202,6 +215,15 @@ if ($method === 'POST') {
     }
 
     if (!isset($_FILES['file'])) {
+        $contentLength = (int)($_SERVER['CONTENT_LENGTH'] ?? 0);
+        if ($contentLength > 0 && empty($_POST) && empty($_FILES)) {
+            http_response_code(413);
+            echo json_encode([
+                'success' => false,
+                'error' => 'File is too large for the server. Maximum size is 5MB — try compressing the image or saving as JPG.',
+            ]);
+            exit;
+        }
         http_response_code(400);
         echo json_encode(['success' => false, 'error' => 'No file uploaded']);
         exit;
@@ -222,9 +244,10 @@ if ($method === 'POST') {
     }
 
     $file = $_FILES['file'];
-    if (!is_array($file) || (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'error' => 'Invalid file upload']);
+    $uploadErr = is_array($file) ? (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+    if (!is_array($file) || $uploadErr !== UPLOAD_ERR_OK) {
+        http_response_code($uploadErr === UPLOAD_ERR_INI_SIZE || $uploadErr === UPLOAD_ERR_FORM_SIZE ? 413 : 400);
+        echo json_encode(['success' => false, 'error' => describeUploadError($uploadErr)]);
         exit;
     }
 

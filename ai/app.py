@@ -180,6 +180,31 @@ def _looks_like_psa_birth_cert(norm_text: str) -> bool:
     return False
 
 
+def _normalize_doc_type_key(doc_type: str) -> str:
+    t = (doc_type or "").strip().lower()
+    if t in ("birthcert",):
+        return "birth_certificate"
+    if t in ("sf10", "form137", "form157"):
+        return "form137"
+    if t in ("report_card",):
+        return "sf9"
+    if t in ("goodmoral",):
+        return "good_moral"
+    return t or "other"
+
+
+def _doc_type_display_label(doc_type: str) -> str:
+    key = _normalize_doc_type_key(doc_type)
+    labels = {
+        "birth_certificate": "PSA birth certificate",
+        "form137": "SF10 / Form 137",
+        "sf9": "SF9 / Report card",
+        "good_moral": "Good moral certificate",
+        "photo_2x2": "2×2 ID photo",
+    }
+    return labels.get(key, (doc_type or "document").replace("_", " ").strip() or "document")
+
+
 def _resolve_doc_type_from_content(norm_text: str, requested: str) -> str:
     """Prefer document content over upload slot when they disagree (e.g. PSA in SF10 slot)."""
     req = (requested or "").strip().lower()
@@ -483,6 +508,257 @@ def _append_good_moral_signature_field_check(
         ]
 
 
+_SEAL_ASSETS_DIR = os.path.join(APP_DIR, "assets", "seals")
+_seal_templates_bootstrapped = False
+
+
+def _bootstrap_seal_templates() -> None:
+    """Create reference seal crops from bundled admission samples when assets are missing."""
+    global _seal_templates_bootstrapped
+    if _seal_templates_bootstrapped:
+        return
+    _seal_templates_bootstrapped = True
+    try:
+        import cv2
+    except ImportError:
+        return
+
+    os.makedirs(_SEAL_ASSETS_DIR, exist_ok=True)
+    needed = ("psa_logo.png", "deped_logo.png", "deped_ncr_logo.png")
+    if all(os.path.isfile(os.path.join(_SEAL_ASSETS_DIR, name)) for name in needed):
+        return
+
+    samples = os.path.join(APP_DIR, "..", "frontend", "public", "admission-samples")
+    psa_src = os.path.join(samples, "psa-birth-certificate.jpg")
+    gm_src = os.path.join(samples, "good-moral-certificate.jpg")
+    if not os.path.isfile(psa_src) or not os.path.isfile(gm_src):
+        return
+
+    psa = cv2.imread(psa_src)
+    gm = cv2.imread(gm_src)
+    if psa is None or gm is None:
+        return
+
+    ph, pw = psa.shape[:2]
+    cv2.imwrite(
+        os.path.join(_SEAL_ASSETS_DIR, "psa_logo.png"),
+        psa[int(ph * 0.01) : int(ph * 0.13), int(pw * 0.01) : int(pw * 0.16)],
+    )
+    gh, gw = gm.shape[:2]
+    cv2.imwrite(
+        os.path.join(_SEAL_ASSETS_DIR, "deped_logo.png"),
+        gm[int(gh * 0.02) : int(gh * 0.17), int(gw * 0.02) : int(gw * 0.18)],
+    )
+    cv2.imwrite(
+        os.path.join(_SEAL_ASSETS_DIR, "deped_ncr_logo.png"),
+        gm[int(gh * 0.02) : int(gh * 0.17), int(gw * 0.78) : int(gw * 0.98)],
+    )
+
+
+def _load_seal_template(name: str):
+    _bootstrap_seal_templates()
+    path = os.path.join(_SEAL_ASSETS_DIR, name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        import cv2
+
+        tpl = cv2.imread(path)
+        if tpl is None:
+            return None
+        return cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
+    except Exception:
+        return None
+
+
+def _blue_pixel_ratio(roi_bgr) -> float:
+    try:
+        import cv2
+        import numpy as np
+
+        hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, np.array([90, 40, 40]), np.array([140, 255, 255]))
+        return float(np.mean(mask > 0))
+    except Exception:
+        return 0.0
+
+
+def _multiscale_template_match_score(roi_gray, template_gray) -> float:
+    try:
+        import cv2
+    except ImportError:
+        return 0.0
+    if roi_gray is None or template_gray is None:
+        return 0.0
+    if roi_gray.size == 0 or template_gray.size == 0:
+        return 0.0
+
+    best = 0.0
+    for scale in (0.35, 0.5, 0.65, 0.8, 1.0, 1.2):
+        tw = max(8, int(template_gray.shape[1] * scale))
+        th = max(8, int(template_gray.shape[0] * scale))
+        tpl = cv2.resize(template_gray, (tw, th))
+        if roi_gray.shape[0] < tpl.shape[0] or roi_gray.shape[1] < tpl.shape[1]:
+            continue
+        res = cv2.matchTemplate(roi_gray, tpl, cv2.TM_CCOEFF_NORMED)
+        best = max(best, float(res.max()))
+    return best
+
+
+def _scan_seal_or_logo(filepath: str, doc_type: str) -> dict:
+    """
+    Visual seal/logo scan for PSA birth certificates and good moral certificates.
+    Uses template matching plus color heuristics (PSA blue round seal, DepEd header emblem).
+    """
+    fallback = {
+        "detected": False,
+        "confidence": 0.0,
+        "label": "",
+        "signals": [],
+        "scan_method": "visual",
+    }
+    dt = (doc_type or "").strip().lower()
+    if dt in ("goodmoral",):
+        dt = "good_moral"
+    if dt not in ("birth_certificate", "birthcert", "good_moral"):
+        return fallback
+
+    try:
+        import cv2
+    except ImportError:
+        fallback["signals"] = ["OpenCV unavailable for seal/logo scan."]
+        return fallback
+
+    try:
+        img = cv2.imread(filepath)
+        if img is None:
+            fallback["signals"] = ["Could not read image for seal/logo scan."]
+            return fallback
+
+        h, w = img.shape[:2]
+        signals: list[str] = []
+
+        if dt in ("birth_certificate", "birthcert"):
+            label = "PSA seal/logo (visual)"
+            tpl = _load_seal_template("psa_logo.png")
+            search = img[0 : int(h * 0.24), 0 : int(w * 0.32)]
+            tl = img[0 : int(h * 0.22), 0 : int(w * 0.28)]
+            blue = _blue_pixel_ratio(tl)
+            match = 0.0
+            if tpl is not None:
+                gray = cv2.cvtColor(search, cv2.COLOR_BGR2GRAY)
+                match = _multiscale_template_match_score(gray, tpl)
+            detected = blue >= 0.08 or match >= 0.42
+            confidence = max(min(1.0, blue * 3.5), match)
+            if blue >= 0.08:
+                signals.append(f"Blue PSA-style seal detected in header ({blue * 100:.0f}% of top-left area).")
+            if match >= 0.35:
+                signals.append(f"PSA logo template match {int(round(match * 100))}%.")
+            if not detected:
+                signals.append("No PSA round seal or logo detected in the document header.")
+        else:
+            label = "Official seal/logo (DepEd or school emblem)"
+            deped = _load_seal_template("deped_logo.png")
+            deped_ncr = _load_seal_template("deped_ncr_logo.png")
+            regions = [
+                ("header center", 0.08, 0.0, 0.92, 0.30),
+                ("header left", 0.0, 0.0, 0.35, 0.28),
+                ("header right", 0.65, 0.0, 1.0, 0.28),
+            ]
+            best = 0.0
+            best_label = ""
+            for region_name, x0, y0, x1, y1 in regions:
+                roi = img[int(h * y0) : int(h * y1), int(w * x0) : int(w * x1)]
+                if roi.size == 0:
+                    continue
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                for tpl_name, tpl in (("DepEd seal", deped), ("DepEd NCR seal", deped_ncr)):
+                    if tpl is None:
+                        continue
+                    score = _multiscale_template_match_score(gray, tpl)
+                    if score > best:
+                        best = score
+                        best_label = f"{tpl_name} in {region_name}"
+            top_band = img[0 : int(h * 0.32), int(w * 0.05) : int(w * 0.95)]
+            try:
+                import numpy as np
+
+                sat = float(np.mean(cv2.cvtColor(top_band, cv2.COLOR_BGR2HSV)[:, :, 1] > 45))
+            except Exception:
+                sat = 0.0
+            detected = best >= 0.38 or sat >= 0.04
+            confidence = max(best, min(1.0, sat * 4.0))
+            if best_label and best >= 0.35:
+                signals.append(f"{best_label}: template match {int(round(best * 100))}%.")
+            if sat >= 0.04:
+                signals.append(f"Colored emblem detected in certificate header ({sat * 100:.1f}% saturated area).")
+            if not detected:
+                signals.append("No DepEd or school seal/logo detected in the certificate header.")
+
+        return {
+            "detected": bool(detected),
+            "confidence": round(float(confidence), 2),
+            "label": label,
+            "signals": signals[:4],
+            "scan_method": "visual",
+        }
+    except Exception:
+        fallback["signals"] = ["Seal/logo scan failed unexpectedly."]
+        return fallback
+
+
+def _append_seal_logo_doc_check(payload: dict, filepath: str, doc_type: str) -> None:
+    """Add seal/logo visual check to doc_checks and refresh match confidence."""
+    scan = _scan_seal_or_logo(filepath, doc_type)
+    label = str(scan.get("label") or "Seal/logo (visual)")
+    detected = bool(scan.get("detected"))
+    confidence = float(scan.get("confidence") or 0.0)
+    row = {
+        "field": label,
+        "ok": detected,
+        "scan_method": "visual",
+        "match_ratio": round(confidence, 2) if detected else 0.0,
+    }
+    note = "; ".join(str(s) for s in (scan.get("signals") or []) if str(s).strip())
+    if note:
+        row["note"] = note
+
+    checks = list(payload.get("doc_checks") or [])
+    checks = [c for c in checks if str(c.get("field") or "").strip().lower() != label.lower()]
+    checks.append(row)
+    payload["doc_checks"] = checks
+    payload["seal_scan"] = scan
+
+    if not detected:
+        payload["issues"] = (payload.get("issues") or []) + [
+            f"Seal/logo scan: {note or 'official seal or logo not detected in the document header.'}"
+        ]
+
+
+def _refresh_verify_confidence(
+    payload: dict,
+    *,
+    doc_type: str,
+    ocr_confidence: float,
+    word_count: int,
+    detected_lrn: str | None,
+    is_photo: bool,
+) -> None:
+    doc_checks = list(payload.get("doc_checks") or [])
+    field_checks = list(payload.get("field_checks") or [])
+    score = _composite_verify_score(
+        is_photo=is_photo,
+        ocr_confidence=ocr_confidence,
+        word_count=word_count,
+        doc_checks=doc_checks,
+        field_checks=field_checks,
+        detected_lrn=detected_lrn,
+        doc_type=doc_type,
+    )
+    payload["confidence"] = score
+    payload["match_score"] = score
+
+
 def _level_pack(
     *,
     level: int,
@@ -633,6 +909,15 @@ def _build_security_levels(
     quality_enforced_at_upload: bool = False,
 ) -> dict:
     """Three-level security model returned to PHP / frontend."""
+
+    def _security_alert_level(passes: list[bool]) -> int:
+        """0 = all clear; increases to the index of the highest failed stage (1-based)."""
+        alert = 0
+        for i, ok in enumerate(passes):
+            if not ok:
+                alert = i + 1
+        return alert
+
     is_photo = doc_type in PHOTO_DOC_TYPES
     if quality_enforced_at_upload:
         l1_pass = True
@@ -648,49 +933,94 @@ def _build_security_levels(
         l1_summary = str(quality.get("message") or "")
         l1_issues = list(quality.get("issues") or [])
 
+    if is_photo:
+        # 2×2 ID photos: image quality + AI tamper/synthetic only (no enrollment mismatch).
+        l1_concern = _concern_display_score(l1_pass, l1_score)
+        l1_summary_out = (
+            "Image quality acceptable — 0% concern."
+            if l1_pass
+            else f"Image quality concern — {l1_concern}%."
+        )
+
+        syn_score = float(payload.get("synthetic_score") or 1.0)
+        syn_signals = list(payload.get("synthetic_signals") or [])
+        cells = tamper_cells or []
+        fields = tamper_fields or []
+        high_risk = any(str(c.get("risk")) == "high" for c in cells) or any(
+            str(f.get("risk")) == "high" for f in fields
+        )
+        combined_integrity = min(_clamp01(tamper_score), _clamp01(syn_score))
+        ai_pass = (
+            tamper_score >= 0.50
+            and syn_score >= 0.72
+            and not (high_risk and combined_integrity < 0.65)
+        )
+        ai_concern = _concern_display_score(ai_pass, int(round(combined_integrity * 100)))
+        ai_issues = (list(payload.get("tamper_signals") or []) + syn_signals)[:6]
+        if ai_pass:
+            ai_summary = "AI tamper and synthetic check clear — 0% concern."
+        else:
+            ai_summary = (
+                f"Possible AI edit or manipulation — {ai_concern}% concern; review the preview."
+            )
+
+        levels = [
+            _level_pack(
+                level=1,
+                title="Image quality",
+                passed=l1_pass,
+                score=l1_concern,
+                summary=l1_summary_out if l1_pass else (l1_summary or l1_summary_out),
+                issues=l1_issues,
+            ),
+            _level_pack(
+                level=2,
+                title="AI tamper & authenticity",
+                passed=ai_pass,
+                score=ai_concern,
+                summary=ai_summary,
+                issues=ai_issues,
+            ),
+        ]
+        overall_pass = l1_pass and ai_pass
+        alert_level = _security_alert_level([l1_pass, ai_pass])
+        return {
+            "levels": levels,
+            "overall_pass": overall_pass,
+            "alert_level": alert_level,
+            "highest_level_passed": alert_level,
+            "quality_enforced_at_upload": quality_enforced_at_upload,
+            "photo_only_checks": True,
+        }
+
     doc_checks = list(payload.get("doc_checks") or [])
     field_checks = list(payload.get("field_checks") or [])
     ocr_conf = float(payload.get("ocr_confidence") or 0.0)
     match_conf = float(payload.get("confidence") or 0.0)
 
-    if is_photo:
-        l2_pass = match_conf >= 0.80
-        l2_score = int(round(match_conf * 100))
-        l2_summary = (
-            "ID photo accepted."
-            if l2_pass
-            else "ID photo did not pass readability checks."
-        )
-        l2_issues = list(payload.get("issues") or [])[:4]
-    else:
-        label_ratio, field_ratio = _document_match_ratios(doc_checks, field_checks)
-        # Headline match % must match stored confidence / weighted overall score.
-        match_score_pct = int(round(_clamp01(match_conf) * 100))
-        l2_score = match_score_pct
-        enrollment_ok = not field_checks or all(
-            bool(c.get("ok"))
-            for c in field_checks
-            if str(c.get("field") or "").strip().lower() not in _ENROLLMENT_MM_EXCLUDE_FIELDS
-        )
-        l2_pass = l2_score >= 62 and label_ratio >= 0.35 and enrollment_ok
-        l2_issues = _mismatch_level_issues(
-            doc_checks,
-            field_checks,
-            list(payload.get("issues") or []),
-        )
+    label_ratio, field_ratio = _document_match_ratios(doc_checks, field_checks)
+    # Headline match % must match stored confidence / weighted overall score.
+    match_score_pct = int(round(_clamp01(match_conf) * 100))
+    l2_score = match_score_pct
+    enrollment_ok = not field_checks or all(
+        bool(c.get("ok"))
+        for c in field_checks
+        if str(c.get("field") or "").strip().lower() not in _ENROLLMENT_MM_EXCLUDE_FIELDS
+    )
+    l2_pass = l2_score >= 62 and label_ratio >= 0.35 and enrollment_ok
+    l2_issues = _mismatch_level_issues(
+        doc_checks,
+        field_checks,
+        list(payload.get("issues") or []),
+    )
 
     l2_concern = _concern_display_score(l2_pass, l2_score)
-    if not is_photo and field_checks:
+    if field_checks:
         field_concern = _field_check_concern_pct(field_checks)
         if field_concern > 0:
             l2_concern = field_concern
             l2_pass = False
-    if not is_photo:
-        l2_summary = _document_match_summary(doc_checks, field_checks, l2_concern, l2_pass)
-    elif l2_pass:
-        l2_summary = "ID photo accepted — 0% concern."
-    else:
-        l2_summary = f"ID photo readability concern — {l2_concern}%."
+    l2_summary = _document_match_summary(doc_checks, field_checks, l2_concern, l2_pass)
 
     cells = tamper_cells or []
     fields = tamper_fields or []
@@ -703,13 +1033,7 @@ def _build_security_levels(
     # to incorrectly show "possible edits" when integrity is clean (e.g., 100%).
     l3_pass = tamper_score >= 0.50 and not (high_risk and tamper_score < 0.65)
     l3_concern = _concern_display_score(l3_pass, tamper_pct)
-    if is_photo:
-        # Photos do not run tamper analysis.
-        l3_pass = True
-        l3_concern = 0
-        l3_summary = "Tamper scan not required for ID photos — 0% concern."
-        l3_issues: list[str] = []
-    elif l3_pass:
+    if l3_pass:
         hotspot_n = len(cells) + len(fields)
         l3_summary = (
             "Tamper check clear — 0% concern."
@@ -739,14 +1063,6 @@ def _build_security_levels(
         summary=l3_summary,
         issues=l3_issues,
     )
-
-    def _security_alert_level(passes: list[bool]) -> int:
-        """0 = all clear; increases to the index of the highest failed stage (1-based)."""
-        alert = 0
-        for i, ok in enumerate(passes):
-            if not ok:
-                alert = i + 1
-        return alert
 
     if quality_enforced_at_upload:
         # Image quality is blocked at student upload — show only verification levels (renumbered 1–2).
@@ -1935,7 +2251,20 @@ def _evaluate(
     norm_text = normalize(upper_text)
     requested_doc_type = (doc_type or "").strip().lower()
     doc_type = _resolve_doc_type_from_content(norm_text, requested_doc_type)
-    if doc_type == "birth_certificate" and requested_doc_type not in ("birth_certificate", "birthcert"):
+    slot_mismatch_info: dict[str, str] | None = None
+    if _normalize_doc_type_key(requested_doc_type) != _normalize_doc_type_key(doc_type):
+        expected_label = _doc_type_display_label(requested_doc_type)
+        detected_label = _doc_type_display_label(doc_type)
+        slot_mismatch_info = {
+            "expected": expected_label,
+            "detected": detected_label,
+        }
+        issues.insert(
+            0,
+            f"Wrong document: this slot requires {expected_label}, but the scan appears to be a {detected_label}.",
+        )
+        penalize(0.40)
+    elif doc_type == "birth_certificate" and requested_doc_type not in ("birth_certificate", "birthcert"):
         issues.append(
             "Document content matches a PSA birth certificate; using identity checks only (not school record fields)."
         )
@@ -1989,7 +2318,6 @@ def _evaluate(
                 name_kw = has_any(["NAME"])
                 school_kw = has_any(["SCHOOL", "ACADEMY", "HIGH SCHOOL", "SENIOR HIGH"])
                 date_kw = has_any(["DATE", "ISSUED", "THIS", "DAY OF"]) or has_date_like()
-                principal_kw = has_any(["PRINCIPAL", "REGISTRAR", "HEAD", "SIGNED"])
 
                 doc_checks = [
                     {"field": "Good moral / moral character keyword", "ok": bool(moral_kw)},
@@ -1997,7 +2325,6 @@ def _evaluate(
                     {"field": "Name label", "ok": bool(name_kw)},
                     {"field": "School name keyword", "ok": bool(school_kw)},
                     {"field": "Date/issuance text found", "ok": bool(date_kw)},
-                    {"field": "Authority/signature keyword (Principal/Registrar)", "ok": bool(principal_kw)},
                 ]
             elif doc_type in ("sf9", "report_card"):
                 # SF9 / Report card checks
@@ -2135,15 +2462,204 @@ def _evaluate(
                     if len(t) >= 3 and t not in _LOCATION_STOPWORDS
                 ]
 
-            def _psa_child_section_lines(u_simple: list[str], u_norm: list[str]) -> list[str]:
-                """Lines for the child block only — excludes father/mother/informant sections."""
-                end_idx = len(u_simple)
+            _NAME_NOISE_KEYWORDS = (
+                "FATHER",
+                "MOTHER",
+                "INFORMANT",
+                "ATTENDANT",
+                "GENDER",
+                "SEX",
+                "FEMALE",
+                "MALE",
+                "PLACE OF BIRTH",
+                "DATE OF BIRTH",
+                "BIRTHDATE",
+                "CERTIFICATE",
+                "LIVE BIRTH",
+                "REPUBLIC",
+                "PHILIPPINE",
+                "STATISTICS",
+                "PSA",
+                "REGISTRY",
+                "FORM NO",
+                "SF10",
+                "SF 10",
+                "FORM 137",
+                "JHS",
+                "SHS",
+                "SCHOOL YEAR",
+                "LEARNER S",
+                "PAGE ",
+                "COPY",
+                "OCRG",
+                "QUADR",
+                "ACCOMPLISHED",
+                "SCCOMPLISHED",
+                "DOCUMENTARY",
+                "STAMP TAX",
+                "REMARKS",
+                "ANNOTATION",
+                "CIVIL REGISTRAR",
+                "PREPARED BY",
+                "RECEIVED AT",
+                "CITIZENSHIP",
+                "RELIGION",
+                "OCCUPATION",
+                "MAIDEN NAME",
+                "HOSPITAL",
+                "MUNICIPALITY",
+                "BARANGAY",
+                "DEPARTMENT",
+                "EDUCATION",
+                "EDUKASYON",
+                "KAGAWARAN",
+                "REPUBLIKA",
+                "MINISTRY",
+                "DIVISION OF",
+                "SCHOOLS DIVISION",
+                "PERMANENT RECORD",
+                "OFFICIAL SEAL",
+                "REPORT CARD",
+                "HIGH SCHOOL",
+                "ELEMENTARY SCHOOL",
+                "ELEMENTARY",
+                "ACADEMY",
+                "LEARNING AREAS",
+                "GENERAL AVERAGE",
+                "ADVISER",
+                "PRINCIPAL",
+                "YEAR SECTION",
+                "YEAR/SECTION",
+            )
+
+            def _looks_like_school_institution_name(text: str) -> bool:
+                t = norm_simple(text or "")
+                if not t:
+                    return False
+                institution_kw = (
+                    "HIGH SCHOOL",
+                    "ELEMENTARY",
+                    "ACADEMY",
+                    "COLLEGE",
+                    "UNIVERSITY",
+                    "SENIOR HIGH",
+                    "JUNIOR HIGH",
+                    "NATIONAL HIGH",
+                    "INTEGRATED SCHOOL",
+                    "REPORT CARD",
+                    "DEPARTMENT OF",
+                    "KAGAWARAN",
+                    "DIVISION OFFICE",
+                    "SCHOOLS DIVISION",
+                    "LEARNING AREAS",
+                    "GENERAL AVERAGE",
+                )
+                if any(k in t for k in institution_kw):
+                    return True
+                if re.search(r"\bSCHOOL\b", t) and len(t.split()) >= 2:
+                    return True
+                return False
+
+            def _normalize_person_name_display(name: str) -> str:
+                """LAST, FIRST [MIDDLE] → FIRST [MIDDLE] LAST for enrollment matching."""
+                s = _strip_name_field_labels(name or "")
+                if "," in s:
+                    last_part, rest = [p.strip() for p in s.split(",", 1)]
+                    if last_part and rest:
+                        return f"{rest} {last_part}".strip()
+                return s
+
+            def _name_line_is_noise(ln: str) -> bool:
+                nl = normalize(ln or "")
+                if not nl:
+                    return True
+                if any(k in nl for k in _NAME_NOISE_KEYWORDS):
+                    return True
+                if re.search(r"\bPAGE\s*\d", nl):
+                    return True
+                if re.search(r"\bNAME OF (FATHER|MOTHER)\b", nl):
+                    return True
+                if re.search(r"\bCOPY\s+FOR\b", nl):
+                    return True
+                return False
+
+            def _infer_image_size_from_boxes(normed: list[dict]) -> tuple[int | None, int | None]:
+                if not normed:
+                    return None, None
+                try:
+                    w = int(max(b["x"] + b["w"] for b in normed))
+                    h = int(max(b["y"] + b["h"] for b in normed))
+                    return (w if w > 0 else None), (h if h > 0 else None)
+                except Exception:
+                    return None, None
+
+            _MONTH_NAMES = (
+                "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+                "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+                "JAN", "FEB", "MAR", "APR", "JUN", "JUL", "AUG", "SEP", "SEPT",
+                "OCT", "NOV", "DEC",
+            )
+
+            def _looks_like_date_fragment(text: str) -> bool:
+                u = normalize(text or "")
+                if not u:
+                    return False
+                if re.search(r"\bDATE OF BIRTH\b", u) or re.search(r"\bBIRTHDATE\b", u):
+                    return True
+                if re.search(r"\b(19|20)\d{2}\b", u):
+                    return True
+                if any(m in u for m in _MONTH_NAMES):
+                    return True
+                if re.search(r"\b(0?[1-9]|[12]\d|3[01])\b", u) and (
+                    any(m in u for m in _MONTH_NAMES) or re.search(r"\b(19|20)\d{2}\b", u)
+                ):
+                    return True
+                return False
+
+            def _candidate_name_is_plausible(name: str) -> bool:
+                clean = _normalize_person_name_display(name or "")
+                if len(clean) < 3:
+                    return False
+                if (
+                    _name_line_is_noise(clean)
+                    or _looks_like_date_fragment(clean)
+                    or _looks_like_school_institution_name(clean)
+                ):
+                    return False
+                words = [w for w in clean.split() if len(w) >= 2 and w.isalpha()]
+                return len(words) >= 2
+
+            def _box_looks_like_person_name_part(text: str) -> bool:
+                s = _strip_name_field_labels(text or "")
+                if not s or len(s) < 2 or len(s) > 48:
+                    return False
+                if (
+                    _name_line_is_noise(s)
+                    or _looks_like_date_fragment(s)
+                    or _looks_like_school_institution_name(s)
+                ):
+                    return False
+                if re.search(r"\d", s):
+                    return False
+                if re.fullmatch(r"[A-Z][A-Z'.\-]*", s):
+                    return True
+                parts = s.split()
+                if not parts or len(parts) > 4:
+                    return False
+                return all(re.fullmatch(r"[A-Z][A-Z'.\-]*", p) for p in parts)
+
+            def _psa_parent_section_index(u_norm: list[str]) -> int:
+                """First line index where parent / informant blocks begin."""
                 for i, nl in enumerate(u_norm):
+                    if re.search(r"\b6\b", nl) and "MAIDEN" in nl:
+                        return i
+                    if re.search(r"\b11\b", nl) and ("FATHER" in nl or "NAME" in nl):
+                        return i
+                    if re.search(r"\b(1[3-9]|2[0-5])\s*[\.)]?\s*(NAME OF\s+)?(FATHER|MOTHER)\b", nl):
+                        return i
                     if any(
                         k in nl
                         for k in (
-                            "FATHER",
-                            "MOTHER",
                             "NAME OF FATHER",
                             "NAME OF MOTHER",
                             "MAIDEN NAME OF MOTHER",
@@ -2151,8 +2667,458 @@ def _evaluate(
                             "ATTENDANT",
                         )
                     ):
-                        end_idx = i
+                        return i
+                    if re.search(r"\bFATHER\b", nl) and "CHILD" not in nl:
+                        return i
+                    if re.search(r"\bMOTHER\b", nl) and "MAIDEN" in nl:
+                        return i
+                return len(u_norm)
+
+            def _psa_child_name_y_max(normed: list[dict], image_h: int | None) -> float:
+                """Upper y-limit for field 1 (child name) — excludes father/mother blocks."""
+                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
+                cuts = [ih * 0.26]
+                for b in normed:
+                    t = b["t"]
+                    if re.search(r"\b2\b", t) and "SEX" in t:
+                        cuts.append(float(b["y"]) - 5.0)
+                    if "DATE OF BIRTH" in t or ("DATE" in t and re.search(r"\b3\b", t)):
+                        cuts.append(float(b["y"]) - 5.0)
+                    if "MAIDEN" in t and "NAME" in t:
+                        cuts.append(float(b["y"]) - 5.0)
+                    if re.search(r"\b11\b", t) and ("FATHER" in t or "NAME" in t):
+                        cuts.append(float(b["y"]) - 8.0)
+                    if "NAME OF FATHER" in t or "NAME OF MOTHER" in t:
+                        cuts.append(float(b["y"]) - 8.0)
+                    if re.search(r"\b(13|14|15)\b", t) and ("FATHER" in t or "MOTHER" in t):
+                        cuts.append(float(b["y"]) - 8.0)
+                return max(ih * 0.10, min(cuts))
+
+            def _psa_name_from_parent_section(name: str, normed: list[dict], image_h: int | None) -> bool:
+                """True when the detected name's tokens sit in the lower parent section."""
+                if not name or not normed:
+                    return False
+                y_max = _psa_child_name_y_max(normed, image_h)
+                tokens = [t for t in norm_simple(name).split() if len(t) >= 3]
+                if len(tokens) < 2:
+                    return False
+                parent_hits = 0
+                for b in normed:
+                    if float(b["y"]) <= y_max:
+                        continue
+                    bt = norm_simple(b["t"])
+                    if any(t in bt for t in tokens):
+                        parent_hits += 1
+                return parent_hits >= 2
+
+            def _psa_child_block_end_index(u_norm: list[str]) -> int:
+                """End of child block (before DOB row, mother section, or father)."""
+                end = _psa_parent_section_index(u_norm)
+                for i, nl in enumerate(u_norm):
+                    if i >= end:
                         break
+                    if re.search(r"\b2\b", nl) and "SEX" in nl:
+                        return i + 1
+                    if "DATE OF BIRTH" in nl or "DATE OF BIRT" in nl:
+                        return i
+                    if re.search(r"\b3\b", nl) and "DATE" in nl:
+                        return i
+                    if "MAIDEN NAME" in nl:
+                        return i
+                    if re.search(r"\b6\b", nl) and "MAIDEN" in nl:
+                        return i
+                return end
+
+            def _detect_psa_child_name_from_boxes(
+                normed: list[dict],
+                image_h: int | None,
+                image_w: int | None,
+            ) -> tuple[str, dict | None]:
+                """
+                PSA Form 1A: read field 1 (child name) from FIRST / MIDDLE / LAST columns
+                in the upper-left block — never header strips or parent sections.
+                """
+                if not normed:
+                    return "", None
+                iw = image_w or _infer_image_size_from_boxes(normed)[0] or 1000
+                ih = image_h or _infer_image_size_from_boxes(normed)[1] or 1400
+                y_header = ih * 0.08
+                y_child_max = _psa_child_name_y_max(normed, image_h)
+                x_child_max = iw * 0.62
+
+                zone = [
+                    b
+                    for b in normed
+                    if y_header <= b["y"] <= y_child_max
+                    and b["x"] <= x_child_max
+                    and not _name_line_is_noise(b["t"])
+                ]
+                if not zone:
+                    return "", None
+
+                def _values_below_header(hdr: dict, *, col_slack: float) -> list[dict]:
+                    hx = hdr["x"]
+                    y_lo = hdr["y"] + hdr["h"] * 0.12
+                    y_hi = min(hdr["y"] + hdr["h"] * 3.5, y_child_max)
+                    vals = [
+                        b
+                        for b in zone
+                        if y_lo <= b["y"] <= y_hi
+                        and abs(b["x"] - hx) <= col_slack
+                        and _box_looks_like_person_name_part(b["t"])
+                    ]
+                    vals.sort(key=lambda b: b["y"])
+                    return vals
+
+                first_hdrs = [b for b in zone if re.search(r"\bFIRST\b", b["t"])]
+                middle_hdrs = [b for b in zone if re.search(r"\bMIDDLE\b", b["t"])]
+                last_hdrs = [
+                    b for b in zone if re.search(r"\bLAST\b", b["t"]) and "MAIDEN" not in b["t"]
+                ]
+                col_slack = max(iw * 0.14, 80.0)
+                row_band = max(14.0, ih * 0.018)
+
+                first_hdrs.sort(key=lambda b: (b["y"], b["x"]))
+                for fh in first_hdrs:
+                    fy = float(fh["y"])
+                    mh = [b for b in middle_hdrs if abs(float(b["y"]) - fy) <= row_band]
+                    lh = [b for b in last_hdrs if abs(float(b["y"]) - fy) <= row_band]
+                    if not mh or not lh:
+                        continue
+                    mh_hdr = min(mh, key=lambda b: abs(float(b["y"]) - fy))
+                    lh_hdr = min(lh, key=lambda b: abs(float(b["y"]) - fy))
+                    name_parts: list[str] = []
+                    picked: list[dict] = []
+                    for hdr in (fh, mh_hdr, lh_hdr):
+                        vals = _values_below_header(hdr, col_slack=col_slack)
+                        if vals:
+                            part = _strip_name_field_labels(vals[0]["t"])
+                            if part:
+                                name_parts.append(part)
+                                picked.append(vals[0])
+                    if len(name_parts) >= 2:
+                        full = " ".join(name_parts)
+                        if _candidate_name_is_plausible(full):
+                            return full[:64], _union_bbox(picked)
+
+                sex_rows = [
+                    b
+                    for b in normed
+                    if re.search(r"\b2\b", b["t"]) and "SEX" in b["t"] and b["y"] <= y_child_max
+                ]
+                dob_rows = [
+                    b
+                    for b in normed
+                    if ("DATE OF BIRTH" in b["t"] or "DATE OF BIRT" in b["t"])
+                    and b["y"] <= y_child_max
+                ]
+                name_y_max = y_child_max
+                if sex_rows:
+                    name_y_max = min(name_y_max, min(float(b["y"]) for b in sex_rows) - 4)
+                if dob_rows:
+                    name_y_max = min(name_y_max, min(float(b["y"]) for b in dob_rows) - 4)
+
+                name_anchor_y = y_header
+                for b in zone:
+                    bt = b["t"]
+                    if ("NAME" in bt and re.search(r"\b1\b", bt)) or re.match(r"^1\.?\s*NAME", bt):
+                        name_anchor_y = float(b["y"])
+                        break
+
+                name_boxes = [
+                    b
+                    for b in zone
+                    if name_anchor_y - 8 <= b["y"] < name_y_max
+                    and _box_looks_like_person_name_part(b["t"])
+                    and not re.fullmatch(r"(FIRST|MIDDLE|LAST|NAME)", b["t"])
+                ]
+                name_boxes.sort(key=lambda b: (round(b["y"] / row_band), b["x"]))
+                if name_boxes:
+                    rows: list[list[dict]] = []
+                    for b in name_boxes:
+                        ry = round(b["y"] / row_band)
+                        if not rows or round(rows[-1][0]["y"] / row_band) != ry:
+                            rows.append([b])
+                        else:
+                            rows[-1].append(b)
+                    if rows:
+                        top_row = rows[0]
+                        top_row.sort(key=lambda b: b["x"])
+                        flat = top_row[:4]
+                        full = " ".join(_strip_name_field_labels(b["t"]) for b in flat)
+                        if _candidate_name_is_plausible(full):
+                            return full[:64], _union_bbox(flat)
+
+                return "", None
+
+            def _sf9_learner_block_y(
+                normed: list[dict],
+                image_h: int | None,
+            ) -> tuple[float, float]:
+                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
+                header_rows = [
+                    b
+                    for b in normed
+                    if any(k in b["t"] for k in ("REPORT CARD", "FORM 138", "SF9", "REPORT ON"))
+                ]
+                y_lo = max((b["y"] + b["h"] for b in header_rows), default=ih * 0.12) + 6.0
+                stop_rows = [
+                    b
+                    for b in normed
+                    if ("LEARNING" in b["t"] and "AREA" in b["t"])
+                    or re.search(r"\bQUARTER\b", b["t"])
+                    or "GENERAL AVERAGE" in b["t"]
+                ]
+                y_hi = min((b["y"] for b in stop_rows), default=ih * 0.34) - 8.0
+                if y_hi <= y_lo:
+                    y_hi = ih * 0.34
+                return y_lo, y_hi
+
+            def _detect_sf9_report_card_name_from_boxes(
+                normed: list[dict],
+                image_h: int | None,
+                image_w: int | None,
+            ) -> tuple[str, dict | None]:
+                """SF9 report card: read NAME: value row — never the school title header."""
+                if not normed:
+                    return "", None
+                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
+                iw = float(image_w or _infer_image_size_from_boxes(normed)[0] or 1000)
+                y_lo, y_hi = _sf9_learner_block_y(normed, image_h)
+
+                for b in normed:
+                    if not (y_lo <= b["y"] <= y_hi):
+                        continue
+                    m = re.search(r"NAME\s*:?\s*(.+)$", b["t"], re.I)
+                    if not m:
+                        continue
+                    val = _normalize_person_name_display(m.group(1))
+                    if val and _candidate_name_is_plausible(val):
+                        return val[:64], b
+
+                name_labels = [
+                    b
+                    for b in normed
+                    if y_lo <= b["y"] <= y_hi
+                    and re.fullmatch(r"NAME\s*:?", norm_simple(b["t"]))
+                ]
+                name_labels.sort(key=lambda b: (b["y"], b["x"]))
+                for lb in name_labels:
+                    cy = lb["y"] + lb["h"] / 2.0
+                    band = max(14.0, lb["h"] * 1.25)
+                    candidates = [
+                        b
+                        for b in normed
+                        if b is not lb
+                        and y_lo <= b["y"] <= y_hi
+                        and abs((b["y"] + b["h"] / 2.0) - cy) <= band
+                        and b["x"] > lb["x"] + max(4.0, lb["w"] * 0.2)
+                        and _box_looks_like_person_name_part(b["t"])
+                    ]
+                    if not candidates:
+                        below = [
+                            b
+                            for b in normed
+                            if b["y"] > lb["y"] + lb["h"] * 0.2
+                            and b["y"] < lb["y"] + lb["h"] * 2.5
+                            and abs(b["x"] - lb["x"]) < max(140.0, iw * 0.22)
+                            and _box_looks_like_person_name_part(b["t"])
+                        ]
+                        candidates = below
+                    if not candidates:
+                        continue
+                    candidates.sort(key=lambda b: (b["y"], b["x"]))
+                    picked = candidates[:3]
+                    full = _normalize_person_name_display(" ".join(b["t"] for b in picked))
+                    if _candidate_name_is_plausible(full):
+                        return full[:64], _union_bbox(picked)
+                return "", None
+
+            def _extract_sf9_name_from_lines(
+                u_simple: list[str],
+                u_norm: list[str] | None = None,
+            ) -> str:
+                for ln in u_simple or []:
+                    ul = (ln or "").upper()
+                    if "YEAR" in ul and "SECTION" in ul:
+                        continue
+                    m = re.search(r"NAME\s*:?\s*(.+)$", ln, re.I)
+                    if not m:
+                        continue
+                    val = _normalize_person_name_display(m.group(1))
+                    if val and _candidate_name_is_plausible(val):
+                        return val[:64]
+                return ""
+
+            def _detect_academic_learner_name_from_boxes(
+                normed: list[dict],
+                image_h: int | None,
+                image_w: int | None,
+            ) -> tuple[str, dict | None]:
+                """
+                SF10 / Form 137: read learner name from FIRST / MIDDLE / LAST columns
+                in the learner-information block — never DepEd header strips.
+                """
+                if any("REPORT CARD" in b["t"] for b in normed):
+                    return "", None
+                if not normed:
+                    return "", None
+                iw = image_w or _infer_image_size_from_boxes(normed)[0] or 1000
+                ih = image_h or _infer_image_size_from_boxes(normed)[1] or 1400
+                y_header = ih * 0.17
+                y_max = ih * 0.48
+
+                anchor_rows = [
+                    b
+                    for b in normed
+                    if any(
+                        k in b["t"]
+                        for k in (
+                            "LEARNER S INFORMATION",
+                            "LEARNERS INFORMATION",
+                            "LEARNER INFORMATION",
+                            "NAME OF LEARNER",
+                            "SF10",
+                            "SF 10",
+                            "FORM 137",
+                            "FORM137",
+                            "PERMANENT RECORD",
+                            "REPORT CARD",
+                            "SF9",
+                        )
+                    )
+                ]
+                if anchor_rows:
+                    y_header = max(y_header, min(b["y"] for b in anchor_rows) - ih * 0.01)
+
+                scholastic_rows = [
+                    b
+                    for b in normed
+                    if "SCHOLASTIC" in b["t"] or "ELIGIBILITY" in b["t"] or "CERTIFICATION" in b["t"]
+                ]
+                if scholastic_rows:
+                    y_max = min(y_max, min(b["y"] for b in scholastic_rows) - 10)
+
+                zone = [
+                    b
+                    for b in normed
+                    if y_header <= b["y"] <= y_max
+                    and not _name_line_is_noise(b["t"])
+                    and "DEPARTMENT" not in b["t"]
+                    and "EDUCATION" not in b["t"]
+                ]
+                if not zone:
+                    return "", None
+
+                def _values_below_header(hdr: dict, *, col_slack: float) -> list[dict]:
+                    hx = hdr["x"]
+                    y_lo = hdr["y"] + hdr["h"] * 0.12
+                    y_hi = hdr["y"] + hdr["h"] * 4.5
+                    vals = [
+                        b
+                        for b in zone
+                        if y_lo <= b["y"] <= y_hi
+                        and abs(b["x"] - hx) <= col_slack
+                        and _box_looks_like_person_name_part(b["t"])
+                    ]
+                    vals.sort(key=lambda b: b["y"])
+                    return vals
+
+                col_slack = max(iw * 0.13, 72.0)
+                first_hdrs = [
+                    b for b in zone if re.search(r"\bFIRST\b", b["t"]) and "NAME" in b["t"]
+                ]
+                middle_hdrs = [
+                    b for b in zone if re.search(r"\bMIDDLE\b", b["t"]) and "NAME" in b["t"]
+                ]
+                last_hdrs = [
+                    b
+                    for b in zone
+                    if re.search(r"\bLAST\b", b["t"])
+                    and "NAME" in b["t"]
+                    and "MAIDEN" not in b["t"]
+                ]
+
+                name_parts: list[str] = []
+                picked: list[dict] = []
+                for hdrs in (first_hdrs, middle_hdrs, last_hdrs):
+                    if not hdrs:
+                        continue
+                    hdr = min(hdrs, key=lambda b: (b["y"], b["x"]))
+                    vals = _values_below_header(hdr, col_slack=col_slack)
+                    if vals:
+                        part = _strip_name_field_labels(vals[0]["t"])
+                        if part and part not in name_parts:
+                            name_parts.append(part)
+                            picked.append(vals[0])
+
+                if len(name_parts) >= 2:
+                    full = " ".join(name_parts)
+                    if _candidate_name_is_plausible(full):
+                        return full[:64], _union_bbox(picked)
+
+                lrn_rows = [b for b in zone if re.search(r"\bLRN\b", b["t"])]
+                birth_rows = [b for b in zone if "BIRTHDATE" in b["t"] or "BIRTH DATE" in b["t"]]
+                stop_y = min(
+                    [b["y"] for b in lrn_rows + birth_rows] or [y_max],
+                    default=y_max,
+                )
+
+                row_band = max(16.0, ih * 0.022)
+                name_boxes = [
+                    b
+                    for b in zone
+                    if b["y"] < stop_y - 6
+                    and _box_looks_like_person_name_part(b["t"])
+                    and not re.fullmatch(r"(FIRST|MIDDLE|LAST|NAME|EXTN?\.?)", b["t"])
+                ]
+                name_boxes.sort(key=lambda b: (round(b["y"] / row_band), b["x"]))
+                if name_boxes:
+                    rows: list[list[dict]] = []
+                    for b in name_boxes:
+                        ry = round(b["y"] / row_band)
+                        if not rows or round(rows[-1][0]["y"] / row_band) != ry:
+                            rows.append([b])
+                        else:
+                            rows[-1].append(b)
+                    value_row = None
+                    for row in rows:
+                        if len(row) >= 2:
+                            value_row = row
+                            break
+                    if value_row is None and rows:
+                        value_row = rows[0]
+                    if value_row:
+                        value_row.sort(key=lambda b: b["x"])
+                        flat = value_row[:4]
+                        full = " ".join(_strip_name_field_labels(b["t"]) for b in flat)
+                        if _candidate_name_is_plausible(full):
+                            return full[:64], _union_bbox(flat)
+
+                return "", None
+
+            def _strip_name_field_labels(text: str) -> str:
+                s = norm_simple(text or "")
+                for label in (
+                    "NAME OF LEARNER",
+                    "LEARNERS NAME",
+                    "LEARNER S NAME",
+                    "LEARNER NAME",
+                    "NAME OF CHILD",
+                    "CHILD S NAME",
+                    "GENDER",
+                    "GENFER",
+                    "SEX",
+                    "MALE",
+                    "FEMALE",
+                    "NAME",
+                ):
+                    s = re.sub(rf"\b{re.escape(label)}\b", " ", s)
+                return re.sub(r"\s+", " ", s).strip()
+
+            def _psa_child_section_lines(u_simple: list[str], u_norm: list[str]) -> list[str]:
+                """Lines for the child block only — excludes father/mother/informant sections."""
+                end_idx = _psa_parent_section_index(u_norm)
                 skip_headers = (
                     "REPUBLIC",
                     "PHILIPPINE",
@@ -2162,13 +3128,112 @@ def _evaluate(
                     "REGISTRY",
                     "FORM NO",
                     "PSA",
+                    "PAGE ",
+                    "COPY",
+                    "OCRG",
+                    "QUADR",
+                    "ACCOMPLISHED",
                 )
                 out: list[str] = []
                 for sl, nl in zip(u_simple[:end_idx], u_norm[:end_idx]):
                     if any(h in nl for h in skip_headers):
                         continue
+                    if _name_line_is_noise(sl):
+                        continue
                     out.append(sl)
                 return out
+
+            def _extract_psa_child_name_from_lines(
+                u_simple: list[str],
+                u_norm: list[str],
+                expected_name: str = "",
+            ) -> str:
+                """Parse PSA field 1 (FIRST / MIDDLE / LAST) from OCR lines — never father/mother."""
+                end = _psa_child_block_end_index(u_norm)
+                parts: dict[str, str] = {"first": "", "middle": "", "last": ""}
+                active: str | None = None
+
+                for i in range(min(end, len(u_norm))):
+                    nl = u_norm[i]
+                    sl = u_simple[i] if i < len(u_simple) else ""
+                    if re.search(r"\b2\b", nl) and "SEX" in nl:
+                        break
+                    if "DATE OF BIRTH" in nl:
+                        break
+                    if re.search(r"\b11\b", nl) and "FATHER" in nl:
+                        break
+                    if _name_line_is_noise(sl):
+                        active = None
+                        continue
+                    if re.search(r"\bFIRST\b", nl):
+                        active = "first"
+                        rest = _strip_name_field_labels(re.sub(r".*?\bFIRST\b", "", nl).strip())
+                        if _box_looks_like_person_name_part(rest):
+                            parts["first"] = rest
+                        continue
+                    if re.search(r"\bMIDDLE\b", nl):
+                        active = "middle"
+                        rest = _strip_name_field_labels(re.sub(r".*?\bMIDDLE\b", "", nl).strip())
+                        if _box_looks_like_person_name_part(rest):
+                            parts["middle"] = rest
+                        continue
+                    if re.search(r"\bLAST\b", nl) and "MAIDEN" not in nl:
+                        active = "last"
+                        rest = _strip_name_field_labels(re.sub(r".*?\bLAST\b", "", nl).strip())
+                        if _box_looks_like_person_name_part(rest):
+                            parts["last"] = rest
+                        continue
+                    if active and not parts[active]:
+                        clean = _strip_name_field_labels(sl)
+                        if _box_looks_like_person_name_part(clean):
+                            parts[active] = clean
+                            active = None
+
+                ordered = [parts[k] for k in ("first", "middle", "last") if parts[k]]
+                if len(ordered) >= 2:
+                    full = " ".join(ordered)
+                    if _candidate_name_is_plausible(full):
+                        return full[:64]
+
+                early_names: list[str] = []
+                for i in range(min(end, len(u_norm))):
+                    nl = u_norm[i]
+                    if re.search(r"\b2\b", nl) and "SEX" in nl:
+                        break
+                    if "DATE OF BIRTH" in nl:
+                        break
+                    clean = _strip_name_field_labels(u_simple[i] if i < len(u_simple) else "")
+                    if not clean or not _box_looks_like_person_name_part(clean):
+                        continue
+                    if clean in early_names:
+                        continue
+                    early_names.append(clean)
+                    if len(early_names) >= 3:
+                        break
+                if len(early_names) >= 2:
+                    full = " ".join(early_names[:3])
+                    if _candidate_name_is_plausible(full):
+                        return full[:64]
+
+                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
+                if exp_tokens:
+                    best_ratio = -1.0
+                    best_name = ""
+                    for ln in _psa_child_section_lines(u_simple, u_norm):
+                        clean = _strip_name_field_labels(ln)
+                        if not _box_looks_like_person_name_part(clean):
+                            continue
+                        hits = [t for t in exp_tokens if t in clean]
+                        ratio = len(hits) / max(1, len(exp_tokens))
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_name = clean
+                    if best_name and best_ratio >= 0.34:
+                        full = best_name
+                        if _candidate_name_is_plausible(full):
+                            return full[:64]
+
+                return ""
 
             def _psa_place_of_birth_lines(u_simple: list[str], u_norm: list[str]) -> list[str]:
                 lines: list[str] = []
@@ -2181,76 +3246,387 @@ def _evaluate(
                     return lines
                 return _psa_child_section_lines(u_simple, u_norm)
 
+            def _name_label_variants_for_doc(doc_kind: str) -> list[str]:
+                if doc_kind in ("birth_certificate", "birthcert"):
+                    return ["NAME OF CHILD", "CHILD S NAME", "1 NAME", "1. NAME"]
+                if doc_kind in ("sf9", "report_card"):
+                    return ["NAME"]
+                if doc_kind in ("sf10", "form137", "form157"):
+                    return [
+                        "NAME OF LEARNER",
+                        "LEARNERS NAME",
+                        "LEARNER S NAME",
+                        "LEARNER NAME",
+                        "LAST NAME",
+                        "FIRST NAME",
+                        "MIDDLE NAME",
+                    ]
+                return ["NAME"]
+
+            def _detect_name_from_boxes(
+                normed: list[dict],
+                *,
+                doc_kind: str,
+                image_h: int | None,
+                image_w: int | None = None,
+            ) -> tuple[str, dict | None]:
+                """Read child/learner name from OCR boxes near the correct label (not parent rows)."""
+                _academic = doc_kind in ("sf9", "report_card", "sf10", "form137", "form157")
+                iw = image_w or _infer_image_size_from_boxes(normed)[0]
+                if doc_kind in ("sf9", "report_card"):
+                    sf9_name, sf9_bb = _detect_sf9_report_card_name_from_boxes(
+                        normed, image_h=image_h, image_w=iw
+                    )
+                    if sf9_name:
+                        return sf9_name, sf9_bb
+                if _academic:
+                    acad_name, acad_bb = _detect_academic_learner_name_from_boxes(
+                        normed, image_h=image_h, image_w=iw
+                    )
+                    if acad_name:
+                        return acad_name, acad_bb
+
+                _birth = doc_kind in ("birth_certificate", "birthcert")
+                if _birth:
+                    iw = image_w or _infer_image_size_from_boxes(normed)[0]
+                    psa_name, psa_bb = _detect_psa_child_name_from_boxes(normed, image_h, iw)
+                    if psa_name:
+                        return psa_name, psa_bb
+                y_cut = None
+                if image_h and image_h > 0:
+                    if _birth:
+                        y_cut = _psa_child_name_y_max(normed, image_h)
+                    elif _academic:
+                        y_cut = float(image_h) * 0.16
+                label_variants = _name_label_variants_for_doc(doc_kind)
+                exclude_in_label = (
+                    "FATHER",
+                    "MOTHER",
+                    "INFORMANT",
+                    "ATTENDANT",
+                    "DEPARTMENT",
+                    "EDUCATION",
+                    "REPUBLIC",
+                    "PERMANENT",
+                )
+                value_exclude = (
+                    "GENDER",
+                    "SEX",
+                    "FEMALE",
+                    "MALE",
+                    "DATE",
+                    "LRN",
+                    "BIRTH",
+                    "PLACE",
+                    "FATHER",
+                    "MOTHER",
+                    "DEPARTMENT",
+                    "EDUCATION",
+                    "REPUBLIC",
+                    "SCHOOL",
+                    "DIVISION",
+                    "REGION",
+                    "RECORD",
+                    "OFFICIAL",
+                )
+
+                def _label_ok(b: dict) -> bool:
+                    t = b["t"]
+                    if any(x in t for x in exclude_in_label):
+                        return False
+                    if y_cut is not None and b["y"] > y_cut:
+                        return False
+                    return any(v in t for v in label_variants)
+
+                labels = [b for b in normed if _label_ok(b)]
+                labels.sort(
+                    key=lambda b: (
+                        -max((len(v) for v in label_variants if v in b["t"]), default=0),
+                        b["y"],
+                        b["x"],
+                    )
+                )
+
+                if not labels and _birth:
+                    labels = [
+                        b
+                        for b in normed
+                        if "NAME" in b["t"]
+                        and not any(x in b["t"] for x in exclude_in_label)
+                        and (y_cut is None or b["y"] <= y_cut)
+                    ]
+                    labels.sort(key=lambda b: (b["y"], b["x"]))
+
+                if _birth and labels:
+                    field1 = [
+                        b
+                        for b in labels
+                        if re.search(r"\b1\b", b["t"]) or re.match(r"^1\.?\s*NAME", b["t"])
+                    ]
+                    if field1:
+                        labels = sorted(field1, key=lambda b: (b["y"], b["x"]))
+
+                if not labels:
+                    return "", None
+
+                lb = labels[0]
+                cy = lb["y"] + lb["h"] / 2.0
+                band = max(14.0, lb["h"] * 1.1)
+                candidates = [
+                    b
+                    for b in normed
+                    if b is not lb
+                    and not any(x in b["t"] for x in value_exclude)
+                    and abs((b["y"] + b["h"] / 2.0) - cy) <= band
+                    and b["x"] > lb["x"] + max(4.0, lb["w"] * 0.35)
+                ]
+                if not candidates:
+                    candidates = [
+                        b
+                        for b in normed
+                        if b is not lb
+                        and not any(x in b["t"] for x in value_exclude)
+                        and b["y"] > lb["y"] + lb["h"] * 0.3
+                        and b["y"] < lb["y"] + lb["h"] * 2.8
+                        and abs(b["x"] - lb["x"]) < max(120.0, lb["w"] * 3.0)
+                    ]
+
+                if not candidates:
+                    combined = _strip_name_field_labels(lb["t"])
+                    if combined:
+                        return combined[:64], {
+                            "x": lb["x"],
+                            "y": lb["y"],
+                            "w": lb["w"],
+                            "h": lb["h"],
+                        }
+                    return "", None
+
+                candidates.sort(key=lambda b: (b["y"], b["x"]))
+                picked = candidates[:4]
+                joined = _strip_name_field_labels(" ".join(b["t"] for b in picked))
+                if not _candidate_name_is_plausible(joined):
+                    return "", None
+                x1 = min(b["x"] for b in picked)
+                y1 = min(b["y"] for b in picked)
+                x2 = max(b["x"] + b["w"] for b in picked)
+                y2 = max(b["y"] + b["h"] for b in picked)
+                bb = {"x": x1, "y": y1, "w": max(1.0, x2 - x1), "h": max(1.0, y2 - y1)}
+                return joined[:64], bb
+
+            def _name_tokens_match(expected_name: str, candidate: str) -> tuple[bool, float, list[str], list[str]]:
+                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
+                if not exp_tokens:
+                    return True, 1.0, [], []
+                cand = norm_simple(candidate)
+                if not cand:
+                    return False, 0.0, exp_tokens[:6], []
+                cand_tokens = [t for t in cand.split() if len(t) >= 2]
+                hits = [t for t in exp_tokens if t in cand or t in cand_tokens]
+                ratio = len(hits) / max(1, len(exp_tokens))
+                missing = [t for t in exp_tokens if t not in hits]
+                first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
+                ok = first_tok in cand and last_tok in cand and ratio >= 0.67
+                return ok, float(ratio), missing[:6], hits
+
+            def _name_tokens_match_certificate(expected_name: str, candidate: str) -> tuple[bool, float, list[str], list[str]]:
+                """Good moral / certification: first + last name match; middle may differ."""
+                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
+                if not exp_tokens:
+                    return True, 1.0, [], []
+                cand = norm_simple(candidate)
+                if not cand:
+                    return False, 0.0, exp_tokens[:6], []
+                hits = [t for t in exp_tokens if t in cand]
+                ratio = len(hits) / max(1, len(exp_tokens))
+                missing = [t for t in exp_tokens if t not in hits]
+                first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
+                core_ok = first_tok in cand and last_tok in cand
+                if core_ok and ratio < 0.67:
+                    ratio = max(ratio, round(2.0 / max(1, len(exp_tokens)), 2))
+                return core_ok, float(ratio), missing[:6], hits
+
+            def _extract_good_moral_certified_name(u_simple: list[str], u_norm: list[str] | None = None) -> str:
+                """Pull student name from 'This is to certify that …' body text."""
+                blob = " ".join(u_simple or [])
+                patterns = [
+                    r"THIS IS TO CERTIFY THAT\s+(.+?)(?:\s+OF\s+GRADE|\s*,\s*A\s+|\s+IS\s+A\s+)",
+                    r"CERTIF(?:Y|IES)\s+THAT\s+(.+?)(?:\s+OF\s+GRADE|\s+IS\s+A\s+)",
+                    r"HEREBY CERTIF(?:Y|IES)\s+THAT\s+(.+?)(?:\s+OF\s+GRADE|\s+IS\s+A\s+)",
+                ]
+                for pat in patterns:
+                    m = re.search(pat, blob, re.I)
+                    if not m:
+                        continue
+                    name = _strip_name_field_labels(m.group(1))
+                    name = re.sub(r"\s+OF\s+GRADE.*$", "", name, flags=re.I).strip()
+                    name = re.sub(r"\s+IS\s+A.*$", "", name, flags=re.I).strip()
+                    name = re.sub(
+                        r"\s*-\s*(HUMSS|STEM|ABM|ICT|EIM|GAS|TVL|BPP|FBS).*$",
+                        "",
+                        name,
+                        flags=re.I,
+                    ).strip()
+                    if _candidate_name_is_plausible(name):
+                        return name[:64]
+                for ln in u_simple or []:
+                    ul = (ln or "").upper()
+                    if "CERTIFY" not in ul and "CERTIFIES" not in ul:
+                        continue
+                    m = re.search(r"CERTIF(?:Y|IES)\s+THAT\s+(.+)", ln, re.I)
+                    if not m:
+                        continue
+                    tail = m.group(1)
+                    name = re.split(
+                        r"\s+OF\s+GRADE|\s+IS\s+A\s+|\s*,\s*A\s+",
+                        tail,
+                        maxsplit=1,
+                        flags=re.I,
+                    )[0]
+                    name = _strip_name_field_labels(name).strip()
+                    if _candidate_name_is_plausible(name):
+                        return name[:64]
+                return ""
+
             def name_match(expected_name: str, u_full: str, u_lines: list[str]) -> tuple[bool, float, list[str]]:
                 exp = norm_simple(expected_name)
                 if not exp:
                     return True, 1.0, []
-                # Token-based containment (robust to middle name/initial differences)
                 exp_tokens = [t for t in exp.split(" ") if len(t) >= 2]
                 if not exp_tokens:
                     return True, 1.0, []
-                # Prefer the best matching single line; fall back to whole-page text.
                 best_hits: list[str] = []
                 best_ratio = -1.0
                 for ln in u_lines or []:
-                    if not ln:
+                    if not ln or _name_line_is_noise(ln):
+                        continue
+                    clean = _strip_name_field_labels(ln)
+                    if not clean:
+                        continue
+                    hits = [t for t in exp_tokens if t in clean]
+                    ratio = len(hits) / max(1, len(exp_tokens))
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_hits = hits
+                if best_ratio < 0:
+                    clean_full = _strip_name_field_labels(u_full)
+                    best_hits = [t for t in exp_tokens if t in clean_full]
+                    best_ratio = len(best_hits) / max(1, len(exp_tokens))
+                missing = [t for t in exp_tokens if t not in best_hits]
+                first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
+                ok = first_tok in _strip_name_field_labels(u_full) and last_tok in _strip_name_field_labels(u_full) and best_ratio >= 0.67
+                return ok, float(best_ratio), missing[:6]
+
+            def name_match_good_moral(
+                expected_name: str,
+                u_simple: list[str],
+                u_norm: list[str],
+                normed_boxes: list[dict],
+            ) -> tuple[bool, float, list[str], str, dict | None]:
+                detected = _extract_good_moral_certified_name(u_simple, u_norm)
+                name_bbox = _value_area_for_label(normed_boxes, ["CERTIFY", "CERTIFIES", "THAT"])
+                if detected:
+                    ok, ratio, missing, _hits = _name_tokens_match_certificate(expected_name, detected)
+                    return ok, ratio, missing, detected, name_bbox
+                exp_tokens = [t for t in norm_simple(expected_name).split() if len(t) >= 2]
+                best_ratio = -1.0
+                best_name = ""
+                for ln in u_simple or []:
+                    if "CERTIFY" not in (ln or "").upper():
+                        continue
+                    clean = _extract_good_moral_certified_name([ln], [ln])
+                    if not clean:
+                        clean = _strip_name_field_labels(ln)
+                    if not _candidate_name_is_plausible(clean):
+                        continue
+                    ok, ratio, missing, _hits = _name_tokens_match_certificate(expected_name, clean)
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_name = clean
+                    if ok:
+                        return ok, ratio, missing, best_name[:64], name_bbox
+                if best_name:
+                    ok, ratio, missing, _hits = _name_tokens_match_certificate(expected_name, best_name)
+                    return ok, ratio, missing, best_name[:64], name_bbox
+                ok, ratio, missing = name_match(expected_name, " ".join(u_simple or []), u_simple)
+                if ok:
+                    return ok, ratio, missing, "", name_bbox
+                return False, ratio, missing, "", name_bbox
+
+            def name_match_birth_certificate(
+                expected_name: str,
+                u_simple: list[str],
+                u_norm: list[str],
+                normed_boxes: list[dict],
+                image_h: int | None,
+            ) -> tuple[bool, float, list[str], str, dict | None]:
+                """
+                PSA name check: child block + upper-page OCR boxes only.
+                Ignores father/mother rows and field labels (GENDER, etc.).
+                """
+                iw = _infer_image_size_from_boxes(normed_boxes)[0]
+                box_name, box_bb = _detect_psa_child_name_from_boxes(normed_boxes, image_h, iw)
+                if not box_name:
+                    box_name, box_bb = _detect_name_from_boxes(
+                        normed_boxes,
+                        doc_kind="birth_certificate",
+                        image_h=image_h,
+                        image_w=iw,
+                    )
+                if box_name and _psa_name_from_parent_section(box_name, normed_boxes, image_h):
+                    box_name = ""
+                    box_bb = None
+                if box_name and _candidate_name_is_plausible(box_name):
+                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, box_name)
+                    return ok, ratio, missing, box_name, box_bb
+
+                line_name = _extract_psa_child_name_from_lines(u_simple, u_norm, expected_name)
+                if line_name and _psa_name_from_parent_section(line_name, normed_boxes, image_h):
+                    line_name = ""
+                if line_name and _candidate_name_is_plausible(line_name):
+                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, line_name)
+                    return ok, ratio, missing, line_name, box_bb
+
+                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
+                if not exp_tokens:
+                    return True, 1.0, [], "", None
+                child_lines = [
+                    _strip_name_field_labels(ln)
+                    for ln in _psa_child_section_lines(u_simple, u_norm)
+                    if _strip_name_field_labels(ln) and _box_looks_like_person_name_part(ln)
+                ]
+
+                best_hits: list[str] = []
+                best_ratio = 0.0
+                best_parts: list[str] = []
+                for ln in child_lines:
+                    if _looks_like_date_fragment(ln):
                         continue
                     hits = [t for t in exp_tokens if t in ln]
                     ratio = len(hits) / max(1, len(exp_tokens))
                     if ratio > best_ratio:
                         best_ratio = ratio
                         best_hits = hits
-                if best_ratio < 0:
-                    best_hits = [t for t in exp_tokens if t in u_full]
-                    best_ratio = len(best_hits) / max(1, len(exp_tokens))
-                missing = [t for t in exp_tokens if t not in best_hits]
-                ok = best_ratio >= 0.6
-                return ok, float(best_ratio), missing[:6]
+                        best_parts = [ln.strip()]
+                    elif ratio == best_ratio and ratio > 0:
+                        best_parts.append(ln.strip())
 
-            def name_match_birth_certificate(
-                expected_name: str,
-                u_simple: list[str],
-                u_norm: list[str],
-            ) -> tuple[bool, float, list[str], str]:
-                """
-                PSA name check: compare only against the child's name block.
-                Requires both first and last name tokens — avoids false matches from
-                a parent's surname elsewhere on the certificate (e.g. Dela Cruz on father).
-                """
-                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
-                if not exp_tokens:
-                    return True, 1.0, [], ""
+                detected_line = ""
+                if best_parts and best_ratio > 0:
+                    detected_line = " ".join(best_parts[:3])[:64]
+                elif not detected_line:
+                    detected_line = _extract_psa_child_name_from_lines(
+                        u_simple, u_norm, expected_name
+                    )
+                missing = [t for t in exp_tokens if t not in best_hits]
                 first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
-                child_lines = _psa_child_section_lines(u_simple, u_norm)
-
-                best_hits: list[str] = []
-                best_ratio = 0.0
-                best_line = ""
-                for ln in child_lines:
-                    hits = [t for t in exp_tokens if t in ln]
-                    ratio = len(hits) / max(1, len(exp_tokens))
-                    if ratio > best_ratio:
-                        best_ratio = ratio
-                        best_hits = hits
-                        best_line = ln.strip()[:64]
-
-                missing = [t for t in exp_tokens if t not in best_hits]
-                first_ok = any(first_tok in ln for ln in child_lines)
-                last_ok = any(last_tok in ln for ln in child_lines)
-                # Child's first + last name must both appear in the child block.
+                joined_child = " ".join(child_lines)
+                first_ok = first_tok in joined_child
+                last_ok = last_tok in joined_child
                 ok = first_ok and last_ok and best_ratio >= 0.67
-                if not best_line and child_lines:
-                    skip_kw = ("DATE", "BIRTH", "SEX", "PLACE", "NAME", "MALE", "FEMALE", "REGISTRY")
-                    nameish = [
-                        ln
-                        for ln in child_lines
-                        if len(ln.split()) >= 1
-                        and not any(k in ln for k in skip_kw)
-                        and re.search(r"[A-Z]{2,}", ln)
-                    ]
-                    if nameish:
-                        best_line = " / ".join(nameish[:3])[:64]
-                return ok, float(best_ratio), missing[:6], best_line
+                if detected_line and not _candidate_name_is_plausible(detected_line):
+                    detected_line = ""
+                return ok, float(best_ratio), missing[:6], detected_line, None
 
             def birth_place_match(
                 expected_place: str,
@@ -2506,6 +3882,14 @@ def _evaluate(
                 for ln in pool:
                     if a in ln and b in ln:
                         return True
+                for i, ln in enumerate(u_lines):
+                    if "SCHOOL YEAR" not in ln and not re.search(r"\bSY\b", ln):
+                        continue
+                    chunk = ln
+                    if i + 1 < len(u_lines):
+                        chunk = f"{chunk} {u_lines[i + 1]}"
+                    if a in chunk and b in chunk:
+                        return True
                 return False
 
             exp_name = str(expected.get("name") or "").strip()
@@ -2526,7 +3910,9 @@ def _evaluate(
             run_name_check = _academic_doc or _birth_doc or _moral_doc
             run_sex_check = _academic_doc or _birth_doc
             run_school_year_check = _academic_doc or _moral_doc
-            run_prev_school_check = _academic_doc or _moral_doc
+            run_prev_school_check = (
+                (_academic_doc and doc_type not in ("sf9", "report_card")) or _moral_doc
+            )
             run_dob_check = _birth_doc
             run_birth_place_check = _birth_doc
             run_grade_check = _academic_doc
@@ -2569,14 +3955,31 @@ def _evaluate(
                 y2 = max(it["y"] + it["h"] for it in items)
                 return {"x": x1, "y": y1, "w": max(1.0, x2 - x1), "h": max(1.0, y2 - y1)}
 
+            def _box_matches_label(box_text: str, variant: str) -> bool:
+                v = str(variant or "").strip().upper()
+                t = str(box_text or "").upper()
+                if not v or not t:
+                    return False
+                if len(v) <= 5:
+                    return re.search(rf"\b{re.escape(v)}\b", t) is not None
+                return v in t
+
             def _value_area_for_label(
                 normed: list[dict],
                 label_variants: list[str],
                 *,
                 max_neighbors: int = 4,
+                y_min: float | None = None,
+                y_max: float | None = None,
             ) -> dict | None:
                 """Find the bounding area of the value(s) next to a label keyword."""
-                labels = [b for b in normed if any(v in b["t"] for v in label_variants)]
+                labels = [
+                    b
+                    for b in normed
+                    if any(_box_matches_label(b["t"], v) for v in label_variants)
+                    and (y_min is None or b["y"] >= y_min)
+                    and (y_max is None or b["y"] <= y_max)
+                ]
                 if not labels:
                     return None
                 labels.sort(key=lambda b: (b["y"], b["x"]))
@@ -2608,12 +4011,38 @@ def _evaluate(
                 # Fallback: the label itself.
                 return {"x": lb["x"], "y": lb["y"], "w": lb["w"], "h": lb["h"]}
 
-            def _find_lrn_box(normed: list[dict]) -> dict | None:
-                """Use the LRN label area; if missing, find any 12-digit token's box."""
-                bb = _value_area_for_label(normed, ["LRN", "IRN", "URN"])
+            def _academic_learner_zone_y(
+                normed: list[dict],
+                image_h: int | None,
+            ) -> tuple[float | None, float | None]:
+                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
+                if any("REPORT CARD" in b["t"] for b in normed):
+                    return _sf9_learner_block_y(normed, image_h)
+                y_min = ih * 0.17
+                y_max = ih * 0.48
+                scholastic_rows = [
+                    b for b in normed if "SCHOLASTIC" in b["t"] or "ELIGIBILITY" in b["t"]
+                ]
+                if scholastic_rows:
+                    y_max = min(y_max, min(b["y"] for b in scholastic_rows) - 10)
+                return y_min, y_max
+
+            def _find_lrn_box(normed: list[dict], image_h: int | None = None) -> dict | None:
+                """Use the LRN value area in the learner block; fallback to any 12-digit token there."""
+                y_min, y_max = _academic_learner_zone_y(normed, image_h)
+                bb = _value_area_for_label(
+                    normed,
+                    ["LRN", "IRN", "URN"],
+                    y_min=y_min,
+                    y_max=y_max,
+                )
                 if bb:
                     return bb
                 for b in normed:
+                    if y_min is not None and b["y"] < y_min:
+                        continue
+                    if y_max is not None and b["y"] > y_max:
+                        continue
                     if re.search(r"\b[0-9]{12}\b", b["t"]):
                         return {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
                 return None
@@ -2635,7 +4064,7 @@ def _evaluate(
             if run_lrn_check and exp_lrn:
                 ok_lrn = bool(detected_lrn) and exp_lrn == str(detected_lrn)
                 row = {"field": "LRN", "expected": exp_lrn, "detected": detected_lrn or "", "ok": ok_lrn}
-                _attach_bbox(row, _find_lrn_box(normed_boxes))
+                _attach_bbox(row, _find_lrn_box(normed_boxes, img_h))
                 checks.append(row)
                 if not ok_lrn:
                     issues.append("Mismatch: LRN in the document does not match the student's input.")
@@ -2643,9 +4072,57 @@ def _evaluate(
 
             if run_name_check and exp_name:
                 detected_name = ""
+                name_bbox: dict | None = None
                 if _birth_doc:
-                    ok_name, ratio, missing, detected_name = name_match_birth_certificate(
-                        exp_name, simple_lines, norm_lines
+                    ok_name, ratio, missing, detected_name, name_bbox = name_match_birth_certificate(
+                        exp_name, simple_lines, norm_lines, normed_boxes, img_h
+                    )
+                elif _academic_doc:
+                    doc_kind = doc_type if doc_type in ("sf9", "report_card", "sf10", "form137", "form157") else "sf9"
+                    box_name, name_bbox = _detect_name_from_boxes(
+                        normed_boxes, doc_kind=doc_kind, image_h=img_h
+                    )
+                    if box_name:
+                        ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, box_name)
+                        detected_name = _normalize_person_name_display(box_name)
+                    else:
+                        line_name = ""
+                        if doc_kind in ("sf9", "report_card"):
+                            line_name = _extract_sf9_name_from_lines(simple_lines, norm_lines)
+                        if line_name:
+                            ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, line_name)
+                            detected_name = line_name
+                        else:
+                            clean_lines = [
+                                _strip_name_field_labels(ln)
+                                for ln in simple_lines
+                                if not _name_line_is_noise(ln) and _strip_name_field_labels(ln)
+                            ]
+                            ok_name, ratio, missing = name_match(exp_name, norm_text, clean_lines)
+                            if not ok_name:
+                                exp_tokens = [t for t in norm_simple(exp_name).split(" ") if len(t) >= 2]
+                                best_line_ratio = -1.0
+                                for ln in clean_lines:
+                                    if not _candidate_name_is_plausible(ln):
+                                        continue
+                                    hits = [t for t in exp_tokens if t in ln]
+                                    line_ratio = len(hits) / max(1, len(exp_tokens))
+                                    if line_ratio > best_line_ratio:
+                                        best_line_ratio = line_ratio
+                                        detected_name = ln.strip()[:64]
+                                if best_line_ratio <= 0:
+                                    detected_name = ""
+                            elif not detected_name:
+                                exp_tokens = [t for t in norm_simple(exp_name).split(" ") if len(t) >= 2]
+                                for ln in clean_lines:
+                                    if not _candidate_name_is_plausible(ln):
+                                        continue
+                                    if exp_tokens and all(t in ln for t in [exp_tokens[0], exp_tokens[-1]]):
+                                        detected_name = ln.strip()[:64]
+                                        break
+                elif _moral_doc:
+                    ok_name, ratio, missing, detected_name, name_bbox = name_match_good_moral(
+                        exp_name, simple_lines, norm_lines, normed_boxes
                     )
                 else:
                     ok_name, ratio, missing = name_match(exp_name, norm_text, simple_lines)
@@ -2653,19 +4130,23 @@ def _evaluate(
                         exp_tokens = [t for t in norm_simple(exp_name).split(" ") if len(t) >= 2]
                         best_line_ratio = -1.0
                         for ln in simple_lines or []:
-                            if not ln:
+                            if not ln or _name_line_is_noise(ln):
                                 continue
-                            hits = [t for t in exp_tokens if t in ln]
+                            clean = _strip_name_field_labels(ln)
+                            hits = [t for t in exp_tokens if t in clean]
                             line_ratio = len(hits) / max(1, len(exp_tokens))
                             if line_ratio > best_line_ratio:
                                 best_line_ratio = line_ratio
-                                detected_name = ln.strip()[:64]
+                                detected_name = clean[:64]
                     elif not detected_name:
                         exp_tokens = [t for t in norm_simple(exp_name).split(" ") if len(t) >= 2]
                         for ln in simple_lines or []:
-                            if exp_tokens and all(t in ln for t in [exp_tokens[0], exp_tokens[-1]]):
-                                detected_name = ln.strip()[:64]
+                            clean = _strip_name_field_labels(ln)
+                            if exp_tokens and all(t in clean for t in [exp_tokens[0], exp_tokens[-1]]):
+                                detected_name = clean[:64]
                                 break
+                if not _candidate_name_is_plausible(detected_name):
+                    detected_name = ""
                 row = {
                     "field": "Name",
                     "expected": exp_name,
@@ -2674,11 +4155,32 @@ def _evaluate(
                     "match_ratio": round(float(ratio), 2),
                     "missing_tokens": missing,
                 }
-                # Circle the NAME value area regardless of doc layout (academic forms have "NAME:" labels).
-                _attach_bbox(row, _value_area_for_label(normed_boxes, ["NAME"]))
+                if name_bbox:
+                    _attach_bbox(row, name_bbox)
+                else:
+                    doc_kind = doc_type if doc_type in ("sf9", "report_card", "sf10", "form137", "form157", "birth_certificate", "birthcert") else "other"
+                    if doc_kind in ("birth_certificate", "birthcert"):
+                        _attach_bbox(row, _detect_name_from_boxes(normed_boxes, doc_kind=doc_kind, image_h=img_h)[1])
+                    elif doc_kind in ("sf9", "report_card", "sf10", "form137", "form157"):
+                        _attach_bbox(row, _detect_name_from_boxes(normed_boxes, doc_kind=doc_kind, image_h=img_h)[1])
+                    elif _moral_doc:
+                        _attach_bbox(
+                            row,
+                            name_bbox
+                            or _value_area_for_label(normed_boxes, ["CERTIFY", "CERTIFIES", "THAT"]),
+                        )
+                    else:
+                        _attach_bbox(row, _value_area_for_label(normed_boxes, ["NAME"]))
                 checks.append(row)
                 if not ok_name:
-                    issues.append("Mismatch: Student name not clearly found in the document text.")
+                    if _moral_doc and detected_name:
+                        issues.append(
+                            "Mismatch: Student name on the certificate does not match enrollment (first/last name)."
+                        )
+                    elif _moral_doc:
+                        issues.append("Mismatch: Student name not clearly found in the certificate text.")
+                    else:
+                        issues.append("Mismatch: Student name not clearly found in the document text.")
                     penalize(0.18)
 
             if run_sex_check and exp_sex:
@@ -2721,7 +4223,19 @@ def _evaluate(
                     "ok": bool(sy_ok),
                     "match_ratio": 1.0 if sy_ok else 0.0,
                 }
-                _attach_bbox(row, _value_area_for_label(normed_boxes, ["SCHOOL YEAR", "SY"]))
+                if _academic_doc:
+                    y_min, y_max = _academic_learner_zone_y(normed_boxes, img_h)
+                    _attach_bbox(
+                        row,
+                        _value_area_for_label(
+                            normed_boxes,
+                            ["SCHOOL YEAR", "SY"],
+                            y_min=y_min,
+                            y_max=y_max,
+                        ),
+                    )
+                else:
+                    _attach_bbox(row, _value_area_for_label(normed_boxes, ["SCHOOL YEAR", "SY"]))
                 checks.append(row)
                 if not sy_ok:
                     issues.append("Mismatch: School year not found or does not match the student's input.")
@@ -2764,6 +4278,15 @@ def _evaluate(
                 g = re.sub(r"\D", "", (expected_grade or "").strip())
                 if not g:
                     return None, ""
+                year_section = [
+                    ln for ln in u_lines if "YEAR" in ln and "SECTION" in ln
+                ]
+                for ln in year_section:
+                    m = re.search(rf"YEAR\s*/?\s*SECTION.*?{g}\b", ln, re.I)
+                    if m:
+                        return True, m.group(0).strip()[:48]
+                    if re.search(rf"\b{g}\s*-\s*\w", ln):
+                        return True, ln.strip()[:48]
                 labeled = [ln for ln in u_lines if "GRADE" in ln or re.search(r"\bGR\.?\b", ln)]
                 pool = labeled if labeled else u_lines
                 patterns = [
@@ -2791,7 +4314,19 @@ def _evaluate(
                         "ok": bool(grade_ok),
                         "match_ratio": 1.0 if grade_ok else 0.0,
                     }
-                    _attach_bbox(row, _value_area_for_label(normed_boxes, ["GRADE", "GR"]))
+                    if _academic_doc:
+                        y_min, y_max = _academic_learner_zone_y(normed_boxes, img_h)
+                        _attach_bbox(
+                            row,
+                            _value_area_for_label(
+                                normed_boxes,
+                                ["GRADE", "GR"],
+                                y_min=y_min,
+                                y_max=y_max,
+                            ),
+                        )
+                    else:
+                        _attach_bbox(row, _value_area_for_label(normed_boxes, ["GRADE", "GR"]))
                     checks.append(row)
                     if not grade_ok:
                         issues.append("Mismatch: Grade level on the document does not match the student's enrollment.")
@@ -2964,6 +4499,24 @@ def _evaluate(
         except Exception:
             pass
 
+    if slot_mismatch_info:
+        checks.insert(
+            0,
+            {
+                "field": "Document type",
+                "expected": slot_mismatch_info["expected"],
+                "detected": slot_mismatch_info["detected"],
+                "ok": False,
+            },
+        )
+        doc_checks.insert(
+            0,
+            {
+                "field": f"Upload slot requires {slot_mismatch_info['expected']}",
+                "ok": False,
+            },
+        )
+
     if checks:
         payload["field_checks"] = checks
 
@@ -2992,7 +4545,11 @@ def _evaluate(
     payload["status"] = "verified" if verified else "failed"
     payload["requested_doc_type"] = requested_doc_type
     payload["resolved_doc_type"] = doc_type
-    payload["v"] = 9
+    payload["document_slot_mismatch"] = slot_mismatch_info is not None
+    if slot_mismatch_info:
+        payload["document_slot_expected"] = slot_mismatch_info["expected"]
+        payload["document_slot_detected"] = slot_mismatch_info["detected"]
+    payload["v"] = 17
 
     return payload
 
@@ -3116,44 +4673,31 @@ def verify_doc():
             payload["image_width"] = img_w
             payload["image_height"] = img_h
 
-        # Photo-only requirements (2x2, ID photo) do not need tamper analysis.
-        if effective_doc_type in {"photo_2x2", "2x2", "id_photo", "photo"}:
-            tamper_score, tamper_signals = 1.0, []
-            payload["tamper_applicable"] = False
-        else:
-            tamper_score, tamper_signals = _tamper_check(filepath)
-            payload["tamper_applicable"] = True
+        is_photo_verify = effective_doc_type in PHOTO_DOC_TYPES
+        tamper_score, tamper_signals = _tamper_check(filepath)
+        payload["tamper_applicable"] = True
         payload["tamper_score"] = tamper_score
         payload["tamper_signals"] = tamper_signals
 
         # Synthetic / AI-generated suspicion signals (heuristics; NOT definitive).
-        if effective_doc_type in {"photo_2x2", "2x2", "id_photo", "photo"}:
-            payload["synthetic_applicable"] = False
-            payload["synthetic_score"] = 1.0
-            payload["synthetic_signals"] = []
-        else:
-            syn_score, syn_signals = _synthetic_check(filepath, ocr_confidence=avg_conf, word_count=word_count)
-            payload["synthetic_applicable"] = True
-            payload["synthetic_score"] = syn_score
-            payload["synthetic_signals"] = syn_signals
+        syn_score, syn_signals = _synthetic_check(filepath, ocr_confidence=avg_conf, word_count=word_count)
+        payload["synthetic_applicable"] = True
+        payload["synthetic_score"] = syn_score
+        payload["synthetic_signals"] = syn_signals
 
-            # If the document looks digitally generated (straight lines, ultra-clean edges, etc.),
-            # reduce the headline integrity score so UI doesn't show "Integrity 100%" alongside
-            # strong synthetic/digital-layout indicators.
-            try:
-                ss = float(syn_score)
-            except Exception:
-                ss = 1.0
-            if ss < 0.92:
-                # Cap integrity by synthetic score (soft cap).
-                # ss=0.82 → cap≈0.92 (so integrity moves, but not as harsh as tamper hotspots).
-                cap = _clamp01(0.55 + 0.45 * ss)
-                if cap < tamper_score:
-                    tamper_score = cap
-                    payload["tamper_score"] = tamper_score
-                    payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                        f"Integrity capped by synthetic check: {int(round(cap * 100))}%"
-                    ]
+        # If the document looks digitally generated, cap the headline integrity score.
+        try:
+            ss = float(syn_score)
+        except Exception:
+            ss = 1.0
+        if ss < 0.92:
+            cap = _clamp01(0.55 + 0.45 * ss)
+            if cap < tamper_score:
+                tamper_score = cap
+                payload["tamper_score"] = tamper_score
+                payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
+                    f"Integrity capped by synthetic check: {int(round(cap * 100))}%"
+                ]
 
         # SF9/report card: add cell-level tamper hints (JPEG ELA + numeric boxes).
         if effective_doc_type in ("sf9", "report_card"):
@@ -3248,23 +4792,21 @@ def verify_doc():
                 ]
 
         # OCR-INDEPENDENT whole-image hotspot scan (catches edits even when OCR misses the labels).
-        # Runs for every non-photo document so PSA / good-moral / etc. are no longer skipped.
-        if effective_doc_type not in {"photo_2x2", "2x2", "id_photo", "photo"}:
-            try:
-                tmap = _compute_tamper_map(filepath)
-                region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
-                if region_hits:
-                    payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
-                    n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
-                    payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                        f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
-                        + (f" ({n_high} high-risk)" if n_high else "")
-                    ]
-                    payload["issues"] = (payload.get("issues") or []) + [
-                        "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
-                    ]
-            except Exception:
-                pass
+        try:
+            tmap = _compute_tamper_map(filepath)
+            region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
+            if region_hits:
+                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
+                n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
+                payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
+                    f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
+                    + (f" ({n_high} high-risk)" if n_high else "")
+                ]
+                payload["issues"] = (payload.get("issues") or []) + [
+                    "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
+                ]
+        except Exception:
+            pass
 
         # Merge localized tamper hotspots into headline tamper_score (global-only check often stayed at 100%).
         cells_all = list(payload.get("tamper_cells") or [])
@@ -3287,6 +4829,17 @@ def verify_doc():
                 tamper_score = _clamp01(tamper_score - 0.14)
                 payload["tamper_score"] = tamper_score
 
+        if effective_doc_type in ("birth_certificate", "birthcert", "good_moral", "goodmoral"):
+            _append_seal_logo_doc_check(payload, filepath, effective_doc_type)
+            _refresh_verify_confidence(
+                payload,
+                doc_type=effective_doc_type,
+                ocr_confidence=avg_conf,
+                word_count=word_count,
+                detected_lrn=payload.get("detected_lrn"),
+                is_photo=is_photo_verify,
+            )
+
         # Integrity (Level 2/3) is separate from document-match confidence.
         # confidence / ai_score / weighted overall all use the document-match score only.
         payload["match_score"] = float(payload.get("confidence", 0.0))
@@ -3296,6 +4849,12 @@ def verify_doc():
             payload["status"] = "failed"
             payload["issues"] = (payload.get("issues") or []) + ["High tamper risk: possible image manipulation"]
 
+        if is_photo_verify:
+            quality = _image_quality_check(filepath, effective_doc_type)
+            quality_enforced_at_upload = False
+        else:
+            quality_enforced_at_upload = True
+
         payload["quality"] = quality
         payload["security_levels"] = _build_security_levels(
             quality=quality,
@@ -3304,7 +4863,7 @@ def verify_doc():
             tamper_score=tamper_score,
             tamper_cells=cells_all,
             tamper_fields=fields_all,
-            quality_enforced_at_upload=True,
+            quality_enforced_at_upload=quality_enforced_at_upload,
         )
         if not payload["security_levels"]["overall_pass"]:
             payload["status"] = "failed"

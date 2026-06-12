@@ -18,22 +18,8 @@ import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '../../components/ui/dialog';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '../../components/ui/table';
 import { useSchoolYear } from '../../context/SchoolYearContext';
+import { RegistrarReportPreview } from '../../components/RegistrarReportPreview';
 import {
   downloadRegistrarReportCsv,
   fetchRegistrarReport,
@@ -153,6 +139,7 @@ export function Reports() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewData, setPreviewData] = useState<RegistrarReportJson | null>(null);
+  const [previewReportId, setPreviewReportId] = useState<RegistrarReportType | null>(null);
 
   const apiSchoolYearParam = useMemo(() => {
     if (schoolYearFilter === 'all') return 'all';
@@ -199,15 +186,31 @@ export function Reports() {
     setPreviewOpen(true);
     setPreviewLoading(true);
     setPreviewData(null);
+    setPreviewReportId(report);
     try {
       const json = await fetchRegistrarReport(report, apiSchoolYearParam);
       setPreviewData(json);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to preview report');
       setPreviewOpen(false);
+      setPreviewReportId(null);
     } finally {
       setPreviewLoading(false);
     }
+  };
+
+  const closePreview = () => {
+    setPreviewOpen(false);
+    setPreviewData(null);
+    setPreviewReportId(null);
+  };
+
+  const printPreview = async () => {
+    if (previewReportId) {
+      await runExport(previewReportId, 'print', previewData?.title ?? 'Report');
+      return;
+    }
+    window.print();
   };
 
   const runExport = async (
@@ -396,53 +399,15 @@ export function Reports() {
         </CardContent>
       </Card>
 
-      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-w-5xl max-h-[85vh] overflow-hidden flex flex-col">
-          <DialogHeader>
-            <DialogTitle>{previewData?.title ?? 'Report preview'}</DialogTitle>
-            <DialogDescription>
-              {previewData?.schoolYearLabel ?? ''}
-              {previewData?.rowCount != null ? ` · ${previewData.rowCount} row(s)` : ''}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex-1 overflow-auto border rounded-md">
-            {previewLoading ? (
-              <div className="p-8 text-center text-gray-500">
-                <Loader2 className="w-5 h-5 animate-spin inline mr-2" />
-                Loading report…
-              </div>
-            ) : previewData && (previewData.columns?.length ?? 0) > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    {previewData.columns!.map((col) => (
-                      <TableHead key={col} className="whitespace-nowrap text-xs">
-                        {col}
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {(previewData.rows ?? []).slice(0, 200).map((row, idx) => (
-                    <TableRow key={idx}>
-                      {previewData.columns!.map((col) => (
-                        <TableCell key={col} className="text-xs max-w-[200px] truncate">
-                          {row[col] ?? ''}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <div className="p-8 text-center text-gray-500">No data for this report and school year.</div>
-            )}
-          </div>
-          {previewData && (previewData.rowCount ?? 0) > 200 && (
-            <p className="text-xs text-gray-500">Showing first 200 rows. Export CSV for the full report.</p>
-          )}
-        </DialogContent>
-      </Dialog>
+      <RegistrarReportPreview
+        open={previewOpen}
+        loading={previewLoading}
+        data={previewData}
+        onClose={closePreview}
+        onPrint={() => {
+          void printPreview();
+        }}
+      />
     </div>
   );
 }

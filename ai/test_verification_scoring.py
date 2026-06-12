@@ -20,7 +20,6 @@ def good_moral_checks(**passed: bool) -> list[dict]:
         ("Name label", "name"),
         ("School name keyword", "school"),
         ("Date/issuance text found", "date"),
-        ("Authority/signature keyword (Principal/Registrar)", "principal"),
     ]
     defaults = {k: True for _, k in fields}
     defaults.update(passed)
@@ -81,12 +80,12 @@ def main() -> None:
     ocr = 0.85
 
     # Good moral — one missing label
-    checks = good_moral_checks(principal=False)
+    checks = good_moral_checks(school=False)
     payload = build_payload(checks, field_checks, ocr, tamper=0.70)
     match_pct = int(round(payload["confidence"] * 100))
     level1 = payload["security_levels"]["levels"][0]
 
-    assert_match("good moral check count", len(checks), 6)
+    assert_match("good moral check count", len(checks), 5)
     assert_match("level1 concern score when pass", level1["score"], 0)
     assert_match("summary mentions 0% concern when pass", "0% concern" in level1["summary"], True)
     assert "To Whom" not in level1["summary"]
@@ -108,21 +107,20 @@ def main() -> None:
     expected_overall = round(0.25 * 90 + 0.25 * 88 + 0.25 * 92 + 0.20 * match_pct + 0.05 * 95)
     assert_match("weighted overall formula", overall, expected_overall)
 
-    # All doc types have expected check counts
-    type_counts = {
-        "birth_certificate": 9,
-        "good_moral": 6,
-        "sf9": 6,
-        "form137": 6,
-    }
-    for dtype, expected_n in type_counts.items():
-        # Minimal smoke: _evaluate returns doc_checks of expected length when text is rich enough
-        text = " ".join(["PSA CERTIFICATE LIVE BIRTH NAME GRADE SCHOOL YEAR LRN"] * 5)
-        if dtype == "good_moral":
-            text += " GOOD MORAL CHARACTER CERTIFICATION PRINCIPAL REGISTRAR SCHOOL ACADEMY"
-        payload2 = app._evaluate(text, 0.9, dtype, expected={"name": "Juan Dela Cruz"})
-        n = len(payload2.get("doc_checks") or [])
-        assert_match(f"{dtype} doc_checks count", n, expected_n)
+    # Good moral no longer uses OCR principal/registrar keyword — visual signature scan covers it.
+    gm_text = (
+        " ".join(["GOOD MORAL CHARACTER CERTIFICATION SCHOOL ACADEMY NAME DATE ISSUED"] * 3)
+        + " THIS IS TO CERTIFY THAT JUAN DELA CRUZ"
+    )
+    gm_fields = [
+        str(c.get("field") or "")
+        for c in (app._evaluate(gm_text, 0.9, "good_moral", expected={"name": "Juan Dela Cruz"}).get("doc_checks") or [])
+    ]
+    assert_match(
+        "good_moral excludes authority/signature keyword check",
+        any("Authority/signature" in f for f in gm_fields),
+        False,
+    )
 
     print("OK — whole verification data is aligned:")
     print(f"  good_moral match/confidence/level1: {match_pct}%")

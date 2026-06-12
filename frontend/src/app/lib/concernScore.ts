@@ -156,15 +156,35 @@ export function concernRiskLabel(concernPct: number): "Clear" | "Check" | "Suspi
   return "Suspicious";
 }
 
-function verificationLevels(levels: SecurityLevel[]): SecurityLevel[] {
+function verificationLevels(levels: SecurityLevel[], security?: SecurityLevels | null): SecurityLevel[] {
+  if (security?.photo_only_checks) return levels;
   return levels.filter((lv) => !/image quality/i.test(lv.title));
 }
 
 export function documentConcernFromSecurityLevels(
   security?: SecurityLevels | null,
 ): DocumentConcernParts | null {
-  const levels = security?.levels?.length ? verificationLevels(security.levels) : [];
+  const levels = security?.levels?.length ? verificationLevels(security.levels, security) : [];
   if (!levels.length) return null;
+
+  if (security?.photo_only_checks) {
+    const qualityLv = levels.find((l) => /image quality/i.test(l.title));
+    const aiLv =
+      levels.find((l) => /ai tamper|authenticity/i.test(l.title)) ??
+      levels.find((l) => l.level === 2);
+    const concerns: number[] = [];
+    let tamperConcern = 0;
+    if (qualityLv) concerns.push(levelConcernPercent(qualityLv));
+    if (aiLv) {
+      tamperConcern = levelConcernPercent(aiLv);
+      concerns.push(tamperConcern);
+    }
+    if (!concerns.length) return null;
+    const documentAverage = Math.round(
+      concerns.reduce((sum, n) => sum + n, 0) / concerns.length,
+    );
+    return { mismatchConcern: 0, tamperConcern, documentAverage };
+  }
 
   const mismatchLv =
     levels.find((l) => /document.*(match|mismatch)|enrollment/i.test(l.title)) ??
