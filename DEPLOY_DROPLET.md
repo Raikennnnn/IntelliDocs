@@ -40,7 +40,29 @@ nano env   # set DB_*, AI_BASE_URL=http://127.0.0.1:8080, MAIL_PROVIDER, BREVO_A
 
 Create MySQL DB/user, import `database_setup.sql` and `database_migration_*.sql`.
 
-Configure Nginx (root = `/var/www/intellidocs/public`, SPA at `/app/`, API at `/api/`).
+Configure Nginx (root = `/var/www/intellidocs/public`, SPA at **site root**, API at `/api/`):
+
+```nginx
+server {
+    listen 80;
+    root /var/www/intellidocs/public;
+
+    location /api/ {
+        try_files $uri /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+The deploy script copies the Vite build to **`public/index.html`** and **`public/assets/`** (what `/landing` and `/registrar/…` use). It also mirrors under `public/app/` for backwards compatibility.
 
 ### Every update
 
@@ -78,7 +100,7 @@ AUTH_ALLOW_LEGACY_HEADER=0
 
 ## After deploy
 
-1. Open `http://YOUR_IP/app/`
+1. Open `http://YOUR_IP/landing` and **hard refresh** (Ctrl+Shift+R) so the browser loads the new `/assets/index-*.js` bundle
 2. Test API: `http://YOUR_IP/api/school-year`
 3. Test AI: `curl http://127.0.0.1:8080/health` on the server
 4. **Re-run AI** on documents in registrar review (payload version updated)
@@ -91,7 +113,9 @@ AUTH_ALLOW_LEGACY_HEADER=0
 | `fatal: not a git repository` | You uploaded files without `git clone`. See **Fix: not a git repo** below. |
 | `git pull` auth failed | Use GitHub PAT or upload via SFTP |
 | AI 502 / verify fails | `systemctl status intellidocs-ai`, check `AI_BASE_URL` in `env` |
-| Blank `/app/` | Re-run deploy script; check `public/app/index.html` exists |
+| `vite build` appears stuck / deploy dies silently | Low RAM on 2 GB droplet — wait 2–6 min, or add swap (`fallocate -l 2G /swapfile && mkswap /swapfile && swapon /swapfile`). Latest deploy script auto-creates swap. |
+| Old UI after deploy (small report dialog, signature overlay) | Deploy was only updating `public/app/` while nginx serves **`public/index.html` + `public/assets/`**. Re-run the latest `deploy_droplet.sh`, then hard refresh |
+| Blank SPA | Re-run deploy script; check `public/index.html` and `public/assets/index-*.js` exist |
 | OCR errors | `apt install tesseract-ocr`; restart `intellidocs-ai` |
 
 ### Fix: `fatal: not a git repository`

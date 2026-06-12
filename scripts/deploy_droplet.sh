@@ -76,6 +76,17 @@ if ! command -v node >/dev/null 2>&1; then
   curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
   apt-get install -y nodejs
 fi
+
+# Vite/React build needs ~1–1.5 GB RAM. On a 2 GB droplet, ensure swap exists.
+if [ "$(swapon --show 2>/dev/null | wc -l)" -eq 0 ]; then
+  echo "No swap detected — creating 2G swapfile (recommended for npm run build)…"
+  fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  grep -q '/swapfile' /etc/fstab 2>/dev/null || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 cat > .env.production <<EOF
 VITE_API_BASE=
 VITE_API_TARGET=http://127.0.0.1
@@ -86,12 +97,27 @@ if [ -f package-lock.json ]; then
 else
   npm install
 fi
+
+echo "Running vite build (often 2–6 minutes on a small droplet — wait for 'built in')…"
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1536}"
+export CI=true
 npm run build
 
-step "Publish frontend to public/app"
+step "Publish frontend (SPA at site root + /app/)"
+# Production nginx serves React at /landing, /registrar/… via try_files → /index.html
+# and loads JS from /assets/*. Deploy must update public/index.html + public/assets/,
+# not only public/app/ (otherwise the live site keeps an old cached bundle).
+mkdir -p "$APP_ROOT/public/assets"
+rm -rf "$APP_ROOT/public/assets/"*
+cp -r dist/assets/* "$APP_ROOT/public/assets/"
+cp dist/index.html "$APP_ROOT/public/index.html"
+
 mkdir -p "$APP_ROOT/public/app"
 rm -rf "$APP_ROOT/public/app/"*
 cp -r dist/* "$APP_ROOT/public/app/"
+
+# Keep site root in sync (nginx try_files → /index.html for /landing, /registrar/…)
+bash "$APP_ROOT/scripts/sync_spa_to_root.sh"
 # Static marketing assets used by enrollment UI
 if [ -d public/admission-samples ]; then
   mkdir -p "$APP_ROOT/public/admission-samples"
@@ -156,9 +182,21 @@ fi
 step "Smoke checks"
 curl -fsS "http://127.0.0.1:8080/health" | head -c 200 || echo "AI health check failed"
 echo ""
-curl -fsS -o /dev/null -w "Frontend HTTP %{http_code}\n" "http://127.0.0.1/app/" || true
+curl -fsS -o /dev/null -w "SPA root HTTP %{http_code}\n" "http://127.0.0.1/landing" || true
+curl -fsS -o /dev/null -w "SPA /app/ HTTP %{http_code}\n" "http://127.0.0.1/app/" || true
+
+ROOT_BUNDLE="$(ls -1 "$APP_ROOT/public/assets"/index-*.js 2>/dev/null | head -1 || true)"
+if [ -n "$ROOT_BUNDLE" ]; then
+  if grep -q 'SIGNATURE SCANNED' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "WARNING: Root JS bundle still contains old signature overlay UI — check deploy paths."
+  else
+    echo "OK: Root JS bundle looks current (no signature overlay marker)."
+  fi
+else
+  echo "WARNING: No index-*.js found under public/assets/"
+fi
 
 printf '\nDeploy finished.\n'
-printf '  App:  http://%s/app/\n' "$PUBLIC_IP"
+printf '  App:  http://%s/landing  (hard refresh: Ctrl+Shift+R)\n' "$PUBLIC_IP"
 printf '  API:  http://%s/api/school-year\n' "$PUBLIC_IP"
 printf 'Re-run AI on documents after deploy (payload version bump).\n'
