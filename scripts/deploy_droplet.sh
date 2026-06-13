@@ -221,6 +221,11 @@ if ! wait_for_ai_health 90; then
   exit 1
 fi
 
+step "Configure nginx/PHP timeouts for long AI OCR"
+if [ -f "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" ]; then
+  bash "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" || true
+fi
+
 step "Permissions + reload web stack"
 chown -R www-data:www-data "$APP_ROOT/public" "$APP_ROOT/uploads" "$APP_ROOT/ai/assets" 2>/dev/null || true
 chmod -R u+rwX "$APP_ROOT/uploads" 2>/dev/null || true

@@ -54,6 +54,8 @@ server {
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_read_timeout 300;
+        fastcgi_send_timeout 300;
     }
 
     location / {
@@ -112,7 +114,7 @@ AUTH_ALLOW_LEGACY_HEADER=0
 |-------|-----|
 | `fatal: not a git repository` | You uploaded files without `git clone`. See **Fix: not a git repo** below. |
 | `git pull` auth failed | Use GitHub PAT or upload via SFTP |
-| AI 502 / verify fails | Run `bash scripts/fix_ai_service.sh` on the server. Check `curl http://127.0.0.1:8080/health` returns `"ok": true`. Ensure `AI_BASE_URL=http://127.0.0.1:8080` in `env`. |
+| AI error: Unexpected token '<', "<!DOCTYPE "... | **nginx/PHP timeout** (default 60s). SF10 OCR takes 2–3 min. Run `bash scripts/configure_nginx_ai_timeouts.sh` on the droplet, then re-run AI. |
 | Deploy says AI health failed but service is running | Old deploy checked health once with no wait. Pull latest and re-run deploy, or run `bash scripts/fix_ai_service.sh`. |
 | `vite build` appears stuck / deploy dies silently | Low RAM on 2 GB droplet — wait 2–6 min, or add swap (`fallocate -l 2G /swapfile && mkswap /swapfile && swapon /swapfile`). Latest deploy script auto-creates swap. |
 | Old UI after deploy (small report dialog, signature overlay) | Deploy was only updating `public/app/` while nginx serves **`public/index.html` + `public/assets/`**. Re-run the latest `deploy_droplet.sh`, then hard refresh |

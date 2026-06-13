@@ -38,7 +38,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
-import { apiFetch, formatApiError } from "../../lib/api";
+import { apiFetch, formatApiError, parseApiJson } from "../../lib/api";
 import { guessDocKind } from "../../lib/documentPreview";
 import { SecureDocumentPreview } from "../../components/SecureDocumentPreview";
 import {
@@ -1833,13 +1833,23 @@ export function ReviewDocuments() {
               buildExpectedVerifyQuery(docType, application),
             { signal: docAbort.signal },
           );
-          const parsed = (await aiRes.json()) as
+          const parsedRes = await parseApiJson<
             | { success: true; result: AiVerifyResponse }
-            | { success: false; error?: string; detail?: any };
+            | { success: false; error?: string; detail?: unknown }
+          >(aiRes);
 
           if (cancelled || batchAbort.signal.aborted || aiRunGenRef.current !== runGen) return;
 
-          if (!aiRes.ok || !parsed || (parsed as any).success !== true) {
+          if (!parsedRes.ok) {
+            setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: parsedRes.error } }));
+            if (/timeout|504|502|503|html instead of json|ai service|unreachable/i.test(parsedRes.error)) {
+              setAiServiceError(parsedRes.error);
+            }
+            continue;
+          }
+
+          const parsed = parsedRes.data;
+          if (!aiRes.ok || !parsed || (parsed as { success?: boolean }).success !== true) {
             const msg = aiVerifyErrorMessage(parsed, aiRes.status);
             setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
             if (/ai service|unreachable|ocr engine|tesseract|502|503|504|connection refused/i.test(msg)) {
