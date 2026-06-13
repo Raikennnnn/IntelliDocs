@@ -210,10 +210,10 @@ if ($expectedStrand !== '' && !$skipGradeStrandForMoral) {
     $postFields['expected_strand'] = $expectedStrand;
 }
 
-// SF10 / PSA OCR can exceed 30s on a cold or small server — stay below the frontend abort (90s).
-@set_time_limit(120);
+// SF10 / PSA OCR can exceed 30s on a cold or small server — stay below the frontend abort (180s).
+@set_time_limit(200);
 
-$aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 90);
+$aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 180);
 
 if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
     $decoded = is_array($aiRes['body']) ? $aiRes['body'] : null;

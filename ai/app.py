@@ -2150,7 +2150,8 @@ def _ocr_prepare_document_source(
     target_long = 2000
     scale = 1.0
     if long_edge < 1600 or pixels < 900_000:
-        scale = min(4.0, max(1.0, target_long / float(long_edge)))
+        max_scale = float(os.environ.get("OCR_UPSCALE_MAX", "4.0"))
+        scale = min(max_scale, max(1.0, target_long / float(long_edge)))
 
     if scale <= 1.01:
         return filepath, 1.0, orig_w, orig_h, False
@@ -2404,7 +2405,16 @@ def _ocr_read_document(
             if _tesseract_available:
                 try:
                     base = Image.open(ocr_path)
-                    for psm, tag in ((6, "tesseract_enhanced_psm6"), (11, "tesseract_enhanced_psm11"), (4, "tesseract_enhanced_psm4")):
+                    psm_env = os.environ.get("OCR_PSM_PASSES", "6,11,4")
+                    psm_list = []
+                    for part in psm_env.split(","):
+                        part = part.strip()
+                        if part.isdigit():
+                            psm_list.append(int(part))
+                    if not psm_list:
+                        psm_list = [6, 11, 4]
+                    for psm in psm_list:
+                        tag = f"tesseract_enhanced_psm{psm}"
                         t2, c2, b2 = _ocr_tesseract_image(base, psm=psm, enhanced=True)
                         _run(level, "tesseract", tag, t2, c2, b2)
                         level += 1

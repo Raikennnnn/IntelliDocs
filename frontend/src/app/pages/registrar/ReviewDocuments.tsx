@@ -344,10 +344,8 @@ function resolveApplicationVerifyFields(app: any) {
 }
 
 const AI_VERIFY_PAYLOAD_VERSION = 29;
-/** Per-document HTTP timeout (SF10 OCR can be slow on first run). */
-const AI_VERIFY_REQUEST_TIMEOUT_MS = 90_000;
-/** Whole-batch watchdog — clears stuck "AI checking…" if nothing finishes. */
-const AI_VERIFY_BATCH_WATCHDOG_MS = 120_000;
+/** Per-document HTTP timeout (SF10 multi-pass OCR on a 2 GB droplet can take 2–3 min). */
+const AI_VERIFY_REQUEST_TIMEOUT_MS = 180_000;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -1894,32 +1892,6 @@ export function ReviewDocuments() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applicationId, aiVerifyDocKey, aiRerunNonce]);
 
-  useEffect(() => {
-    if (!aiRunning) return;
-    const watchdog = window.setTimeout(() => {
-      setAiDocStateById((prev) => {
-        let changed = false;
-        const next = { ...prev };
-        for (const [id, st] of Object.entries(prev)) {
-          if (st?.state === "running") {
-            next[id] = {
-              state: "error",
-              error: "AI check timed out — use Stop & re-run AI",
-            };
-            changed = true;
-          }
-        }
-        return changed ? next : prev;
-      });
-      setAiServiceError(
-        "AI checks took too long. Confirm the AI service is running (see SETUP.md), then click Stop & re-run AI.",
-      );
-      aiRunAbortRef.current?.abort();
-      setAiRunning(false);
-    }, AI_VERIFY_BATCH_WATCHDOG_MS);
-    return () => window.clearTimeout(watchdog);
-  }, [aiRunning, aiRerunNonce]);
-
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-gray-600 py-12">
@@ -2325,7 +2297,7 @@ export function ReviewDocuments() {
                   {aiRunning ? (
                     <span className="inline-flex items-center gap-2 text-indigo-700">
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                      Running AI checks on uploaded files…
+                      Running AI checks… SF10 and certificates may take 1–3 min each on this server.
                     </span>
                   ) : aiServiceError ? (
                     <span className="text-rose-700">
