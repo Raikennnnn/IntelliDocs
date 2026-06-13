@@ -33,14 +33,9 @@ type SecurityLevelsPanelProps = {
   className?: string;
 };
 
-/** Image quality is enforced at upload — hide Level 1 unless this is a photo-only verification still showing quality. */
+/** Image quality is enforced at upload — hide Level 1 on documents only, not 2×2 photo review. */
 function verificationLevels(levels: SecurityLevel[], security?: SecurityLevels | null): SecurityLevel[] {
-  if (security?.photo_only_checks) {
-    if (security?.quality_enforced_at_upload !== false) {
-      return levels.filter((lv) => !/image quality/i.test(lv.title));
-    }
-    return levels;
-  }
+  if (security?.photo_only_checks) return levels;
   return levels.filter((lv) => !/image quality/i.test(lv.title));
 }
 

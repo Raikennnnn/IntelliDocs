@@ -190,11 +190,23 @@ curl -fsS -o /dev/null -w "SPA root HTTP %{http_code}\n" "http://127.0.0.1/landi
 curl -fsS -o /dev/null -w "SPA /app/ HTTP %{http_code}\n" "http://127.0.0.1/app/" || true
 
 ROOT_BUNDLE="$(ls -1 "$APP_ROOT/public/assets"/index-*.js 2>/dev/null | head -1 || true)"
+DEPLOY_REV="$(git -C "$APP_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "Git commit on server: $DEPLOY_REV"
 if [ -n "$ROOT_BUNDLE" ]; then
   if grep -q 'SIGNATURE SCANNED' "$ROOT_BUNDLE" 2>/dev/null; then
     echo "WARNING: Root JS bundle still contains old signature overlay UI — check deploy paths."
   else
     echo "OK: Root JS bundle looks current (no signature overlay marker)."
+  fi
+  if grep -q 'Preview loads securely for registrar accounts' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "ERROR: Root JS bundle is STALE (old document review UI). Run git pull and rebuild."
+    echo "       Hard refresh alone will not fix this — index.html must point to a new index-*.js."
+    exit 1
+  fi
+  if grep -q 'Portrait authenticity check' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "OK: Bundle includes current photo review UI (Portrait authenticity check)."
+  else
+    echo "WARNING: Bundle may be missing latest photo review UI — confirm git pull succeeded."
   fi
 else
   echo "WARNING: No index-*.js found under public/assets/"

@@ -171,12 +171,7 @@ export function concernRiskLabel(concernPct: number): "Clear" | "Check" | "Suspi
 }
 
 function verificationLevels(levels: SecurityLevel[], security?: SecurityLevels | null): SecurityLevel[] {
-  if (security?.photo_only_checks) {
-    if (security?.quality_enforced_at_upload !== false) {
-      return levels.filter((lv) => !/image quality/i.test(lv.title));
-    }
-    return levels;
-  }
+  if (security?.photo_only_checks) return levels;
   return levels.filter((lv) => !/image quality/i.test(lv.title));
 }
 
@@ -193,9 +188,7 @@ export function documentConcernFromSecurityLevels(
       levels.find((l) => l.level === 2);
     const concerns: number[] = [];
     let tamperConcern = 0;
-    if (qualityLv && security?.quality_enforced_at_upload === false) {
-      concerns.push(levelConcernPercent(qualityLv));
-    }
+    if (qualityLv) concerns.push(levelConcernPercent(qualityLv));
     if (aiLv) {
       tamperConcern = levelConcernPercent(aiLv);
       concerns.push(tamperConcern);
