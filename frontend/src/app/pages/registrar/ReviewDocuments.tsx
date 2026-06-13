@@ -39,7 +39,7 @@ import { useEffect, useState } from "react";
 import { useRef } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
-import { apiFetch, formatApiError } from "../../lib/api";
+import { apiFetch, formatApiError, parseApiJson } from "../../lib/api";
 import { guessDocKind } from "../../lib/documentPreview";
 import { SecureDocumentPreview } from "../../components/SecureDocumentPreview";
 import {
@@ -1630,25 +1630,30 @@ export function ReviewDocuments() {
             if (!cancelled) {
               setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
             }
-            const ac = new AbortController();
-            const timeoutMs = 45000;
-            const t = window.setTimeout(() => ac.abort(), timeoutMs);
             const aiRes = await apiFetch(
               `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
                 `&doc_type=${encodeURIComponent(docType)}` +
                 buildExpectedVerifyQuery(docType, application),
-              { signal: ac.signal },
             );
-            window.clearTimeout(t);
-            const parsed = (await aiRes.json()) as
+            const parsed = await parseApiJson<
               | { success: true; result: AiVerifyResponse }
-              | { success: false; error?: string; detail?: any };
-            if (!aiRes.ok || !parsed || (parsed as any).success !== true) {
-              const msg = (parsed as any)?.error || `AI verify failed (${aiRes.status})`;
+              | { success: false; error?: string; detail?: unknown }
+            >(aiRes);
+            if (!parsed.ok) {
+              if (!cancelled) {
+                setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: parsed.error } }));
+              }
+              continue;
+            }
+            const body = parsed.data;
+            if (!aiRes.ok || !body || (body as { success?: boolean }).success !== true) {
+              const msg =
+                (body as { error?: string })?.error ||
+                `AI verify failed (${parsed.status})`;
               if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
               continue;
             }
-            const data = (parsed as any).result as AiVerifyResponse;
+            const data = (body as { result?: AiVerifyResponse }).result as AiVerifyResponse;
             if (!data || typeof (data as any).confidence !== "number") {
               if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: "AI returned an invalid response" } }));
               continue;
@@ -1662,13 +1667,10 @@ export function ReviewDocuments() {
               setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
             }
           } catch (e) {
-            // Keep verifying the rest, but surface the real reason for this doc.
             let msg = "Unexpected error running AI";
             if (e && typeof e === "object") {
-              const anyE = e as any;
-              if (typeof anyE?.name === "string" && anyE.name === "AbortError") {
-                msg = "AI verification timed out (45s)";
-              } else if (typeof anyE?.message === "string" && anyE.message.trim()) {
+              const anyE = e as { message?: string; toString?: () => string };
+              if (typeof anyE?.message === "string" && anyE.message.trim()) {
                 msg = anyE.message.trim();
               } else if (typeof anyE?.toString === "function") {
                 const s = String(anyE.toString());
@@ -2097,7 +2099,7 @@ export function ReviewDocuments() {
                   {aiRunning ? (
                     <span className="inline-flex items-center gap-2 text-indigo-700">
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                      Running AI checks on uploaded files…
+                      Running AI checks… SF10 may take 2–3 min per file on the server.
                     </span>
                   ) : aiServiceError ? (
                     <span className="text-rose-700">
