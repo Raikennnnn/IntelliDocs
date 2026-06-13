@@ -141,7 +141,7 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
           {navLinks}
         </aside>
 
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 md:p-6">
+        <main className="mx-auto min-h-0 min-w-0 w-full max-w-[1280px] flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 md:p-6">
           {children}
         </main>
       </div>

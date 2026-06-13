@@ -2766,7 +2766,7 @@ export function ReviewDocuments() {
       >
         <DialogContent
           className={cn(
-            "!flex !max-w-[min(96vw,1440px)] h-[min(92dvh,900px)] max-h-[min(92dvh,900px)] w-[min(96vw,1440px)] flex-col gap-2 overflow-hidden p-4 sm:gap-3 sm:p-5 md:p-6",
+            "!flex !max-w-[min(92vw,1120px)] h-[min(85dvh,780px)] max-h-[min(85dvh,780px)] w-[min(92vw,1120px)] flex-col gap-2 overflow-hidden p-3 sm:gap-3 sm:p-4 md:p-5",
             previewLightboxOpen &&
               "[&>button.absolute]:pointer-events-none [&>button.absolute]:invisible",
           )}
