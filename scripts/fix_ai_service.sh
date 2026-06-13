@@ -58,12 +58,12 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   if curl -fsS "$HEALTH_URL" >/tmp/intellidocs-ai-health.json 2>/dev/null; then
     cat /tmp/intellidocs-ai-health.json
     echo ""
-    if grep -q '"ok": true' /tmp/intellidocs-ai-health.json; then
+    if grep -qE '"ok"[[:space:]]*:[[:space:]]*true' /tmp/intellidocs-ai-health.json; then
       echo "OK: AI service healthy on port ${AI_PORT}."
       ss -tlnp | grep ":${AI_PORT} " || true
       exit 0
     fi
-    if grep -q '"ok": false' /tmp/intellidocs-ai-health.json; then
+    if grep -qE '"ok"[[:space:]]*:[[:space:]]*false' /tmp/intellidocs-ai-health.json; then
       echo "ERROR: AI running but OCR not ready. Check: journalctl -u intellidocs-ai -n 50 --no-pager"
       exit 1
     fi

@@ -194,11 +194,11 @@ wait_for_ai_health() {
     if AI_HEALTH="$(curl -fsS "$url" 2>/dev/null)"; then
       echo "$AI_HEALTH" | head -c 400
       echo ""
-      if echo "$AI_HEALTH" | grep -q '"ok": true'; then
+      if echo "$AI_HEALTH" | grep -qE '"ok"[[:space:]]*:[[:space:]]*true'; then
         echo "OK: AI service healthy (OCR ready)."
         return 0
       fi
-      if echo "$AI_HEALTH" | grep -q '"ok": false'; then
+      if echo "$AI_HEALTH" | grep -qE '"ok"[[:space:]]*:[[:space:]]*false'; then
         echo "ERROR: AI service running but OCR not available."
         return 1
       fi
