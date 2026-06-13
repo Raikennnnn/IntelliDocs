@@ -36,7 +36,22 @@ function figmaAssetPlugin(): Plugin {
 const PHP_PUBLIC_BASE = process.env.VITE_API_BASE ?? '/IntelliDocs/public';
 const API_TARGET = process.env.VITE_API_TARGET ?? 'http://127.0.0.1';
 
+/** Production build asset prefix — must match Apache/nginx public URL (see deploy_local.ps1 / deploy_droplet.sh). */
+function resolveViteBase(): string {
+  const explicit = (process.env.VITE_APP_BASE ?? '').trim();
+  if (explicit) {
+    return explicit.endsWith('/') ? explicit : `${explicit}/`;
+  }
+  const apiBase = (process.env.VITE_API_BASE ?? '').trim();
+  if (!apiBase) {
+    return '/';
+  }
+  return apiBase.endsWith('/') ? apiBase : `${apiBase}/`;
+}
+
 export default defineConfig({
+  // Dev server stays at / ; production build uses subpath on XAMPP or / on droplet.
+  base: process.env.NODE_ENV === 'production' ? resolveViteBase() : '/',
   plugins: [tailwindcss(), figmaAssetPlugin(), react()],
   server: {
     host: '127.0.0.1',
