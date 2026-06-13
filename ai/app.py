@@ -13,9 +13,13 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# OCR backend: EasyOCR (needs PyTorch) when available; else Tesseract via pytesseract (works on Python 3.14+).
+# OCR backends: Tesseract (fast) and EasyOCR (heavier). Multi-level fallback tries alternate
+# engines / preprocessing when the first pass reads poorly.
 _easyocr_reader = None
-_ocr_engine = "none"  # "easyocr" | "tesseract" | "none"
+_ocr_engine = "none"  # primary engine label for /health (legacy)
+_ocr_primary = "none"
+_tesseract_available = False
+_easyocr_available = False
 _tesseract_exe: str | None = None
 
 
@@ -57,15 +61,17 @@ def _env_flag(name: str) -> bool:
 
 
 def _bootstrap_ocr() -> None:
-    """Pick OCR backend at startup. Avoid EasyOCR/PyTorch on Python 3.13+ unless forced."""
-    global _easyocr_reader, _ocr_engine, _tesseract_exe
+    """Initialize OCR backends. Primary is used first; secondary is tried on weak reads."""
+    global _easyocr_reader, _ocr_engine, _ocr_primary, _tesseract_exe
+    global _tesseract_available, _easyocr_available
 
     pref = (os.environ.get("AI_OCR_ENGINE") or "auto").strip().lower()
     disable_easyocr = _env_flag("DISABLE_EASYOCR")
     py313_plus = sys.version_info >= (3, 13)
+    preload_easyocr = pref == "easyocr" or _env_flag("AI_OCR_PRELOAD_EASYOCR")
 
-    def _try_tesseract() -> bool:
-        global _ocr_engine, _tesseract_exe
+    def _init_tesseract() -> bool:
+        global _tesseract_exe, _tesseract_available
         try:
             import pytesseract  # noqa: F401
             from PIL import Image  # noqa: F401
@@ -77,57 +83,92 @@ def _bootstrap_ocr() -> None:
 
             pt.pytesseract.tesseract_cmd = exe
             _tesseract_exe = exe
-            _ocr_engine = "tesseract"
-            print(f"[IntelliDocs AI] OCR engine: Tesseract ({exe})", flush=True)
+            _tesseract_available = True
+            print(f"[IntelliDocs AI] Tesseract ready ({exe})", flush=True)
             return True
         except Exception as exc:
             print(f"[IntelliDocs AI] Tesseract unavailable: {exc}", flush=True)
             return False
 
-    def _try_easyocr() -> bool:
-        global _easyocr_reader, _ocr_engine
+    def _init_easyocr() -> bool:
+        global _easyocr_reader, _easyocr_available
         if disable_easyocr:
             return False
         if py313_plus and pref != "easyocr":
-            print(
-                "[IntelliDocs AI] Skipping EasyOCR on Python 3.13+ (PyTorch DLL load is slow/unstable). "
-                "Install Tesseract or set AI_OCR_ENGINE=easyocr to force it.",
-                flush=True,
-            )
             return False
         try:
             import easyocr
 
             print("[IntelliDocs AI] Loading EasyOCR (PyTorch); first start may take 1–2 minutes…", flush=True)
             _easyocr_reader = easyocr.Reader(["en"])
-            _ocr_engine = "easyocr"
-            print("[IntelliDocs AI] OCR engine: EasyOCR", flush=True)
+            _easyocr_available = True
+            print("[IntelliDocs AI] EasyOCR ready", flush=True)
             return True
         except Exception as exc:
             print(f"[IntelliDocs AI] EasyOCR unavailable: {exc}", flush=True)
             _easyocr_reader = None
             return False
 
-    order: list[str]
-    if pref == "tesseract":
-        order = ["tesseract", "easyocr"]
-    elif pref == "easyocr":
-        order = ["easyocr", "tesseract"]
-    elif py313_plus:
-        order = ["tesseract", "easyocr"]
+    _init_tesseract()
+    if preload_easyocr:
+        _init_easyocr()
+
+    if pref == "easyocr" and _easyocr_available:
+        _ocr_primary = "easyocr"
+    elif _tesseract_available:
+        _ocr_primary = "tesseract"
+    elif _easyocr_available:
+        _ocr_primary = "easyocr"
     else:
-        order = ["easyocr", "tesseract"]
+        _ocr_primary = "none"
 
-    for engine in order:
-        if engine == "tesseract" and _try_tesseract():
-            return
-        if engine == "easyocr" and _try_easyocr():
-            return
+    _ocr_engine = _ocr_primary
+    if _ocr_primary == "none":
+        print(
+            "[IntelliDocs AI] No OCR engine available. Install Tesseract OCR or use Python 3.11–3.12 with EasyOCR.",
+            flush=True,
+        )
+    else:
+        fallback_note = "multi-level fallback on" if not _env_flag("DISABLE_OCR_FALLBACK") else "fallback off"
+        engines = []
+        if _tesseract_available:
+            engines.append("tesseract")
+        if _easyocr_available:
+            engines.append("easyocr")
+        elif not disable_easyocr and not py313_plus:
+            engines.append("easyocr(lazy)")
+        print(
+            f"[IntelliDocs AI] OCR primary: {_ocr_primary}; available: {', '.join(engines)}; {fallback_note}",
+            flush=True,
+        )
 
-    _ocr_engine = "none"
-    print(
-        "[IntelliDocs AI] No OCR engine available. Install Tesseract OCR or use Python 3.11–3.12 with EasyOCR.",
-        flush=True,
+
+def _ensure_easyocr_loaded() -> bool:
+    """Lazy-load EasyOCR for level-3 fallback (avoids RAM cost until needed)."""
+    global _easyocr_reader, _easyocr_available
+    if _easyocr_available and _easyocr_reader is not None:
+        return True
+    if _env_flag("DISABLE_EASYOCR"):
+        return False
+    pref = (os.environ.get("AI_OCR_ENGINE") or "auto").strip().lower()
+    if sys.version_info >= (3, 13) and pref != "easyocr":
+        return False
+    try:
+        import easyocr
+
+        print("[IntelliDocs AI] Loading EasyOCR for OCR fallback…", flush=True)
+        _easyocr_reader = easyocr.Reader(["en"])
+        _easyocr_available = True
+        return True
+    except Exception as exc:
+        print(f"[IntelliDocs AI] EasyOCR fallback unavailable: {exc}", flush=True)
+        _easyocr_reader = None
+        return False
+
+
+def _ocr_any_available() -> bool:
+    return _tesseract_available or _easyocr_available or (
+        not _env_flag("DISABLE_EASYOCR") and sys.version_info < (3, 13)
     )
 
 
@@ -1111,10 +1152,17 @@ def add_cors_headers(response):
 
 @app.route("/health", methods=["GET"])
 def health():
-    payload = {"ok": True, "ocr_engine": _ocr_engine}
-    if _ocr_engine == "tesseract" and _tesseract_exe:
+    payload = {
+        "ok": _ocr_any_available(),
+        "ocr_engine": _ocr_primary,
+        "ocr_primary": _ocr_primary,
+        "tesseract_available": _tesseract_available,
+        "easyocr_available": _easyocr_available,
+        "ocr_fallback_enabled": not _env_flag("DISABLE_OCR_FALLBACK"),
+    }
+    if _tesseract_available and _tesseract_exe:
         payload["tesseract"] = _tesseract_exe
-    elif _ocr_engine == "none" and _easyocr_reader is None:
+    elif not _ocr_any_available():
         payload["hint"] = (
             "Tesseract OCR binary not found. Install via apt (`apt-get install tesseract-ocr`) on Linux, "
             "the UB Mannheim build on Windows, or `brew install tesseract` on macOS. "
@@ -1157,8 +1205,32 @@ def _ocr_tesseract(filepath: str) -> tuple[str, float, list[dict]]:
     from PIL import Image
 
     image = Image.open(filepath)
-    text = pytesseract.image_to_string(image).strip()
-    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    return _ocr_tesseract_image(image, psm=None, enhanced=False)
+
+
+def _ocr_tesseract_image(
+    image,
+    *,
+    psm: int | None = None,
+    enhanced: bool = False,
+) -> tuple[str, float, list[dict]]:
+    import pytesseract
+    from PIL import ImageEnhance, ImageFilter
+
+    img = image
+    if enhanced:
+        img = img.convert("L")
+        img = ImageEnhance.Contrast(img).enhance(1.85)
+        img = ImageEnhance.Sharpness(img).enhance(1.4)
+        img = img.filter(ImageFilter.SHARPEN)
+
+    config_parts: list[str] = []
+    if psm is not None:
+        config_parts.append(f"--psm {psm}")
+    config = " ".join(config_parts)
+
+    text = pytesseract.image_to_string(img, config=config).strip()
+    data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
     confs = []
     boxes: list[dict] = []
     for c in data.get("conf", []):
@@ -1189,6 +1261,134 @@ def _ocr_tesseract(filepath: str) -> tuple[str, float, list[dict]]:
     avg_0_100 = sum(confs) / len(confs) if confs else 0.0
     avg_conf = max(0.0, min(1.0, avg_0_100 / 100.0))
     return text, avg_conf, boxes
+
+
+def _ocr_fallback_min_conf() -> float:
+    raw = (os.environ.get("AI_OCR_FALLBACK_MIN_CONF") or "0.38").strip()
+    try:
+        return max(0.05, min(0.95, float(raw)))
+    except ValueError:
+        return 0.38
+
+
+def _ocr_fallback_min_words(doc_type: str) -> int:
+    if _normalize_doc_type_key(doc_type) in PHOTO_DOC_TYPES:
+        return 0
+    raw = (os.environ.get("AI_OCR_FALLBACK_MIN_WORDS") or "10").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 10
+
+
+def _ocr_read_quality_score(text: str, avg_conf: float) -> float:
+    words = len((text or "").split())
+    conf = max(0.0, min(1.0, float(avg_conf)))
+    return words * (0.25 + 0.75 * conf)
+
+
+def _ocr_needs_fallback(text: str, avg_conf: float, doc_type: str) -> bool:
+    if _env_flag("DISABLE_OCR_FALLBACK"):
+        return False
+    if _normalize_doc_type_key(doc_type) in PHOTO_DOC_TYPES:
+        return False
+    words = len((text or "").split())
+    if words < _ocr_fallback_min_words(doc_type):
+        return True
+    if not (text or "").strip():
+        return True
+    return float(avg_conf) < _ocr_fallback_min_conf()
+
+
+def _ocr_read_document(
+    filepath: str,
+    doc_type: str,
+) -> tuple[str, float, list[dict], dict]:
+    """
+    Multi-level OCR:
+      1) Primary engine (Tesseract or EasyOCR per AI_OCR_ENGINE)
+      2) Enhanced Tesseract + alternate page segmentation (PSM 6, 11)
+      3) Secondary engine (EasyOCR lazy, or Tesseract if primary was EasyOCR)
+    """
+    passes: list[dict] = []
+    candidates: list[tuple[str, str, str, float, list[dict]]] = []
+
+    def _run(level: int, engine: str, label: str, text: str, conf: float, boxes: list[dict]) -> None:
+        passes.append(
+            {
+                "level": level,
+                "engine": label,
+                "confidence": round(float(conf), 4),
+                "words": len((text or "").split()),
+            }
+        )
+        candidates.append((engine, label, text, conf, boxes))
+
+    # Level 1 — primary
+    if _ocr_primary == "easyocr" and _easyocr_available and _easyocr_reader is not None:
+        t1, c1, b1 = _ocr_easyocr(filepath)
+        _run(1, "easyocr", "easyocr", t1, c1, b1)
+    elif _tesseract_available:
+        t1, c1, b1 = _ocr_tesseract(filepath)
+        _run(1, "tesseract", "tesseract", t1, c1, b1)
+    elif _easyocr_available and _easyocr_reader is not None:
+        t1, c1, b1 = _ocr_easyocr(filepath)
+        _run(1, "easyocr", "easyocr", t1, c1, b1)
+    else:
+        raise RuntimeError("No OCR engine available")
+
+    best = max(candidates, key=lambda row: _ocr_read_quality_score(row[2], row[3]))
+    best_engine, best_label, best_text, best_conf, best_boxes = best
+
+    if _ocr_needs_fallback(best_text, best_conf, doc_type):
+        from PIL import Image
+
+        level = 2
+        if _tesseract_available:
+            try:
+                base = Image.open(filepath)
+                for psm, tag in ((6, "tesseract_enhanced_psm6"), (11, "tesseract_enhanced_psm11"), (4, "tesseract_enhanced_psm4")):
+                    t2, c2, b2 = _ocr_tesseract_image(base, psm=psm, enhanced=True)
+                    _run(level, "tesseract", tag, t2, c2, b2)
+                    level += 1
+                    cand = max(candidates, key=lambda row: _ocr_read_quality_score(row[2], row[3]))
+                    if _ocr_read_quality_score(cand[2], cand[3]) > _ocr_read_quality_score(best_text, best_conf):
+                        best_engine, best_label, best_text, best_conf, best_boxes = cand
+                    if not _ocr_needs_fallback(best_text, best_conf, doc_type):
+                        break
+            except Exception as exc:
+                print(f"[IntelliDocs AI] Enhanced Tesseract fallback failed: {exc}", flush=True)
+
+        # Level 3 — secondary engine
+        if _ocr_needs_fallback(best_text, best_conf, doc_type):
+            secondary: list[tuple[str, str, object]] = []
+            if best_engine != "easyocr" and _ensure_easyocr_loaded():
+                secondary.append(("easyocr", "easyocr_fallback", lambda: _ocr_easyocr(filepath)))
+            if best_engine != "tesseract" and _tesseract_available:
+                secondary.append(("tesseract", "tesseract_fallback", lambda: _ocr_tesseract(filepath)))
+
+            for eng, tag, fn in secondary:
+                try:
+                    t3, c3, b3 = fn()
+                    _run(level, eng, tag, t3, c3, b3)
+                    level += 1
+                    cand = max(candidates, key=lambda row: _ocr_read_quality_score(row[2], row[3]))
+                    if _ocr_read_quality_score(cand[2], cand[3]) > _ocr_read_quality_score(best_text, best_conf):
+                        best_engine, best_label, best_text, best_conf, best_boxes = cand
+                    if not _ocr_needs_fallback(best_text, best_conf, doc_type):
+                        break
+                except Exception as exc:
+                    print(f"[IntelliDocs AI] OCR fallback ({tag}) failed: {exc}", flush=True)
+
+    primary_pass = passes[0] if passes else {}
+    fallback_used = best_label != str(primary_pass.get("engine") or best_label)
+    meta = {
+        "engine": best_label,
+        "primary_engine": _ocr_primary,
+        "fallback_used": fallback_used,
+        "passes": passes,
+    }
+    return best_text, best_conf, best_boxes, meta
 
 
 def _tamper_check(filepath: str) -> tuple[float, list[str]]:
@@ -4549,7 +4749,7 @@ def _evaluate(
     if slot_mismatch_info:
         payload["document_slot_expected"] = slot_mismatch_info["expected"]
         payload["document_slot_detected"] = slot_mismatch_info["detected"]
-    payload["v"] = 17
+    payload["v"] = 18
 
     return payload
 
@@ -4608,7 +4808,7 @@ def verify_doc():
     if request.method == "OPTIONS":
         return _corsify(make_response("", 204))
 
-    if _ocr_engine == "none":
+    if not _ocr_any_available():
         return (
             jsonify(
                 {
@@ -4645,10 +4845,7 @@ def verify_doc():
         except Exception:
             img_w, img_h = None, None
 
-        if _ocr_engine == "easyocr":
-            text, avg_conf, boxes = _ocr_easyocr(filepath)
-        else:
-            text, avg_conf, boxes = _ocr_tesseract(filepath)
+        text, avg_conf, boxes, ocr_meta = _ocr_read_document(filepath, doc_type)
 
         # Used by downstream checks (synthetic heuristics, UI hints)
         word_count = len((text or "").split())
@@ -4668,6 +4865,10 @@ def verify_doc():
             expected = None
 
         payload = _evaluate(text, avg_conf, doc_type, boxes=boxes, img_h=img_h, expected=expected)
+        payload["ocr_engine"] = ocr_meta.get("engine")
+        payload["ocr_primary"] = ocr_meta.get("primary_engine")
+        payload["ocr_fallback_used"] = bool(ocr_meta.get("fallback_used"))
+        payload["ocr_passes"] = ocr_meta.get("passes") or []
         effective_doc_type = str(payload.get("resolved_doc_type") or doc_type).strip().lower()
         if img_w and img_h:
             payload["image_width"] = img_w

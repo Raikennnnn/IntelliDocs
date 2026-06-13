@@ -1,0 +1,10 @@
+# Optional Level-3 OCR fallback (CPU droplet — no NVIDIA GPU).
+# Install AFTER requirements.txt:
+#
+#   .venv/bin/pip install -r requirements.txt
+#   .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   .venv/bin/pip install -r requirements-easyocr-cpu.txt
+#
+# Do NOT run bare `pip install easyocr` — it upgrades numpy and pulls CUDA wheels.
+
+easyocr==1.7.2
