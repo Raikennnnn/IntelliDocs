@@ -2655,7 +2655,7 @@ export function ReviewDocuments() {
       >
         <DialogContent
           className={cn(
-            "flex max-h-[min(92dvh,92vh)] h-[min(92dvh,92vh)] w-[min(96vw,1440px)] max-w-[min(96vw,1440px)] flex-col gap-3 overflow-hidden p-4 sm:p-5 md:p-6",
+            "!flex !max-w-[min(96vw,1440px)] h-[min(92dvh,900px)] max-h-[min(92dvh,900px)] w-[min(96vw,1440px)] flex-col gap-2 overflow-hidden p-4 sm:gap-3 sm:p-5 md:p-6",
             previewLightboxOpen &&
               "[&>button.absolute]:pointer-events-none [&>button.absolute]:invisible",
           )}
@@ -2676,9 +2676,9 @@ export function ReviewDocuments() {
             </DialogDescription>
           </DialogHeader>
           {selectedDocument && (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-              <div className="border rounded-lg p-4">
-                <div className="flex items-start gap-3 flex-1">
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+              <div className="shrink-0 rounded-lg border p-3 sm:p-4">
+                <div className="flex items-start gap-3">
                   {selectedDocument.status === "Verified" ? (
                     <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
                   ) : selectedDocument.status === "Under Review" ? (
@@ -2844,8 +2844,8 @@ export function ReviewDocuments() {
                 </div>
               </div>
 
-              <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 md:grid-cols-2 md:gap-6">
-                <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-1 md:max-h-[calc(92vh-12rem)]">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden lg:grid-cols-2 lg:grid-rows-1 lg:gap-5 lg:items-stretch">
+                <div className="min-h-0 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain pr-0.5">
                   {(() => {
                     const id = String(selectedDocument.id ?? "");
                     const raw = aiResultsByDocId[id];
@@ -2853,7 +2853,7 @@ export function ReviewDocuments() {
                     const r = aiResultForDisplay(docType, raw);
                     if (r?.security_levels) {
                       return (
-                        <div className="rounded-lg border border-gray-200 bg-white p-4">
+                        <div className="min-w-0 rounded-lg border border-gray-200 bg-white p-4">
                           <h4 className="mb-1 text-sm font-semibold text-gray-900">AI checks</h4>
                           <p className="mb-3 text-xs text-gray-500">
                             {docType === "photo_2x2"
@@ -3382,7 +3382,7 @@ export function ReviewDocuments() {
                 </div>
 
               {/* Document Preview — fetched with apiFetch so X-User-Id is sent (img src alone cannot) */}
-              <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-gray-50 p-4 md:max-h-[calc(92vh-12rem)]">
+              <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-gray-50 p-3 sm:p-4">
                 <div className="mb-3 flex shrink-0 items-center justify-between">
                   <h4 className="text-base font-semibold text-gray-900">Uploaded Document</h4>
                   <Button
@@ -3395,6 +3395,7 @@ export function ReviewDocuments() {
                     Download
                   </Button>
                 </div>
+                <div className="flex min-h-0 flex-1 flex-col">
                 {(() => {
                   const kind =
                     previewDisplayKind ??
@@ -3507,6 +3508,8 @@ export function ReviewDocuments() {
                       alt={selectedDocument.fileName || selectedDocument.name}
                       loading={previewLoading}
                       error={previewError}
+                      className="min-h-0 flex-1"
+                      fitHeightClass="min-h-[12rem] h-full flex-1"
                       onLightboxOpenChange={setPreviewLightboxOpen}
                       imageRef={previewImgRef}
                       onImageLoad={() => {
@@ -3530,6 +3533,7 @@ export function ReviewDocuments() {
                     />
                   );
                 })()}
+                </div>
                 <p className="mt-2 shrink-0 text-xs text-gray-500">
                   Preview loads securely for registrar accounts. Use Download to save a copy.
                 </p>
