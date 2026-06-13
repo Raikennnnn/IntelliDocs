@@ -174,8 +174,6 @@ WorkingDirectory=${APP_ROOT}/ai
 Environment=PORT=8080
 Environment=AI_OCR_ENGINE=tesseract
 Environment=DISABLE_EASYOCR=1
-Environment=OCR_UPSCALE_MAX=2.5
-Environment=OCR_PSM_PASSES=6,11
 ExecStart=${APP_ROOT}/ai/.venv/bin/gunicorn --bind 127.0.0.1:8080 --workers 1 --worker-class gthread --threads 4 --timeout 300 --graceful-timeout 60 app:app
 Restart=always
 RestartSec=5

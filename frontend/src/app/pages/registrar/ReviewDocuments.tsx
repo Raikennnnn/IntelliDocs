@@ -344,7 +344,7 @@ function resolveApplicationVerifyFields(app: any) {
 }
 
 const AI_VERIFY_PAYLOAD_VERSION = 29;
-/** Per-document HTTP timeout (SF10 multi-pass OCR on a 2 GB droplet can take 2–3 min). */
+/** Per-document HTTP timeout (SF10 multi-pass OCR can take 2–3 min on 1-vCPU servers). */
 const AI_VERIFY_REQUEST_TIMEOUT_MS = 180_000;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
@@ -2297,7 +2297,7 @@ export function ReviewDocuments() {
                   {aiRunning ? (
                     <span className="inline-flex items-center gap-2 text-indigo-700">
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                      Running AI checks… SF10 and certificates may take 1–3 min each on this server.
+                      Running AI checks… SF10 and certificates may take 1–3 min each (CPU-bound OCR).
                     </span>
                   ) : aiServiceError ? (
                     <span className="text-rose-700">
