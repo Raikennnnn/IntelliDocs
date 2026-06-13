@@ -289,9 +289,9 @@ export function Applications() {
                     key={app.id}
                     className="p-4 border rounded-lg hover:border-[#8B1538] transition-colors"
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-3 mb-2">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-2 flex flex-wrap items-center gap-2 sm:gap-3">
                           <h3 className="font-semibold text-gray-900">
                             {app.studentName}
                           </h3>
@@ -300,7 +300,7 @@ export function Applications() {
                             <span className="ml-1">{app.status}</span>
                           </Badge>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-600">
+                        <div className="grid grid-cols-1 gap-3 text-sm text-gray-600 sm:grid-cols-2 md:grid-cols-4 md:gap-4">
                           <div>
                             <p className="text-xs text-gray-500">Application ID</p>
                             <p className="font-medium">{app.id}</p>
@@ -336,11 +336,11 @@ export function Applications() {
                           </div>
                         </div>
                       </div>
-                      <div className="ml-4">
-                        <Link to={`/registrar/review-documents/${app.id}`}>
+                      <div className="shrink-0 sm:ml-4">
+                        <Link to={`/registrar/review-documents/${app.id}`} className="block">
                           <Button
                             size="sm"
-                            className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
+                            className="w-full bg-[#8B1538] text-white hover:bg-[#8B1538]/90 sm:w-auto"
                           >
                             <Eye className="w-4 h-4 mr-2" />
                             Review

@@ -331,75 +331,19 @@ if ($method === 'GET') {
         $studentSection = fetchStudentSectionAssignment($pdo, $userId);
         $row = pickPrimaryEnrollmentRow($pdo, $userId, $syCurrent);
 
-        // Helper: parse "11", "Grade 11", "G11" into the integer 11. Returns
-        // 0 when the value is not a recognizable Senior High grade level.
-        $parseGradeLevel = static function (?string $raw): int {
-            if ($raw === null) return 0;
-            if (preg_match('/(\d{1,2})/', $raw, $m)) {
-                $n = (int)$m[1];
-                return ($n >= 7 && $n <= 12) ? $n : 0;
-            }
-            return 0;
-        };
-
         // Prior completed enrollment from an earlier school year (not the open enrollment SY).
-        $priorApprovedRow = null;
-        if ($syCurrent !== null) {
-            $priorStmt = $pdo->prepare(
-                "SELECT id, status, grade_level, strand, school_year, enrollment_steps, updated_at
-                 FROM enrollments
-                 WHERE user_id = :user_id
-                   AND LOWER(status) IN ('approved', 'enrolled')
-                   AND TRIM(school_year) <> ''
-                   AND school_year <> :sy_current
-                 ORDER BY id DESC
-                 LIMIT 1"
-            );
-            $priorStmt->execute([':user_id' => $userId, ':sy_current' => $syCurrent]);
-            $priorApprovedRow = $priorStmt->fetch() ?: null;
-        }
-        if (!$priorApprovedRow) {
-            $priorFallback = $pdo->prepare(
-                "SELECT id, status, grade_level, strand, school_year, enrollment_steps, updated_at
-                 FROM enrollments
-                 WHERE user_id = :user_id
-                   AND LOWER(status) IN ('approved', 'enrolled')
-                 ORDER BY id DESC
-                 LIMIT 1"
-            );
-            $priorFallback->execute([':user_id' => $userId]);
-            $priorApprovedRow = $priorFallback->fetch() ?: null;
-            if ($priorApprovedRow && $syCurrent !== null) {
-                $fallbackSy = trim((string)($priorApprovedRow['school_year'] ?? ''));
-                if ($fallbackSy === $syCurrent) {
-                    $priorApprovedRow = null;
-                }
-            }
-        }
-
-        $priorApproved = null;
+        $priorApproved = fetchPriorApprovedEnrollmentMeta($pdo, $userId, $syCurrent);
         $isGraduate = false;
-        if ($priorApprovedRow) {
-            $priorGrade = $parseGradeLevel((string)($priorApprovedRow['grade_level'] ?? ''));
-            $priorFormData = sanitizePriorFormDataForClient(
-                parseEnrollmentFormDataFromSteps((string)($priorApprovedRow['enrollment_steps'] ?? ''))
-            );
-            $priorApproved = [
-                'id' => (int)$priorApprovedRow['id'],
-                'grade_level' => (string)($priorApprovedRow['grade_level'] ?? ''),
-                'grade_level_number' => $priorGrade,
-                'strand' => (string)($priorApprovedRow['strand'] ?? ''),
-                'school_year' => (string)($priorApprovedRow['school_year'] ?? ''),
-                'updated_at' => (string)($priorApprovedRow['updated_at'] ?? ''),
-                'form_data' => $priorFormData,
-            ];
-            // Senior High terminates at Grade 12. Once a student has been
-            // approved for Grade 12 they have completed the SHS program and
-            // cannot submit another enrollment from the student portal.
+        if ($priorApproved !== null) {
+            $priorGrade = (int)($priorApproved['grade_level_number'] ?? 0);
             if ($priorGrade >= 12) {
                 $isGraduate = true;
             }
         }
+
+        require_once __DIR__ . '/physical_docs_helpers.php';
+        $grade12PhysicalDocs = grade12PriorPhysicalDocsGate($pdo, $userId, $priorApproved, $syCurrent);
+        $grade12BlockedPhysicalDocs = !empty($grade12PhysicalDocs['applies']) && empty($grade12PhysicalDocs['complete']);
 
         if (!$row) {
             $newSchoolYearReenrollment = $syCurrent !== null && !$isGraduate && $priorApproved !== null;
@@ -421,6 +365,9 @@ if ($method === 'GET') {
             $grade12PromotionActive = isGrade12PromotionActive($syCurrent, $priorApproved, null);
             $grade12Declined = $syCurrent !== null
                 && studentDeclinedGrade12ForTargetSy($pdo, $userId, $syCurrent);
+            if ($grade12BlockedPhysicalDocs && !$isGraduate) {
+                $needsGrade12Confirmation = false;
+            }
             echo json_encode([
                 'success' => true,
                 'enrollment' => null,
@@ -432,10 +379,12 @@ if ($method === 'GET') {
                 // eligible to enroll iff an enrollment SY is open and they are
                 // not a graduate (the latter cannot happen here since there is
                 // no prior row, but we keep the flag explicit for the client).
-                're_enrollment_eligible' => $syCurrent !== null && !$isGraduate,
-                'new_school_year_reenrollment' => $newSchoolYearReenrollment,
+                're_enrollment_eligible' => $syCurrent !== null && !$isGraduate && !$grade12BlockedPhysicalDocs,
+                'new_school_year_reenrollment' => $newSchoolYearReenrollment && !$grade12BlockedPhysicalDocs,
                 'needs_grade12_confirmation' => $needsGrade12Confirmation,
                 'grade12_promotion_active' => $grade12PromotionActive,
+                'grade12_blocked_physical_docs' => $grade12BlockedPhysicalDocs,
+                'grade12_physical_docs' => $grade12PhysicalDocs,
                 'prefill_form_data' => $newSchoolYearReenrollment
                     ? buildNewSchoolYearPrefillFormData($priorApproved, $studentSection)
                     : null,
@@ -497,6 +446,11 @@ if ($method === 'GET') {
 
         $grade12Declined = $syCurrent !== null
             && studentDeclinedGrade12ForTargetSy($pdo, $userId, $syCurrent);
+        if ($grade12BlockedPhysicalDocs && !$isGraduate) {
+            $needsGrade12Confirmation = false;
+            $reEnrollmentEligible = false;
+            $newSchoolYearReenrollment = false;
+        }
         $docAuthConsent = getDocumentAuthenticityConsent($pdo, (int)$row['id']);
         echo json_encode([
             'success' => true,
@@ -528,6 +482,8 @@ if ($method === 'GET') {
             'grade12_promotion_active' => $grade12PromotionActive,
             'prefill_form_data' => $prefillFormData,
             'grade12_declined' => $grade12Declined,
+            'grade12_blocked_physical_docs' => $grade12BlockedPhysicalDocs,
+            'grade12_physical_docs' => $grade12PhysicalDocs,
             'student_section' => [
                 'section' => $studentSection['section'],
                 'shift' => $studentSection['shift'],
@@ -731,6 +687,18 @@ if ($method === 'POST') {
         echo json_encode(['success' => false, 'error' => 'Enrollment is closed. No active school year is configured.']);
         exit;
     }
+
+    $physicalBlock = enforceGrade12PhysicalDocsComplete($pdo, $userId, $gradeLevel, $schoolYear);
+    if ($physicalBlock !== null) {
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'error' => $physicalBlock,
+            'grade12_blocked_physical_docs' => true,
+        ]);
+        exit;
+    }
+
     $status = $action === 'submit' ? 'pending' : 'draft';
 
     $birthRaw = trim((string)($formData['birthDate'] ?? ''));

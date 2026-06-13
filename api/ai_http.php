@@ -23,6 +23,7 @@ function aiPostMultipart(
     string $downloadName,
     string $mimeType,
     array $fields = [],
+    int $timeoutSeconds = 25,
 ): array {
     if (!is_file($fullPath)) {
         return ['ok' => false, 'status' => 0, 'body' => null, 'error' => 'File not found for AI'];
@@ -43,7 +44,7 @@ function aiPostMultipart(
         CURLOPT_POSTFIELDS => $postFields,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_CONNECTTIMEOUT => 3,
-        CURLOPT_TIMEOUT => 25,
+        CURLOPT_TIMEOUT => max(5, $timeoutSeconds),
     ]);
 
     $raw = curl_exec($ch);
@@ -91,12 +92,13 @@ function aiScreenUploadQuality(
 ): array {
     $res = aiPostMultipart('/screen-quality', $fullPath, $downloadName, $mimeType, [
         'doc_type' => $docType,
-    ]);
+    ], 45);
 
     if (!$res['ok'] || !is_array($res['body'])) {
         return [
             'ok' => false,
             'pass' => false,
+            'level' => 1,
             'message' => $res['error'] ?? 'AI quality check unavailable. Try again later.',
             'body' => $res['body'],
             'error' => $res['error'] ?? null,
@@ -105,14 +107,18 @@ function aiScreenUploadQuality(
 
     $body = $res['body'];
     $pass = !empty($body['pass']);
+    $level = (int)($body['level'] ?? ($pass ? 2 : 1));
     $message = trim((string)($body['message'] ?? ''));
     if ($message === '' && !$pass) {
-        $message = 'Image quality check failed. Use a clear, well-lit photo.';
+        $message = $level === 2
+            ? 'We could not read enough text on this document. Upload a clearer photo (JPG or PNG).'
+            : 'Image quality check failed. Use a clear, well-lit photo.';
     }
 
     return [
         'ok' => true,
         'pass' => $pass,
+        'level' => $level,
         'message' => $message,
         'body' => $body,
     ];

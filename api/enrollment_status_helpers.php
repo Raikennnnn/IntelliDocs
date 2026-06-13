@@ -590,6 +590,101 @@ function enrollmentGradeFromRow(array $enrollmentRow): int
     return enrollmentGradeNumber((string)($form['gradeLevel'] ?? ''));
 }
 
+/**
+ * Latest approved/enrolled row from a prior school year (Grade 11 → 12 gate).
+ *
+ * @return array{
+ *   id: int,
+ *   grade_level: string,
+ *   grade_level_number: int,
+ *   strand: string,
+ *   school_year: string,
+ *   updated_at: string,
+ *   form_data: array<string, mixed>
+ * }|null
+ */
+function fetchPriorApprovedEnrollmentMeta(PDO $pdo, int $userId, ?string $syCurrent): ?array
+{
+    if ($syCurrent === null || !enrollmentTableExists($pdo, 'enrollments')) {
+        return null;
+    }
+
+    $priorStmt = $pdo->prepare(
+        "SELECT id, status, grade_level, strand, school_year, enrollment_steps, updated_at
+           FROM enrollments
+          WHERE user_id = :user_id
+            AND LOWER(status) IN ('approved', 'enrolled')
+            AND TRIM(school_year) <> ''
+            AND school_year <> :sy_current
+          ORDER BY id DESC
+          LIMIT 1"
+    );
+    $priorStmt->execute([':user_id' => $userId, ':sy_current' => $syCurrent]);
+    $priorApprovedRow = $priorStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+    if (!$priorApprovedRow) {
+        $priorFallback = $pdo->prepare(
+            "SELECT id, status, grade_level, strand, school_year, enrollment_steps, updated_at
+               FROM enrollments
+              WHERE user_id = :user_id
+                AND LOWER(status) IN ('approved', 'enrolled')
+              ORDER BY id DESC
+              LIMIT 1"
+        );
+        $priorFallback->execute([':user_id' => $userId]);
+        $priorApprovedRow = $priorFallback->fetch(PDO::FETCH_ASSOC) ?: null;
+        if ($priorApprovedRow) {
+            $fallbackSy = trim((string)($priorApprovedRow['school_year'] ?? ''));
+            if ($fallbackSy === $syCurrent) {
+                $priorApprovedRow = null;
+            }
+        }
+    }
+
+    if (!$priorApprovedRow) {
+        return null;
+    }
+
+    $priorGrade = enrollmentGradeNumber((string)($priorApprovedRow['grade_level'] ?? ''));
+    $priorFormData = parseEnrollmentFormDataFromSteps((string)($priorApprovedRow['enrollment_steps'] ?? ''));
+    $priorFormData['confirmInformation'] = false;
+
+    return [
+        'id' => (int)$priorApprovedRow['id'],
+        'grade_level' => (string)($priorApprovedRow['grade_level'] ?? ''),
+        'grade_level_number' => $priorGrade,
+        'strand' => (string)($priorApprovedRow['strand'] ?? ''),
+        'school_year' => (string)($priorApprovedRow['school_year'] ?? ''),
+        'updated_at' => (string)($priorApprovedRow['updated_at'] ?? ''),
+        'form_data' => $priorFormData,
+    ];
+}
+
+/** Block Grade 12 save/submit when prior-SY physical documents are incomplete. Returns error message or null. */
+function enforceGrade12PhysicalDocsComplete(
+    PDO $pdo,
+    int $userId,
+    string $gradeLevel,
+    string $schoolYear
+): ?string {
+    if (enrollmentGradeNumber($gradeLevel) !== 12) {
+        return null;
+    }
+
+    require_once __DIR__ . '/physical_docs_helpers.php';
+    $priorApproved = fetchPriorApprovedEnrollmentMeta($pdo, $userId, $schoolYear);
+    if ($priorApproved === null) {
+        return null;
+    }
+
+    $gate = grade12PriorPhysicalDocsGate($pdo, $userId, $priorApproved, $schoolYear);
+    if ($gate['applies'] && !$gate['complete']) {
+        return grade12PhysicalDocsBlockMessage($gate);
+    }
+
+    return null;
+}
+
 /** True when this enrollment belongs to a returning student (prior approved/enrolled row exists). */
 function isReturningStudentReEnrollment(PDO $pdo, int $userId, int $enrollmentId): bool
 {
@@ -639,6 +734,18 @@ function returningGrade12ShouldAutoEnroll(
 
     $priorGrade = preg_match('/(\d{1,2})/', (string)($prior['grade_level'] ?? ''), $pm) ? (int)$pm[1] : 0;
     if ($priorGrade >= 12) {
+        return false;
+    }
+
+    require_once __DIR__ . '/physical_docs_helpers.php';
+    $priorApproved = [
+        'id' => (int)($prior['id'] ?? 0),
+        'school_year' => $priorSy,
+        'grade_level' => (string)($prior['grade_level'] ?? ''),
+        'grade_level_number' => $priorGrade,
+    ];
+    $gate = grade12PriorPhysicalDocsGate($pdo, $userId, $priorApproved, trim($schoolYear));
+    if ($gate['applies'] && !$gate['complete']) {
         return false;
     }
 
@@ -1135,11 +1242,11 @@ function buildAiExpectedVerifyFieldsForDocument(
         'birthcert' => ['expected_name', 'expected_sex', 'expected_dob', 'expected_birth_place'],
         'good_moral' => ['expected_name', 'expected_prev_school', 'expected_school_year'],
         'goodmoral' => ['expected_name', 'expected_prev_school', 'expected_school_year'],
-        'sf9' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school', 'expected_grade_level'],
-        'report_card' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school', 'expected_grade_level'],
-        'sf10' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school', 'expected_grade_level'],
-        'form137' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school', 'expected_grade_level'],
-        'form157' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school', 'expected_grade_level'],
+        'sf9' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school'],
+        'report_card' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school'],
+        'sf10' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school'],
+        'form137' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school'],
+        'form157' => ['expected_name', 'expected_lrn', 'expected_sex', 'expected_school_year', 'expected_prev_school'],
     ];
 
     $pick = $keysByType[$type] ?? ['expected_name'];

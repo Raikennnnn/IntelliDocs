@@ -295,7 +295,19 @@ if ($method === 'POST') {
         };
     }
 
-    // Level 1 — image quality gate (blur / lighting). PDFs skip until converted or reviewed.
+    // PDFs cannot be OCR-screened at upload — require a readable photo instead.
+    if ($ext === 'pdf') {
+        @unlink($absolutePath);
+        http_response_code(422);
+        echo json_encode([
+            'success' => false,
+            'error' => 'We cannot verify PDF uploads automatically. Take a clear photo (JPG or PNG) of the document and upload that instead.',
+            'level' => 2,
+        ]);
+        exit;
+    }
+
+    // Level 1 — image quality + readability (blur / lighting / OCR text). PDFs rejected above.
     if (in_array($ext, ['jpg', 'jpeg', 'png'], true)) {
         require_once __DIR__ . '/ai_http.php';
         $docTypeKey = mapDocumentTypeForAi($documentType);
@@ -306,7 +318,7 @@ if ($method === 'POST') {
             echo json_encode([
                 'success' => false,
                 'error' => $screen['message'],
-                'level' => 1,
+                'level' => (int)($screen['level'] ?? 1),
             ]);
             exit;
         }
@@ -316,7 +328,7 @@ if ($method === 'POST') {
             echo json_encode([
                 'success' => false,
                 'error' => $screen['message'],
-                'level' => 1,
+                'level' => (int)($screen['level'] ?? 1),
                 'security_levels' => $screen['body']['security_levels'] ?? null,
             ]);
             exit;

@@ -107,6 +107,160 @@ if (!function_exists('enrollmentPhysicalDocsComplete')) {
     }
 }
 
+if (!function_exists('grade12PriorPhysicalDocsGate')) {
+    /**
+     * Grade 11 → 12 continuation requires the prior-SY physical-document checklist
+     * (face-to-face originals) to be complete on the registrar's record.
+     *
+     * @return array{
+     *   applies: bool,
+     *   complete: bool,
+     *   priorEnrollmentId: int|null,
+     *   priorSchoolYear: string,
+     *   totalRequired: int,
+     *   receivedCount: int,
+     *   missingCount: int,
+     *   missingLabels: list<string>
+     * }
+     */
+    function grade12PriorPhysicalDocsGate(
+        PDO $pdo,
+        int $userId,
+        ?array $priorApproved,
+        ?string $syCurrent
+    ): array {
+        $base = [
+            'applies' => false,
+            'complete' => true,
+            'priorEnrollmentId' => null,
+            'priorSchoolYear' => '',
+            'totalRequired' => 0,
+            'receivedCount' => 0,
+            'missingCount' => 0,
+            'missingLabels' => [],
+        ];
+
+        if ($syCurrent === null || $priorApproved === null) {
+            return $base;
+        }
+
+        $priorSy = trim((string)($priorApproved['school_year'] ?? ''));
+        if ($priorSy === '' || $priorSy === trim($syCurrent)) {
+            return $base;
+        }
+
+        $priorGrade = (int)($priorApproved['grade_level_number'] ?? 0);
+        if ($priorGrade <= 0 && function_exists('enrollmentGradeNumber')) {
+            $priorGrade = enrollmentGradeNumber((string)($priorApproved['grade_level'] ?? ''));
+        }
+        if ($priorGrade >= 12) {
+            return $base;
+        }
+
+        $priorId = (int)($priorApproved['id'] ?? 0);
+        if ($priorId <= 0 && function_exists('priorEnrolledEnrollmentId')) {
+            $priorId = priorEnrolledEnrollmentId($pdo, $userId, PHP_INT_MAX);
+        }
+        if ($priorId <= 0) {
+            return array_merge($base, [
+                'applies' => true,
+                'complete' => false,
+                'missingCount' => 1,
+                'missingLabels' => ['Physical document checklist not found for your prior enrollment.'],
+            ]);
+        }
+
+        $hasCompletedAt = function_exists('columnExists') && columnExists($pdo, 'enrollments', 'physical_docs_completed_at');
+        $completedExpr = $hasCompletedAt ? 'physical_docs_completed_at' : 'NULL AS physical_docs_completed_at';
+        $stmt = $pdo->prepare(
+            "SELECT id, status, enrollment_steps, {$completedExpr}
+               FROM enrollments
+              WHERE id = :id AND user_id = :uid
+              LIMIT 1"
+        );
+        $stmt->execute([':id' => $priorId, ':uid' => $userId]);
+        $priorRow = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        if (!$priorRow) {
+            return array_merge($base, [
+                'applies' => true,
+                'complete' => false,
+                'priorEnrollmentId' => $priorId,
+                'priorSchoolYear' => $priorSy,
+                'missingCount' => 1,
+                'missingLabels' => ['Physical document checklist not found for your prior enrollment.'],
+            ]);
+        }
+
+        $stepsJson = (string)($priorRow['enrollment_steps'] ?? '{}');
+        $status = (string)($priorRow['status'] ?? '');
+        $completedAt = $hasCompletedAt ? ($priorRow['physical_docs_completed_at'] ?? null) : null;
+        $catalog = physicalDocsCatalogForEnrollment($stepsJson, $status);
+
+        if (function_exists('ensurePhysicalDocsRows')) {
+            ensurePhysicalDocsRows($pdo, $priorId, $catalog);
+        }
+
+        $receivedByKey = [];
+        if (function_exists('tableExists') && tableExists($pdo, 'enrollment_physical_docs')) {
+            $rowsStmt = $pdo->prepare(
+                'SELECT requirement_key, received
+                   FROM enrollment_physical_docs
+                  WHERE enrollment_id = :id'
+            );
+            $rowsStmt->execute([':id' => $priorId]);
+            foreach ($rowsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                $receivedByKey[(string)$row['requirement_key']] = (int)$row['received'] === 1;
+            }
+        }
+
+        $totalRequired = 0;
+        $receivedCount = 0;
+        $missingLabels = [];
+        foreach ($catalog as $entry) {
+            if (empty($entry['required'])) {
+                continue;
+            }
+            $totalRequired++;
+            $key = (string)$entry['key'];
+            if (!empty($receivedByKey[$key])) {
+                $receivedCount++;
+            } else {
+                $missingLabels[] = (string)$entry['label'];
+            }
+        }
+
+        $complete = enrollmentPhysicalDocsComplete($pdo, $priorId, $completedAt, $stepsJson, $status);
+
+        return [
+            'applies' => true,
+            'complete' => $complete,
+            'priorEnrollmentId' => $priorId,
+            'priorSchoolYear' => $priorSy,
+            'totalRequired' => $totalRequired,
+            'receivedCount' => $receivedCount,
+            'missingCount' => max(0, $totalRequired - $receivedCount),
+            'missingLabels' => $missingLabels,
+        ];
+    }
+}
+
+if (!function_exists('grade12PhysicalDocsBlockMessage')) {
+    function grade12PhysicalDocsBlockMessage(array $gate): string
+    {
+        $missing = max(0, (int)($gate['missingCount'] ?? 0));
+        $priorSy = trim((string)($gate['priorSchoolYear'] ?? ''));
+        $syPart = $priorSy !== '' ? " for SY {$priorSy}" : '';
+        if ($missing > 0) {
+            return "You cannot proceed to Grade 12 until all required physical documents{$syPart} "
+                . "have been submitted in person to the registrar ({$missing} still missing on the checklist). "
+                . 'Open Application Status to see what to bring.';
+        }
+
+        return "You cannot proceed to Grade 12 until all required physical documents{$syPart} "
+            . 'have been submitted in person to the registrar. Open Application Status to see your checklist.';
+    }
+}
+
 if (!function_exists('batchEnrollmentPhysicalDocsComplete')) {
     /**
      * @param list<array<string, mixed>> $rows enrollment rows with enrollment_id, enrollment_steps, physical_docs_completed_at

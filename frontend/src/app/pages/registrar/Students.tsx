@@ -2335,14 +2335,14 @@ function KV({
     value === null || value === undefined || value === "" ? "—" : String(value);
   const isEmpty = display === "—";
   return (
-    <div className="grid grid-cols-3 gap-3 px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors">
-      <dt className="text-gray-600 font-medium col-span-1">{label}</dt>
+    <div className="grid grid-cols-1 gap-1 px-4 py-2.5 text-sm transition-colors hover:bg-gray-50 sm:grid-cols-3 sm:gap-3">
+      <dt className="font-medium text-gray-600 sm:col-span-1">{label}</dt>
       <dd
         className={
-          "col-span-2 " +
+          "sm:col-span-2 " +
           (isEmpty ? "text-gray-400 italic " : "text-gray-900 ") +
           (mono ? "font-mono " : "") +
-          (multiline ? "whitespace-pre-wrap break-words" : "truncate")
+          (multiline ? "whitespace-pre-wrap break-words" : "break-words sm:truncate")
         }
         title={multiline ? undefined : display}
       >
@@ -2359,9 +2359,9 @@ function KV({
  */
 function KVNode({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-3 gap-3 px-4 py-2.5 text-sm hover:bg-gray-50 transition-colors">
-      <dt className="text-gray-600 font-medium col-span-1">{label}</dt>
-      <dd className="col-span-2 text-gray-900 flex items-center gap-2 flex-wrap min-w-0">
+    <div className="grid grid-cols-1 gap-1 px-4 py-2.5 text-sm transition-colors hover:bg-gray-50 sm:grid-cols-3 sm:gap-3">
+      <dt className="font-medium text-gray-600 sm:col-span-1">{label}</dt>
+      <dd className="flex min-w-0 flex-wrap items-center gap-2 text-gray-900 sm:col-span-2">
         {children}
       </dd>
     </div>

@@ -177,7 +177,7 @@ export function RegistrationPage() {
   };
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden">
+    <div className="flex min-h-screen min-h-[100dvh] flex-col">
       {/* School Header Bar */}
       <div className="flex-shrink-0 bg-[#8B1538] px-4 py-3 sm:px-6">
         {/* TODO: Replace with official NSGDA logo image */}
@@ -197,9 +197,9 @@ export function RegistrationPage() {
       </div>
 
       {/* Main Content */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
       {/* Left Side - Form */}
-      <div className="flex w-full items-center justify-center overflow-y-auto bg-white p-4 sm:p-8 lg:w-1/2">
+      <div className="flex w-full flex-1 items-start justify-center overflow-y-auto bg-white p-4 sm:items-center sm:p-8 lg:w-1/2">
         <div className="w-full max-w-md">
           {/* Back Button */}
           <button
@@ -391,7 +391,7 @@ export function RegistrationPage() {
               <form onSubmit={handleVerifyOtp} className="space-y-6" autoComplete="off">
                 <div>
                   <Label className="text-gray-700 mb-3 block">Enter OTP Code</Label>
-                  <div className="flex gap-3 justify-between" onPaste={handleOtpPaste}>
+                  <div className="flex flex-wrap justify-center gap-2 sm:justify-between sm:gap-3" onPaste={handleOtpPaste}>
                     {otp.map((digit, index) => (
                       <Input
                         key={index}
@@ -403,7 +403,7 @@ export function RegistrationPage() {
                         onChange={(e) => handleOtpChange(index, e.target.value)}
                         onPaste={handleOtpPaste}
                         autoComplete="one-time-code"
-                        className="w-14 h-14 text-center text-2xl font-semibold"
+                        className="h-11 w-11 min-w-[2.5rem] max-w-14 flex-1 text-center text-lg font-semibold sm:h-14 sm:w-14 sm:flex-none sm:text-2xl"
                       />
                     ))}
                   </div>

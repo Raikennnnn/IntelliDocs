@@ -2,6 +2,11 @@
  * Shared colors for verification / integrity percentages.
  * Matches registrar review tiers: <75% red, 75–89% orange, ≥90% green.
  */
+import {
+  concernPolicyTier,
+  type ConcernPolicyTier,
+} from "./concernScore";
+
 export type VerificationScoreTier = "low" | "mid" | "high";
 
 export function verificationScoreTier(pct: number): VerificationScoreTier {
@@ -58,12 +63,20 @@ export function verificationScoreIconClass(pct: number): string {
   }
 }
 
-/** Concern % (0 = clean, higher = worse) — inverted from confidence-style scores. */
+/** Concern % (0 = clean, higher = worse) — matches policy bands 0–10 / 11–25 / >25. */
+function concernPolicyToScoreTier(tier: ConcernPolicyTier): VerificationScoreTier {
+  switch (tier) {
+    case "routine":
+      return "high";
+    case "manual":
+      return "mid";
+    default:
+      return "low";
+  }
+}
+
 export function concernScoreTier(pct: number): VerificationScoreTier {
-  const n = Math.max(0, Math.min(100, Math.round(pct)));
-  if (n <= 10) return "high";
-  if (n <= 50) return "mid";
-  return "low";
+  return concernPolicyToScoreTier(concernPolicyTier(pct));
 }
 
 export function concernScoreBadgeClasses(pct: number): string {

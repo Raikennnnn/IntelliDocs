@@ -178,4 +178,19 @@
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
   }
+
+  html {
+    overflow-x: hidden;
+  }
+
+  body {
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  img,
+  video {
+    max-width: 100%;
+    height: auto;
+  }
 }

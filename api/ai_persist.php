@@ -5,7 +5,7 @@ declare(strict_types=1);
  * Persist AI verification results on the documents row.
  */
 
-const AI_VERIFY_PAYLOAD_VERSION = 19;
+const AI_VERIFY_PAYLOAD_VERSION = 29;
 
 function aiPersistColumnExists(PDO $pdo, string $column): bool
 {

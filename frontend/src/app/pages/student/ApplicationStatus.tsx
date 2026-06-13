@@ -356,7 +356,7 @@ export function ApplicationStatus() {
             <StatusPill className={getStatusColor(appLabel)}>{appLabel}</StatusPill>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 text-sm">
+          <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
             <div>
               <p className="text-gray-600">Submitted Date</p>
               <p className="font-medium">{formatDateTime(application.submittedDate)}</p>

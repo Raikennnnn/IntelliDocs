@@ -11,6 +11,16 @@ export type DocumentConcernParts = {
 export const CONCERN_STRICT_THRESHOLD = 25;
 export const CONCERN_MANUAL_THRESHOLD = 10;
 
+export type ConcernPolicyTier = "routine" | "manual" | "strict";
+
+/** Registrar review band for a concern % (matches AI review summary legend). */
+export function concernPolicyTier(pct: number): ConcernPolicyTier {
+  const n = Math.max(0, Math.min(100, Math.round(pct)));
+  if (n > CONCERN_STRICT_THRESHOLD) return "strict";
+  if (n > CONCERN_MANUAL_THRESHOLD) return "manual";
+  return "routine";
+}
+
 /** 0 = clear; higher = more concern (inverse of integrity/naturalness scores). */
 export function integrityToConcern(integrityPct: number): number {
   const n = Math.round(integrityPct);
@@ -150,10 +160,14 @@ export function syntheticConcernPercent(r: SyntheticSource | null | undefined): 
 }
 
 export function concernRiskLabel(concernPct: number): "Clear" | "Check" | "Suspicious" {
-  const n = Math.round(concernPct);
-  if (n <= CONCERN_MANUAL_THRESHOLD) return "Clear";
-  if (n <= 50) return "Check";
-  return "Suspicious";
+  switch (concernPolicyTier(concernPct)) {
+    case "routine":
+      return "Clear";
+    case "manual":
+      return "Check";
+    default:
+      return "Suspicious";
+  }
 }
 
 function verificationLevels(levels: SecurityLevel[], security?: SecurityLevels | null): SecurityLevel[] {

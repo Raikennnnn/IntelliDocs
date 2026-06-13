@@ -63,16 +63,15 @@ import {
   concernScoreTextClass,
 } from "../../lib/verificationScoreColors";
 import {
+  CONCERN_MANUAL_THRESHOLD,
+  CONCERN_STRICT_THRESHOLD,
+  concernPolicyTier,
   concernRiskLabel,
+  documentAverageConcernFromAi,
+  documentConcernFromAi,
   levelConcernPercent,
   syntheticConcernPercent,
   tamperConcernPercent,
-} from "../../lib/concernScore";
-import {
-  CONCERN_MANUAL_THRESHOLD,
-  CONCERN_STRICT_THRESHOLD,
-  documentAverageConcernFromAi,
-  documentConcernFromAi,
 } from "../../lib/concernScore";
 import { cn } from "../../components/ui/utils";
 
@@ -269,28 +268,29 @@ function getAiReviewTier(concernScore: number): {
   body: string;
   accent: string;
 } {
-  if (concernScore > CONCERN_STRICT_THRESHOLD) {
-    return {
-      tier: "strict_manual",
-      title: "Strict manual verification required",
-      body: `Overall concern is above ${CONCERN_STRICT_THRESHOLD}%. Please personally verify this applicant's documents and identity before approving the enrollment.`,
-      accent: "border-red-200 bg-red-50/80 text-red-900",
-    };
+  switch (concernPolicyTier(concernScore)) {
+    case "strict":
+      return {
+        tier: "strict_manual",
+        title: "Strict manual verification required",
+        body: `Overall concern is above ${CONCERN_STRICT_THRESHOLD}%. Please personally verify this applicant's documents and identity before approving the enrollment.`,
+        accent: "border-red-200 bg-red-50/80 text-red-900",
+      };
+    case "manual":
+      return {
+        tier: "manual",
+        title: "Manual registrar review required",
+        body: `Overall concern is between ${CONCERN_MANUAL_THRESHOLD + 1}% and ${CONCERN_STRICT_THRESHOLD}%. Documents should be manually reviewed by the registrar before a final decision.`,
+        accent: "border-amber-200 bg-amber-50/80 text-amber-950",
+      };
+    default:
+      return {
+        tier: "light",
+        title: "Routine review",
+        body: `Overall concern is ${CONCERN_MANUAL_THRESHOLD}% or lower. No extra manual checking is required beyond normal procedures; still confirm identity and completeness as needed.`,
+        accent: "border-emerald-200 bg-emerald-50/80 text-emerald-950",
+      };
   }
-  if (concernScore > CONCERN_MANUAL_THRESHOLD) {
-    return {
-      tier: "manual",
-      title: "Manual registrar review required",
-      body: `Overall concern is between ${CONCERN_MANUAL_THRESHOLD + 1}% and ${CONCERN_STRICT_THRESHOLD}%. Documents should be manually reviewed by the registrar before a final decision.`,
-      accent: "border-amber-200 bg-amber-50/80 text-amber-950",
-    };
-  }
-  return {
-    tier: "light",
-    title: "Routine review",
-    body: `Overall concern is ${CONCERN_MANUAL_THRESHOLD}% or lower. No extra manual checking is required beyond normal procedures; still confirm identity and completeness as needed.`,
-    accent: "border-emerald-200 bg-emerald-50/80 text-emerald-950",
-  };
 }
 
 function docCheckShortTitle(dt: AiDocType): string {
@@ -344,7 +344,7 @@ function resolveApplicationVerifyFields(app: any) {
   };
 }
 
-const AI_VERIFY_PAYLOAD_VERSION = 19;
+const AI_VERIFY_PAYLOAD_VERSION = 29;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -360,9 +360,9 @@ function filterFieldChecksForDocType(docType: AiDocType, fieldChecks: FieldCheck
       (fc) => !GOOD_MORAL_EXCLUDED_CROSS_FIELDS.has(String(fc.field || "").trim().toLowerCase()),
     );
   }
-  if (docType === "sf9") {
+  if (docType === "sf9" || docType === "form137") {
     return fieldChecks.filter(
-      (fc) => String(fc.field || "").trim().toLowerCase() !== "previous school",
+      (fc) => String(fc.field || "").trim().toLowerCase() !== "grade level",
     );
   }
   return fieldChecks;
@@ -602,7 +602,6 @@ function enrollmentCrossCheckPlan(docType: AiDocType, app: any): EnrollmentCross
       maybe("Sex", f.sex),
       maybe("School year", f.schoolYear),
       maybe("Previous school", f.prevSchool),
-      maybe("Grade level", f.gradeLevel),
     ].filter(Boolean) as EnrollmentCrossRow[];
   }
   const nameRow = maybe("Name", f.name);
@@ -963,7 +962,6 @@ export function ReviewDocuments() {
         q("expected_sex", sex) +
         q("expected_school_year", schoolYear) +
         q("expected_prev_school", prevSchool) +
-        q("expected_grade_level", gradeLevel) +
         identity
       );
     }
@@ -1396,6 +1394,8 @@ export function ReviewDocuments() {
       : null;
   const aggregateConcern = weightedVerification?.aggregateScore ?? null;
   const aiTier = aggregateConcern !== null ? getAiReviewTier(aggregateConcern) : null;
+  const activeConcernPolicy =
+    aggregateConcern !== null ? concernPolicyTier(aggregateConcern) : null;
   const aiScoreBreakdown =
     weightedVerification !== null
       ? buildOverallScoreBreakdown(
@@ -1711,20 +1711,20 @@ export function ReviewDocuments() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-start gap-3 sm:items-center sm:gap-4">
         <Link to="/registrar/applications">
           <Button variant="outline" size="sm" className="h-8 px-3 text-xs">
             <ArrowLeft className="w-3 h-3 mr-1" />
             Back
           </Button>
         </Link>
-        <div className="flex-1">
-          <h2 className="text-2xl font-semibold text-gray-900">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-xl font-semibold text-gray-900 sm:text-2xl">
             Review Application
           </h2>
-          <p className="text-gray-600">Application ID: {application.id}</p>
+          <p className="truncate text-sm text-gray-600 sm:text-base">Application ID: {application.id}</p>
         </div>
-        <Badge className={applicationReviewStatusBadgeClass(application.status)}>
+        <Badge className={cn(applicationReviewStatusBadgeClass(application.status), "shrink-0")}>
           {application.status}
         </Badge>
       </div>
@@ -1756,48 +1756,53 @@ export function ReviewDocuments() {
       {/* Tabbed Interface */}
       <Card>
         <Tabs defaultValue="personal" className="w-full">
-          <div className="border-b bg-gray-50">
-            <TabsList className="w-full justify-start h-auto p-0 bg-transparent rounded-none">
+          <div className="border-b bg-gray-50 overflow-x-auto overscroll-x-contain">
+            <TabsList className="inline-flex h-auto w-max min-w-full justify-start rounded-none bg-transparent p-0">
               <TabsTrigger 
                 value="personal" 
-                className="data-[state=active]:bg-[#2D5016] data-[state=active]:text-white rounded-none border-b-2 border-transparent data-[state=active]:border-[#2D5016] px-6 py-3"
+                className="shrink-0 rounded-none border-b-2 border-transparent px-3 py-2.5 data-[state=active]:border-[#2D5016] data-[state=active]:bg-[#2D5016] data-[state=active]:text-white sm:px-6 sm:py-3"
               >
-                <User className="w-4 h-4 mr-2" />
-                Personal Information
+                <User className="mr-1.5 h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Personal Information</span>
+                <span className="sm:hidden">Personal</span>
               </TabsTrigger>
               <TabsTrigger 
                 value="family" 
-                className="data-[state=active]:bg-[#8B1538] data-[state=active]:text-white rounded-none border-b-2 border-transparent data-[state=active]:border-[#8B1538] px-6 py-3"
+                className="shrink-0 rounded-none border-b-2 border-transparent px-3 py-2.5 data-[state=active]:border-[#8B1538] data-[state=active]:bg-[#8B1538] data-[state=active]:text-white sm:px-6 sm:py-3"
               >
-                <Users className="w-4 h-4 mr-2" />
-                Parent/Guardian Information
+                <Users className="mr-1.5 h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Parent/Guardian Information</span>
+                <span className="sm:hidden">Family</span>
               </TabsTrigger>
               <TabsTrigger 
                 value="academic" 
-                className="data-[state=active]:bg-[#2D5016] data-[state=active]:text-white rounded-none border-b-2 border-transparent data-[state=active]:border-[#2D5016] px-6 py-3"
+                className="shrink-0 rounded-none border-b-2 border-transparent px-3 py-2.5 data-[state=active]:border-[#2D5016] data-[state=active]:bg-[#2D5016] data-[state=active]:text-white sm:px-6 sm:py-3"
               >
-                <GraduationCap className="w-4 h-4 mr-2" />
-                Academic Background
+                <GraduationCap className="mr-1.5 h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Academic Background</span>
+                <span className="sm:hidden">Academic</span>
               </TabsTrigger>
               <TabsTrigger 
                 value="documents" 
-                className="data-[state=active]:bg-[#8B1538] data-[state=active]:text-white rounded-none border-b-2 border-transparent data-[state=active]:border-[#8B1538] px-6 py-3"
+                className="shrink-0 rounded-none border-b-2 border-transparent px-3 py-2.5 data-[state=active]:border-[#8B1538] data-[state=active]:bg-[#8B1538] data-[state=active]:text-white sm:px-6 sm:py-3"
               >
-                <Upload className="w-4 h-4 mr-2" />
-                Documents Upload
+                <Upload className="mr-1.5 h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Documents Upload</span>
+                <span className="sm:hidden">Documents</span>
               </TabsTrigger>
               <TabsTrigger 
                 value="review" 
-                className="data-[state=active]:bg-[#2D5016] data-[state=active]:text-white rounded-none border-b-2 border-transparent data-[state=active]:border-[#2D5016] px-6 py-3"
+                className="shrink-0 rounded-none border-b-2 border-transparent px-3 py-2.5 data-[state=active]:border-[#2D5016] data-[state=active]:bg-[#2D5016] data-[state=active]:text-white sm:px-6 sm:py-3"
               >
-                <ClipboardCheck className="w-4 h-4 mr-2" />
-                Review & Decision
+                <ClipboardCheck className="mr-1.5 h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">Review & Decision</span>
+                <span className="sm:hidden">Review</span>
               </TabsTrigger>
             </TabsList>
           </div>
 
           {/* Personal Information Tab */}
-          <TabsContent value="personal" className="p-6 space-y-6">
+          <TabsContent value="personal" className="space-y-6 p-4 sm:p-6">
             <div>
               <h3 className="text-lg font-semibold mb-4">Basic Information</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
@@ -1888,7 +1893,7 @@ export function ReviewDocuments() {
           </TabsContent>
 
           {/* Parent/Guardian Information Tab */}
-          <TabsContent value="family" className="p-6 space-y-6">
+          <TabsContent value="family" className="space-y-6 p-4 sm:p-6">
             <div>
               <h3 className="text-lg font-semibold mb-4">Mother's Information</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
@@ -1979,7 +1984,7 @@ export function ReviewDocuments() {
           </TabsContent>
 
           {/* Academic Background Tab */}
-          <TabsContent value="academic" className="p-6 space-y-6">
+          <TabsContent value="academic" className="space-y-6 p-4 sm:p-6">
             <div>
               <h3 className="text-lg font-semibold mb-4">Academic Information</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
@@ -2062,7 +2067,7 @@ export function ReviewDocuments() {
           </TabsContent>
 
           {/* Documents Upload Tab */}
-          <TabsContent value="documents" className="p-6">
+          <TabsContent value="documents" className="p-4 sm:p-6">
             <div className="space-y-3">
               {(() => {
                 const docs = (application.documents ?? []) as any[];
@@ -2160,7 +2165,7 @@ export function ReviewDocuments() {
                       : "border-gray-200 bg-white",
                   )}
                 >
-                  <div className="flex items-start justify-between gap-4">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 flex-1 items-start gap-3">
                       <FileText className="mt-0.5 h-5 w-5 shrink-0 text-gray-400" aria-hidden />
                       <div className="min-w-0 flex-1 space-y-2">
@@ -2231,7 +2236,7 @@ export function ReviewDocuments() {
                         ) : null}
                       </div>
                     </div>
-                    <div className="flex shrink-0 flex-col items-end gap-2">
+                    <div className="flex w-full shrink-0 flex-row flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3 sm:w-auto sm:flex-col sm:items-end sm:border-0 sm:pt-0">
                       {aiPct !== null ? (
                         <span
                           className={cn(
@@ -2243,8 +2248,8 @@ export function ReviewDocuments() {
                           {aiPct}%
                         </span>
                       ) : null}
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={() => handleViewDocument(doc)}>
+                      <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+                        <Button variant="outline" size="sm" className="flex-1 sm:flex-none" onClick={() => handleViewDocument(doc)}>
                           <Eye className="mr-2 h-4 w-4" />
                           View
                         </Button>
@@ -2252,6 +2257,7 @@ export function ReviewDocuments() {
                           type="button"
                           variant="outline"
                           size="sm"
+                          className="flex-1 sm:flex-none"
                           onClick={() => downloadDocument(doc)}
                         >
                           <Download className="mr-2 h-4 w-4" />
@@ -2268,7 +2274,7 @@ export function ReviewDocuments() {
           </TabsContent>
 
           {/* Review & Decision Tab */}
-          <TabsContent value="review" className="p-6 space-y-6">
+          <TabsContent value="review" className="space-y-6 p-4 sm:p-6">
             {/* Note: registrar remarks moved into the Reject confirmation
                 dialog (see below). Approve does not need remarks; reject
                 does, and the dialog enforces that requirement. This keeps
@@ -2343,17 +2349,33 @@ export function ReviewDocuments() {
                       <p className="mt-1 leading-relaxed">{aiTier.body}</p>
                     </div>
                     <div className="grid gap-2 text-xs text-gray-600 sm:grid-cols-3">
-                      <div className="rounded-md border border-emerald-200 bg-emerald-50/80 px-2.5 py-2">
+                      <div
+                        className={cn(
+                          "rounded-md border border-emerald-200 bg-emerald-50/80 px-2.5 py-2",
+                          activeConcernPolicy === "routine" &&
+                            "ring-2 ring-emerald-500 ring-offset-1",
+                        )}
+                      >
                         <span className="font-semibold text-emerald-800">0–{CONCERN_MANUAL_THRESHOLD}%</span>
                         <p className="mt-0.5">Routine review</p>
                       </div>
-                      <div className="rounded-md border border-amber-200 bg-amber-50/80 px-2.5 py-2">
+                      <div
+                        className={cn(
+                          "rounded-md border border-amber-200 bg-amber-50/80 px-2.5 py-2",
+                          activeConcernPolicy === "manual" && "ring-2 ring-amber-500 ring-offset-1",
+                        )}
+                      >
                         <span className="font-semibold text-amber-900">
                           {CONCERN_MANUAL_THRESHOLD + 1}–{CONCERN_STRICT_THRESHOLD}%
                         </span>
                         <p className="mt-0.5">Manual registrar review</p>
                       </div>
-                      <div className="rounded-md border border-red-200 bg-red-50/80 px-2.5 py-2">
+                      <div
+                        className={cn(
+                          "rounded-md border border-red-200 bg-red-50/80 px-2.5 py-2",
+                          activeConcernPolicy === "strict" && "ring-2 ring-red-500 ring-offset-1",
+                        )}
+                      >
                         <span className="font-semibold text-red-800">&gt;{CONCERN_STRICT_THRESHOLD}%</span>
                         <p className="mt-0.5">Strict verification</p>
                       </div>
@@ -2633,7 +2655,7 @@ export function ReviewDocuments() {
       >
         <DialogContent
           className={cn(
-            "flex h-[92vh] max-h-[92vh] w-[min(96vw,1440px)] max-w-[min(96vw,1440px)] flex-col gap-3 overflow-hidden p-5 sm:max-w-[min(96vw,1440px)] sm:p-6",
+            "flex max-h-[min(92dvh,92vh)] h-[min(92dvh,92vh)] w-[min(96vw,1440px)] max-w-[min(96vw,1440px)] flex-col gap-3 overflow-hidden p-4 sm:p-5 md:p-6",
             previewLightboxOpen &&
               "[&>button.absolute]:pointer-events-none [&>button.absolute]:invisible",
           )}
@@ -2701,7 +2723,7 @@ export function ReviewDocuments() {
                         {selectedDocument.status}
                       </Badge>
                     </div>
-                    <div className="mb-3 grid grid-cols-2 gap-4 text-sm text-gray-600 md:grid-cols-3">
+                    <div className="mb-3 grid grid-cols-1 gap-4 text-sm text-gray-600 sm:grid-cols-2 md:grid-cols-3">
                       <div>
                         <p className="text-xs text-gray-500">Student</p>
                         <p className="font-medium">{selectedDocument.studentName}</p>

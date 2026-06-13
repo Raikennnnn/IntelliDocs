@@ -263,7 +263,7 @@ export function Login() {
                 )}
                 <div>
                   <Label className="text-gray-700 mb-3 block">Enter OTP Code</Label>
-                  <div className="flex gap-3 justify-between" onPaste={handleOtpPaste}>
+                  <div className="flex flex-wrap justify-center gap-2 sm:justify-between sm:gap-3" onPaste={handleOtpPaste}>
                     {otp.map((digit, index) => (
                       <Input
                         key={index}
@@ -275,7 +275,7 @@ export function Login() {
                         value={digit}
                         onChange={(e) => handleOtpChange(index, e.target.value)}
                         onPaste={handleOtpPaste}
-                        className="w-12 h-12 text-center text-lg font-semibold"
+                        className="h-11 w-11 min-w-[2.5rem] max-w-12 flex-1 text-center text-lg font-semibold sm:h-12 sm:w-12 sm:flex-none"
                       />
                     ))}
                   </div>

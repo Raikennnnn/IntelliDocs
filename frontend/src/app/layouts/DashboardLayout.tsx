@@ -81,7 +81,7 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
               type="button"
               variant="ghost"
               size="icon"
-              className="shrink-0 text-white hover:bg-white/10 lg:hidden"
+              className="shrink-0 text-white hover:bg-white/10 md:hidden"
               onClick={() => setMobileNavOpen((open) => !open)}
               aria-expanded={mobileNavOpen}
               aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
@@ -126,7 +126,7 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
         {mobileNavOpen && (
           <button
             type="button"
-            className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+            className="fixed inset-0 z-40 bg-black/40 md:hidden"
             aria-label="Close navigation"
             onClick={() => setMobileNavOpen(false)}
           />
@@ -134,14 +134,14 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
 
         <aside
           className={cn(
-            'fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r border-gray-200 bg-white p-4 pt-20 shadow-xl transition-transform duration-200 ease-out lg:static lg:z-auto lg:w-64 lg:max-w-none lg:shrink-0 lg:translate-x-0 lg:pt-4 lg:shadow-none',
-            mobileNavOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
+            'fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col overflow-y-auto border-r border-gray-200 bg-white p-4 pt-20 shadow-xl transition-transform duration-200 ease-out md:static md:z-auto md:w-64 md:max-w-none md:shrink-0 md:translate-x-0 md:pt-4 md:shadow-none',
+            mobileNavOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
           )}
         >
           {navLinks}
         </aside>
 
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 md:p-6">
           {children}
         </main>
       </div>

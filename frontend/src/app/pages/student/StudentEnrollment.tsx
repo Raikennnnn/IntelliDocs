@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import {
   AlertDialog,
@@ -460,6 +460,17 @@ type PriorApprovedMeta = {
   form_data?: Partial<EnrollmentFormData>;
 };
 
+type Grade12PhysicalDocsGate = {
+  applies: boolean;
+  complete: boolean;
+  priorEnrollmentId: number | null;
+  priorSchoolYear: string;
+  totalRequired: number;
+  receivedCount: number;
+  missingCount: number;
+  missingLabels: string[];
+};
+
 /** Pre-fill returning students from their last enrolled application. */
 function applyReEnrollmentFormPrefill(
   base: EnrollmentFormData,
@@ -606,6 +617,10 @@ export function StudentEnrollment() {
   const [newSchoolYearReenrollment, setNewSchoolYearReenrollment] = useState(false);
   const [needsGrade12Confirmation, setNeedsGrade12Confirmation] = useState(false);
   const [grade12PromotionActive, setGrade12PromotionActive] = useState(false);
+  const [grade12BlockedPhysicalDocs, setGrade12BlockedPhysicalDocs] = useState(false);
+  const [grade12PhysicalDocs, setGrade12PhysicalDocs] = useState<Grade12PhysicalDocsGate | null>(
+    null,
+  );
   const [showNewEnrollmentForm, setShowNewEnrollmentForm] = useState(false);
   const [isStartingGrade12, setIsStartingGrade12] = useState(false);
   const [isDecliningGrade12, setIsDecliningGrade12] = useState(false);
@@ -690,6 +705,8 @@ export function StudentEnrollment() {
           new_school_year_reenrollment?: boolean;
           needs_grade12_confirmation?: boolean;
           grade12_promotion_active?: boolean;
+          grade12_blocked_physical_docs?: boolean;
+          grade12_physical_docs?: Grade12PhysicalDocsGate;
           prefill_form_data?: Partial<EnrollmentFormData>;
           student_section?: { section?: string | null; shift?: string | null };
           error?: string;
@@ -713,6 +730,8 @@ export function StudentEnrollment() {
         setNewSchoolYearReenrollment(isNewSyOpen);
         setNeedsGrade12Confirmation(needsConfirm);
         setGrade12PromotionActive(Boolean(json.grade12_promotion_active));
+        setGrade12BlockedPhysicalDocs(Boolean(json.grade12_blocked_physical_docs));
+        setGrade12PhysicalDocs(json.grade12_physical_docs ?? null);
 
         const priorFormFromApi =
           (json.prefill_form_data as Partial<EnrollmentFormData> | undefined) ??
@@ -944,6 +963,7 @@ export function StudentEnrollment() {
         enrollment_id?: number;
         status?: string;
         already_submitted?: boolean;
+        grade12_blocked_physical_docs?: boolean;
         section_assignment?: {
           assigned?: boolean;
           section?: string | null;
@@ -953,7 +973,12 @@ export function StudentEnrollment() {
         };
       };
       if (!res.ok || !json.success) {
-        toast.error(json.error || `Failed to save enrollment (${res.status})`);
+        if (json.grade12_blocked_physical_docs) {
+          setGrade12BlockedPhysicalDocs(true);
+        }
+        toast.error(json.error || `Failed to save enrollment (${res.status})`, {
+          duration: json.grade12_blocked_physical_docs ? 10000 : 4000,
+        });
         if (res.status === 409) {
           setEnrollmentStatusRaw('pending');
           setShowNewEnrollmentForm(false);
@@ -1070,6 +1095,13 @@ export function StudentEnrollment() {
   }, [currentStep, grade12PromotionActive, enrollmentId]);
 
   const startGrade12Enrollment = useCallback(async () => {
+    if (grade12BlockedPhysicalDocs) {
+      toast.error(
+        "Complete your physical document checklist at the registrar before starting Grade 12 enrollment.",
+        { duration: 9000 },
+      );
+      return;
+    }
     setIsStartingGrade12(true);
     try {
       const prefill = applyReEnrollmentFormPrefill(
@@ -1094,9 +1126,15 @@ export function StudentEnrollment() {
         success?: boolean;
         enrollment_id?: number;
         error?: string;
+        grade12_blocked_physical_docs?: boolean;
       };
       if (!seedRes.ok || !seedJson.success) {
-        toast.error(seedJson.error || "Could not start your enrollment. Please try again.");
+        if (seedJson.grade12_blocked_physical_docs) {
+          setGrade12BlockedPhysicalDocs(true);
+        }
+        toast.error(seedJson.error || "Could not start your enrollment. Please try again.", {
+          duration: seedJson.grade12_blocked_physical_docs ? 10000 : 4000,
+        });
         return;
       }
 
@@ -1141,7 +1179,7 @@ export function StudentEnrollment() {
     } finally {
       setIsStartingGrade12(false);
     }
-  }, [priorApproved, priorReenrollFormData, schoolYearCurrent]);
+  }, [priorApproved, priorReenrollFormData, schoolYearCurrent, grade12BlockedPhysicalDocs]);
 
   const declineGrade12Continuation = useCallback(async () => {
     setIsDecliningGrade12(true);
@@ -1235,6 +1273,19 @@ export function StudentEnrollment() {
       return;
     }
 
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    if (ext === 'pdf') {
+      toast.error(
+        'PDF uploads cannot be verified. Take a clear photo (JPG or PNG) of the document and upload that instead.',
+        { duration: 8000 },
+      );
+      return;
+    }
+    if (!['jpg', 'jpeg', 'png'].includes(ext)) {
+      toast.error('Only JPG and PNG photos are accepted so we can verify your document.');
+      return;
+    }
+
     if (isGrade12PromotionFlow && documents[index].status === 'uploaded') {
       toast.error('Documents from your previous enrollment are locked during Grade 12 registration. Contact the registrar if you need to make a change.');
       return;
@@ -1322,8 +1373,10 @@ export function StudentEnrollment() {
           return;
         }
         const msg = json.error || `Upload failed (${res.status})`;
-        if (json.level === 1) {
-          toast.error(`Level 1 — Image quality: ${msg}`, { duration: 8000 });
+        if (json.level === 2) {
+          toast.error(`Document not readable: ${msg}`, { duration: 9000 });
+        } else if (json.level === 1) {
+          toast.error(`Image quality: ${msg}`, { duration: 8000 });
         } else {
           toast.error(msg);
         }
@@ -1646,6 +1699,7 @@ export function StudentEnrollment() {
     if (!validateStep1()) return;
     if (!validateStep2()) return;
     if (!validateStep3()) return;
+    if (!validateStep4()) return;
     if (!formData.modeOfPayment?.trim()) {
       toast.error('Please select a mode of payment (Payment & Promo step).');
       return;
@@ -1732,9 +1786,18 @@ export function StudentEnrollment() {
       formData.gradeLevel === "12" ||
       grade12PromotionActive);
 
+  const showGrade12PhysicalDocsBlock =
+    enrollmentAllowed &&
+    grade12BlockedPhysicalDocs &&
+    !isGraduate &&
+    !showNewEnrollmentForm &&
+    !isResubmitFlow &&
+    schoolYearCurrent !== null;
+
   const showGrade12Prompt =
     enrollmentAllowed &&
     needsGrade12Confirmation &&
+    !grade12BlockedPhysicalDocs &&
     !hasInProgressCurrentSyEnrollment &&
     !hasSubmittedCurrentSyApplication &&
     !showNewEnrollmentForm &&
@@ -1779,6 +1842,58 @@ export function StudentEnrollment() {
               Re-enrollment from the student portal is no longer available. For transcripts or
               certifications, please contact the registrar's office.
             </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (showGrade12PhysicalDocsBlock) {
+    const priorSy =
+      grade12PhysicalDocs?.priorSchoolYear ||
+      priorApproved?.school_year ||
+      enrollmentSchoolYear;
+    const missingCount = grade12PhysicalDocs?.missingCount ?? 0;
+    const missingLabels = grade12PhysicalDocs?.missingLabels ?? [];
+
+    return (
+      <div className="min-h-[min(520px,calc(100vh-8rem))] flex flex-col items-center justify-center px-6 py-16 bg-gray-50">
+        <Card className="w-full max-w-xl border border-amber-300 shadow-sm">
+          <CardContent className="pt-12 pb-10 px-8">
+            <AlertCircle className="h-12 w-12 text-amber-700 mx-auto mb-6" aria-hidden />
+            <h2 className="text-xl font-semibold text-gray-900 mb-2 text-center">
+              Physical documents required before Grade 12
+            </h2>
+            <p className="text-sm text-gray-700 leading-relaxed">
+              You must submit all required original documents in person to the registrar
+              {priorSy ? (
+                <>
+                  {" "}
+                  for your Grade 11 enrollment (SY <strong>{priorSy}</strong>)
+                </>
+              ) : null}{" "}
+              before you can enroll in Grade 12 for SY <strong>{schoolYearCurrent}</strong>.
+            </p>
+            {missingCount > 0 ? (
+              <p className="mt-3 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                <span className="font-semibold">
+                  {missingCount} item{missingCount === 1 ? "" : "s"} still missing
+                </span>
+                {missingLabels.length > 0 ? (
+                  <span className="block mt-1 text-amber-950">
+                    {missingLabels.slice(0, 4).join(" · ")}
+                    {missingLabels.length > 4 ? " · …" : ""}
+                  </span>
+                ) : null}
+              </p>
+            ) : null}
+            <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
+              <Button asChild className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white">
+                <Link to="/student/application-status#physical-documents">
+                  View physical document checklist
+                </Link>
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -1957,20 +2072,36 @@ export function StudentEnrollment() {
         </div>
       )}
       {/* Step Indicator */}
-      <div className="bg-white border-b py-8 px-6">
-        <div className="max-w-5xl mx-auto">
-          <div className="flex items-center justify-between">
+      <div className="border-b bg-white px-4 py-4 sm:px-6 sm:py-8">
+        <div className="mx-auto max-w-5xl">
+          {/* Mobile: compact progress */}
+          <div className="md:hidden">
+            <div className="mb-2 flex items-center justify-between text-sm">
+              <span className="font-medium text-[#2D5016]">
+                Step {currentStep} of {tabs.length}
+              </span>
+              <span className="truncate pl-3 text-right text-gray-600">
+                {tabs[currentStep - 1]?.name}
+              </span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-gray-200">
+              <div
+                className="h-full rounded-full bg-[#2D5016] transition-all duration-300"
+                style={{ width: `${(currentStep / tabs.length) * 100}%` }}
+              />
+            </div>
+          </div>
+          {/* Tablet/desktop: full stepper */}
+          <div className="hidden items-center justify-between md:flex">
             {tabs.map((tab, index) => {
-              const Icon = tab.icon;
               const isActive = currentStep === tab.number;
               const isCompleted = currentStep > tab.number;
               
               return (
-                <div key={tab.number} className="flex-1 flex items-center">
-                  <div className="flex flex-col items-center flex-1">
-                    {/* Circle with number */}
+                <div key={tab.number} className="flex flex-1 items-center">
+                  <div className="flex flex-1 flex-col items-center">
                     <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center font-semibold text-sm transition-all ${
+                      className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold transition-all ${
                         isActive
                           ? 'bg-[#2D5016] text-white ring-4 ring-[#2D5016]/20'
                           : isCompleted
@@ -1979,14 +2110,13 @@ export function StudentEnrollment() {
                       }`}
                     >
                       {isCompleted ? (
-                        <CheckCircle className="w-5 h-5" />
+                        <CheckCircle className="h-5 w-5" />
                       ) : (
                         tab.number
                       )}
                     </div>
-                    {/* Label */}
                     <p
-                      className={`text-xs mt-2 text-center font-medium ${
+                      className={`mt-2 hidden text-center text-xs font-medium lg:block ${
                         isActive
                           ? 'text-[#2D5016]'
                           : isCompleted
@@ -1997,9 +2127,8 @@ export function StudentEnrollment() {
                       {tab.name}
                     </p>
                   </div>
-                  {/* Connecting line */}
                   {index < tabs.length - 1 && (
-                    <div className="flex-1 h-0.5 -mt-8 mx-2">
+                    <div className="mx-2 -mt-8 h-0.5 flex-1">
                       <div
                         className={`h-full ${
                           currentStep > tab.number ? 'bg-[#2D5016]' : 'bg-gray-200'
@@ -2015,18 +2144,18 @@ export function StudentEnrollment() {
       </div>
 
       {/* Form Content */}
-      <div className="bg-gray-50 min-h-screen p-6">
+      <div className="min-h-0 bg-gray-50 p-4 sm:p-6">
         {/* Step 1: Personal Information */}
         {currentStep === 1 && (
           <div className="max-w-5xl mx-auto space-y-6">
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Personal Information</h2>
                 
                 {/* Enrollment Status */}
                 <div className="mb-6">
                   <RequiredLabel className="mb-3 block">Enrollment Status</RequiredLabel>
-                  <div className="flex gap-4">
+                  <div className="flex flex-wrap gap-3 sm:gap-4">
                     {['old', 'new', 'transferee'].map((status) => (
                       <label key={status} className="flex items-center gap-2">
                         <input
@@ -2164,7 +2293,7 @@ export function StudentEnrollment() {
 
             {/* Address Section */}
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h3 className="text-xl font-semibold mb-4">Address</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -2228,7 +2357,7 @@ export function StudentEnrollment() {
 
             {/* Birth Information & Academic Details */}
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h3 className="text-xl font-semibold mb-4">Birth Information & Academic Details</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -2389,7 +2518,7 @@ export function StudentEnrollment() {
             </p>
             {/* Mother's Information */}
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Mother's Information</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -2450,7 +2579,7 @@ export function StudentEnrollment() {
 
             {/* Father's Information */}
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Father's Information</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -2511,7 +2640,7 @@ export function StudentEnrollment() {
 
             {/* Guardian's Information (if applicable) */}
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <div className="mb-4">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
@@ -2587,9 +2716,9 @@ export function StudentEnrollment() {
 
             {/* Emergency Contact */}
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Person to Contact in Case of Emergency</h2>
-                <div className="flex gap-4">
+                <div className="flex flex-wrap gap-3 sm:gap-4">
                   {['mother', 'father', 'guardian'].map((contact) => (
                     <label key={contact} className="flex items-center gap-2 cursor-pointer">
                       <input
@@ -2613,7 +2742,7 @@ export function StudentEnrollment() {
         {currentStep === 3 && (
           <div className="max-w-5xl mx-auto">
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Enrollment History</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2 md:col-span-2">
@@ -2701,7 +2830,10 @@ export function StudentEnrollment() {
             <Card>
               <CardHeader>
                 <CardTitle>Upload Required Documents</CardTitle>
-                <CardDescription>Upload scanned copies of your documents (PDF, JPG, PNG)</CardDescription>
+                <CardDescription>
+                  Upload clear photos of your documents (JPG or PNG). Blurry or unreadable files will
+                  not be accepted.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {isResubmitFlow ? (
@@ -2716,7 +2848,8 @@ export function StudentEnrollment() {
                   <Alert>
                     <AlertCircle className="h-4 w-4" />
                     <AlertDescription>
-                      Please ensure all documents are clear and readable. Maximum file size: 5MB per document.
+                      Use good lighting and include the full document. We check each photo for clarity
+                      and readable text before it is accepted. Maximum file size: 5MB per document.
                     </AlertDescription>
                   </Alert>
                 )}
@@ -2758,7 +2891,7 @@ export function StudentEnrollment() {
                   const openUploadPicker = () => {
                     const input = document.createElement('input');
                     input.type = 'file';
-                    input.accept = '.pdf,.jpg,.jpeg,.png';
+                    input.accept = '.jpg,.jpeg,.png';
                     input.onchange = (e) => {
                       const file = (e.target as HTMLInputElement).files?.[0];
                       if (file) handleFileUpload(index, file);
@@ -2976,11 +3109,11 @@ export function StudentEnrollment() {
           <div className="max-w-5xl mx-auto space-y-6">
             {/* Bring a Friend Promo */}
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Bring a Friend Promo</h2>
                 <div className="mb-4">
                   <Label className="mb-3 block">Do you have a referral code?</Label>
-                  <div className="flex gap-4">
+                  <div className="flex flex-wrap gap-3 sm:gap-4">
                     {['Yes', 'No'].map((option) => (
                       <label key={option} className="flex items-center gap-2 cursor-pointer">
                         <input
@@ -3035,7 +3168,7 @@ export function StudentEnrollment() {
 
             {/* Accounting - Mode of Payment */}
             <Card>
-              <CardContent className="p-8">
+              <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Accounting</h2>
                 <div className="space-y-4">
                   <RequiredLabel className="mb-3 block">Mode of Payment</RequiredLabel>
@@ -3084,7 +3217,7 @@ export function StudentEnrollment() {
                 {/* Personal Information Review */}
                 <div>
                   <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">Personal Information</h3>
-                  <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                     <div>
                       <p className="text-gray-600">Enrollment Status</p>
                       <p className="font-medium capitalize">{formData.enrollmentStatus}</p>
@@ -3117,7 +3250,7 @@ export function StudentEnrollment() {
                 {/* Academic Information */}
                 <div>
                   <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">Academic Information</h3>
-                  <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                     <div>
                       <p className="text-gray-600">Grade Level</p>
                       <p className="font-medium">Grade {formData.gradeLevel}</p>
@@ -3136,7 +3269,7 @@ export function StudentEnrollment() {
                 {/* Family Information */}
                 <div>
                   <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">Family Information</h3>
-                  <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                     <div>
                       <p className="text-gray-600">Mother's Name</p>
                       <p className="font-medium">

@@ -181,8 +181,6 @@ export function AiReviewScoreExplainer({ breakdown, className }: AiReviewScoreEx
   const highestConcern = rows[0];
   const lowestConcern = rows[rows.length - 1];
 
-  const weightedSum = categoryRows.reduce((a, c) => a + c.contribution, 0);
-
   return (
     <div className={cn("text-sm text-gray-700", className)}>
       <p className="leading-snug text-gray-600">
@@ -256,8 +254,8 @@ export function AiReviewScoreExplainer({ breakdown, className }: AiReviewScoreEx
                 </span>
               ))}{" "}
               ≈{" "}
-              <span className={concernScoreTextClass(Math.round(weightedSum))}>
-                {Math.round(weightedSum * 10) / 10}
+              <span className={concernScoreTextClass(aggregateScore)}>
+                {aggregateScore}
               </span>{" "}
               → <ScorePctBadge pct={aggregateScore} />
             </p>
