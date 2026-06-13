@@ -35,8 +35,7 @@ import {
   Loader2,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
 import { apiFetch, formatApiError } from "../../lib/api";
@@ -345,6 +344,10 @@ function resolveApplicationVerifyFields(app: any) {
 }
 
 const AI_VERIFY_PAYLOAD_VERSION = 29;
+/** Per-document HTTP timeout (SF10 OCR can be slow on first run). */
+const AI_VERIFY_REQUEST_TIMEOUT_MS = 90_000;
+/** Whole-batch watchdog — clears stuck "AI checking…" if nothing finishes. */
+const AI_VERIFY_BATCH_WATCHDOG_MS = 120_000;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -931,11 +934,16 @@ function documentAiSummaryLine(opts: {
   isPhoto: boolean;
   concernPct: number | null;
   aiState?: "pending" | "running" | "done" | "error";
+  aiError?: string;
   clearedOnFile?: boolean;
 }): string {
-  const { ai, isPhoto, concernPct, aiState, clearedOnFile } = opts;
+  const { ai, isPhoto, concernPct, aiState, aiError, clearedOnFile } = opts;
   if (aiState === "running") return "AI is checking this file…";
-  if (aiState === "error") return "AI check did not finish — open View and verify manually.";
+  if (aiState === "error") {
+    return aiError?.trim()
+      ? `${aiError.trim()} — click Stop & re-run AI above.`
+      : "AI check did not finish — click Stop & re-run AI above.";
+  }
   if (clearedOnFile && concernPct === null) {
     return "Previously verified on file. Re-run AI only if you need a fresh score.";
   }
@@ -962,6 +970,26 @@ function summarizeFieldChecks(fieldChecks: NonNullable<AiVerifyResponse["field_c
     match_ratio: typeof c.match_ratio === "number" ? c.match_ratio : undefined,
   }));
   return summarizeEnrollmentCrossRows(rows);
+}
+
+function aiVerifyErrorMessage(parsed: unknown, httpStatus: number): string {
+  const p = parsed as { error?: string; detail?: unknown; ai_base_url?: string } | null;
+  const err = String(p?.error || "").trim();
+  const detail = p?.detail;
+  let extra = "";
+  if (typeof detail === "string" && detail.trim()) {
+    extra = detail.trim();
+  } else if (detail && typeof detail === "object") {
+    const d = detail as { error?: string; hint?: string; detail?: string };
+    extra = String(d.error || d.hint || d.detail || "").trim();
+  }
+  if (err && extra && !err.includes(extra)) return `${err} (${extra})`;
+  if (err) return err;
+  if (extra) return extra;
+  if (httpStatus === 502) {
+    return "AI service unreachable — start python ai/app.py locally or intellidocs-ai on the server.";
+  }
+  return `AI verify failed (${httpStatus})`;
 }
 
 export function ReviewDocuments() {
@@ -1003,6 +1031,19 @@ export function ReviewDocuments() {
   const [docDecisionDialogOpen, setDocDecisionDialogOpen] = useState(false);
   const [docDecisionRemarks, setDocDecisionRemarks] = useState("");
   const [docDecisionSubmitting, setDocDecisionSubmitting] = useState(false);
+  const aiRunAbortRef = useRef<AbortController | null>(null);
+  const aiRunGenRef = useRef(0);
+  const aiResultsRef = useRef<Record<string, AiVerifyResponse>>({});
+  aiResultsRef.current = aiResultsByDocId;
+
+  const aiVerifyDocKey = useMemo(() => {
+    const docs = (application?.documents ?? []) as any[];
+    return docs
+      .filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image")
+      .map((d) => String(d.id))
+      .sort()
+      .join(",");
+  }, [application?.documents]);
 
   const mapDocType = (doc: any): AiDocType => {
     const label = String(doc?.requirementLabel ?? doc?.type ?? "").trim();
@@ -1193,6 +1234,16 @@ export function ReviewDocuments() {
       }
       if (Object.keys(seeded).length > 0) {
         setAiResultsByDocId((prev) => ({ ...seeded, ...prev }));
+        setAiDocStateById((prev) => {
+          const next = { ...prev };
+          for (const doc of Array.isArray(app?.documents) ? app.documents : []) {
+            const id = doc?.id ? String(doc.id) : "";
+            if (id && seeded[id] && next[id]?.state !== "running") {
+              next[id] = { state: "done" };
+            }
+          }
+          return next;
+        });
       }
 
       if (app?.isAlreadyEnrolled && app?.status !== "Rejected") {
@@ -1709,91 +1760,165 @@ export function ReviewDocuments() {
     };
   }, [isDocumentDialogOpen, previewObjectUrl, previewDisplayKind]);
 
+  const resetAiVerification = (rerun: boolean) => {
+    aiRunAbortRef.current?.abort();
+    aiRunAbortRef.current = null;
+    setAiRunning(false);
+    setAiResultsByDocId({});
+    setAiDocStateById({});
+    setAiServiceError(null);
+    if (rerun) setAiRerunNonce((n) => n + 1);
+  };
+
   // Automatically run AI verification for image documents when the application loads.
   useEffect(() => {
+    if (!application?.documents || !Array.isArray(application.documents) || application.documents.length === 0) {
+      return;
+    }
+    const docs = application.documents as any[];
+    const toVerify = docs.filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image");
+    if (toVerify.length === 0) return;
+
     let cancelled = false;
-    const run = async () => {
-      if (!application?.documents || !Array.isArray(application.documents) || application.documents.length === 0) return;
-      const docs = application.documents as any[];
-      const toVerify = docs.filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image");
-      if (toVerify.length === 0) return;
+    const runGen = ++aiRunGenRef.current;
+    const batchAbort = new AbortController();
+    aiRunAbortRef.current = batchAbort;
 
-      setAiRunning(true);
-      try {
-        setAiServiceError(null);
-
-        for (const doc of toVerify) {
-          if (cancelled) return;
-          const id = String(doc.id);
-          const docType = mapDocType(doc);
-          const cached = aiResultsByDocId[id];
-          if (cached && !isAiVerifyPayloadStale(docType, application, cached)) continue;
-
-          try {
-            if (!cancelled) {
-              setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
-            }
-            const ac = new AbortController();
-            const timeoutMs = 45000;
-            const t = window.setTimeout(() => ac.abort(), timeoutMs);
-            const aiRes = await apiFetch(
-              `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
-                `&doc_type=${encodeURIComponent(docType)}` +
-                buildExpectedVerifyQuery(docType, application),
-              { signal: ac.signal },
-            );
-            window.clearTimeout(t);
-            const parsed = (await aiRes.json()) as
-              | { success: true; result: AiVerifyResponse }
-              | { success: false; error?: string; detail?: any };
-            if (!aiRes.ok || !parsed || (parsed as any).success !== true) {
-              const msg = (parsed as any)?.error || `AI verify failed (${aiRes.status})`;
-              if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
-              continue;
-            }
-            const data = (parsed as any).result as AiVerifyResponse;
-            if (!data || typeof (data as any).confidence !== "number") {
-              if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: "AI returned an invalid response" } }));
-              continue;
-            }
-            const effectiveDocType = resolveEffectiveDocType(doc, data);
-            if (!cancelled) {
-              setAiResultsByDocId((prev) => ({
-                ...prev,
-                [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
-              }));
-              setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
-            }
-          } catch (e) {
-            // Keep verifying the rest, but surface the real reason for this doc.
-            let msg = "Unexpected error running AI";
-            if (e && typeof e === "object") {
-              const anyE = e as any;
-              if (typeof anyE?.name === "string" && anyE.name === "AbortError") {
-                msg = "AI verification timed out (45s)";
-              } else if (typeof anyE?.message === "string" && anyE.message.trim()) {
-                msg = anyE.message.trim();
-              } else if (typeof anyE?.toString === "function") {
-                const s = String(anyE.toString());
-                if (s.trim()) msg = s.trim();
-              }
-            }
-            if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
-            continue;
-          }
-        }
-      } finally {
-        if (!cancelled) setAiRunning(false);
+    const finishRun = () => {
+      if (aiRunGenRef.current === runGen) {
+        setAiRunning(false);
+        aiRunAbortRef.current = null;
       }
     };
-    run();
+
+    const run = async () => {
+      setAiRunning(true);
+      setAiServiceError(null);
+
+      for (const doc of toVerify) {
+        if (cancelled || batchAbort.signal.aborted || aiRunGenRef.current !== runGen) return;
+
+        const id = String(doc.id);
+        const docType = mapDocType(doc);
+        const cached = aiResultsRef.current[id];
+        if (cached && !isAiVerifyPayloadStale(docType, application, cached)) {
+          setAiDocStateById((prev) =>
+            prev[id]?.state === "running" ? prev : { ...prev, [id]: { state: "done" } },
+          );
+          continue;
+        }
+
+        setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
+
+        const docAbort = new AbortController();
+        const onBatchAbort = () => docAbort.abort();
+        batchAbort.signal.addEventListener("abort", onBatchAbort);
+        const timeoutId = window.setTimeout(() => docAbort.abort(), AI_VERIFY_REQUEST_TIMEOUT_MS);
+
+        try {
+          const aiRes = await apiFetch(
+            `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
+              `&doc_type=${encodeURIComponent(docType)}` +
+              buildExpectedVerifyQuery(docType, application),
+            { signal: docAbort.signal },
+          );
+          const parsed = (await aiRes.json()) as
+            | { success: true; result: AiVerifyResponse }
+            | { success: false; error?: string; detail?: any };
+
+          if (cancelled || batchAbort.signal.aborted || aiRunGenRef.current !== runGen) return;
+
+          if (!aiRes.ok || !parsed || (parsed as any).success !== true) {
+            const msg = aiVerifyErrorMessage(parsed, aiRes.status);
+            setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
+            if (/ai service|unreachable|ocr engine|tesseract|502|503|504|connection refused/i.test(msg)) {
+              setAiServiceError(msg);
+            }
+            continue;
+          }
+
+          const data = (parsed as any).result as AiVerifyResponse;
+          if (!data || typeof (data as any).confidence !== "number") {
+            setAiDocStateById((prev) => ({
+              ...prev,
+              [id]: { state: "error", error: "AI returned an invalid response" },
+            }));
+            continue;
+          }
+
+          const effectiveDocType = resolveEffectiveDocType(doc, data);
+          setAiResultsByDocId((prev) => ({
+            ...prev,
+            [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
+          }));
+          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
+        } catch (e) {
+          if (cancelled || batchAbort.signal.aborted || aiRunGenRef.current !== runGen) return;
+
+          let msg = "Unexpected error running AI";
+          if (e && typeof e === "object") {
+            const anyE = e as any;
+            if (typeof anyE?.name === "string" && anyE.name === "AbortError") {
+              msg = batchAbort.signal.aborted
+                ? "AI check cancelled"
+                : `AI verification timed out (${Math.round(AI_VERIFY_REQUEST_TIMEOUT_MS / 1000)}s)`;
+            } else if (typeof anyE?.message === "string" && anyE.message.trim()) {
+              msg = anyE.message.trim();
+            }
+          }
+          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
+          if (/ai service|unreachable|502|503|504/i.test(msg)) {
+            setAiServiceError(msg);
+          }
+        } finally {
+          window.clearTimeout(timeoutId);
+          batchAbort.signal.removeEventListener("abort", onBatchAbort);
+        }
+      }
+    };
+
+    run()
+      .catch(() => {
+        if (!cancelled && aiRunGenRef.current === runGen) {
+          setAiServiceError("Unexpected error while running AI checks.");
+        }
+      })
+      .finally(finishRun);
+
     return () => {
       cancelled = true;
+      batchAbort.abort();
+      finishRun();
     };
-    // Intentionally depend on applicationId + application.documents snapshot only.
-    // aiRerunNonce is bumped by the "Re-run AI" button to force a re-run.
+    // Re-run when document ids change or registrar clicks Re-run — not on every documents[] reference change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applicationId, application?.documents, aiRerunNonce]);
+  }, [applicationId, aiVerifyDocKey, aiRerunNonce]);
+
+  useEffect(() => {
+    if (!aiRunning) return;
+    const watchdog = window.setTimeout(() => {
+      setAiDocStateById((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const [id, st] of Object.entries(prev)) {
+          if (st?.state === "running") {
+            next[id] = {
+              state: "error",
+              error: "AI check timed out — use Stop & re-run AI",
+            };
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      setAiServiceError(
+        "AI checks took too long. Confirm the AI service is running (see SETUP.md), then click Stop & re-run AI.",
+      );
+      aiRunAbortRef.current?.abort();
+      setAiRunning(false);
+    }, AI_VERIFY_BATCH_WATCHDOG_MS);
+    return () => window.clearTimeout(watchdog);
+  }, [aiRunning, aiRerunNonce]);
 
   if (loading) {
     return (
@@ -2204,8 +2329,12 @@ export function ReviewDocuments() {
                     </span>
                   ) : aiServiceError ? (
                     <span className="text-rose-700">
-                      AI service unavailable — {aiServiceError}. Start{" "}
-                      <code className="rounded bg-rose-50 px-1 text-xs">ai/app.py</code> on port 5000.
+                      AI service unavailable — {aiServiceError}.{" "}
+                      {typeof window !== "undefined" &&
+                      (window.location.hostname === "localhost" ||
+                        window.location.hostname === "127.0.0.1")
+                        ? "Start: cd ai && python app.py"
+                        : "On server: systemctl status intellidocs-ai && curl http://127.0.0.1:8080/health"}
                     </span>
                   ) : (
                     <span>
@@ -2220,15 +2349,9 @@ export function ReviewDocuments() {
                   variant="outline"
                   size="sm"
                   className="shrink-0"
-                  onClick={() => {
-                    setAiResultsByDocId({});
-                    setAiDocStateById({});
-                    setAiServiceError(null);
-                    setAiRerunNonce((n) => n + 1);
-                  }}
-                  disabled={aiRunning}
+                  onClick={() => resetAiVerification(true)}
                 >
-                  Re-run AI
+                  {aiRunning ? "Stop & re-run AI" : "Re-run AI"}
                 </Button>
               </div>
               <ConcernScoringHelp />
@@ -2241,6 +2364,7 @@ export function ReviewDocuments() {
                   const ai = aiResultForDisplay(docType, rawAi) ?? rawAi;
                   const aiPct = documentConcernPercent(ai);
                   const aiState = aiDocStateById[key]?.state;
+                  const aiError = aiDocStateById[key]?.error;
                   const resubmitRequired =
                     String(doc?.registrarDocDecision || "").toLowerCase() === "rejected" ||
                     String(doc?.status || "").toLowerCase() === "flagged" ||
@@ -2338,6 +2462,7 @@ export function ReviewDocuments() {
                               isPhoto,
                               concernPct: aiPct,
                               aiState,
+                              aiError,
                               clearedOnFile: registrarCleared,
                             })}
                           </p>
@@ -2766,7 +2891,7 @@ export function ReviewDocuments() {
       >
         <DialogContent
           className={cn(
-            "!flex !max-w-[min(92vw,1120px)] h-[min(85dvh,780px)] max-h-[min(85dvh,780px)] w-[min(92vw,1120px)] flex-col gap-2 overflow-hidden p-3 sm:gap-3 sm:p-4 md:p-5",
+            "document-review-dialog !flex !max-w-[min(88vw,960px)] h-[min(82dvh,680px)] max-h-[min(82dvh,680px)] w-[min(88vw,960px)] flex-col gap-1.5 overflow-hidden p-2.5 text-sm sm:gap-2 sm:p-3 md:p-4 [&_button]:text-sm",
             previewLightboxOpen &&
               "[&>button.absolute]:pointer-events-none [&>button.absolute]:invisible",
           )}
@@ -2780,22 +2905,22 @@ export function ReviewDocuments() {
             if (previewLightboxOpen) e.preventDefault();
           }}
         >
-          <DialogHeader className="shrink-0">
-            <DialogTitle>Document Verification Details</DialogTitle>
-            <DialogDescription>
+          <DialogHeader className="shrink-0 space-y-0.5">
+            <DialogTitle className="text-base">Document Verification Details</DialogTitle>
+            <DialogDescription className="sr-only">
               Review AI verification results and detected issues
             </DialogDescription>
           </DialogHeader>
           {selectedDocument && (
-            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
-              <div className="shrink-0 rounded-lg border p-3 sm:p-4">
-                <div className="flex items-start gap-3">
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+              <div className="shrink-0 rounded-lg border p-2 sm:p-3">
+                <div className="flex items-start gap-2">
                   {selectedDocument.status === "Verified" ? (
-                    <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
+                    <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
                   ) : selectedDocument.status === "Under Review" ? (
-                    <AlertTriangle className="w-5 h-5 text-yellow-600 mt-0.5" />
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
                   ) : (
-                    <XCircle className="w-5 h-5 text-red-600 mt-0.5" />
+                    <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
                   )}
                   <div className="flex-1">
                     <p className="text-xs font-semibold text-[#8B1538] uppercase tracking-wide mb-1">
@@ -2826,29 +2951,29 @@ export function ReviewDocuments() {
                         </div>
                       );
                     })()}
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <h3 className="font-semibold text-gray-900">
+                    <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-gray-900">
                         {selectedDocument.fileName || selectedDocument.name}
                       </h3>
-                      <Badge className={getDocumentStatusColor(selectedDocument.status)}>
+                      <Badge className={cn(getDocumentStatusColor(selectedDocument.status), "text-xs")}>
                         {selectedDocument.status}
                       </Badge>
                     </div>
-                    <div className="mb-3 grid grid-cols-1 gap-4 text-sm text-gray-600 sm:grid-cols-2 md:grid-cols-3">
-                      <div>
-                        <p className="text-xs text-gray-500">Student</p>
-                        <p className="font-medium">{selectedDocument.studentName}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Application ID</p>
-                        <p className="font-medium">{selectedDocument.applicationId}</p>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500">Strand / Grade</p>
-                        <p className="font-medium">
-                          {selectedDocument.strand} — Grade {selectedDocument.gradeLevel}
-                        </p>
-                      </div>
+                    <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
+                      <p>
+                        <span className="text-gray-500">Student </span>
+                        <span className="font-medium text-gray-800">{selectedDocument.studentName}</span>
+                      </p>
+                      <p>
+                        <span className="text-gray-500">App </span>
+                        <span className="font-medium text-gray-800">{selectedDocument.applicationId}</span>
+                      </p>
+                      <p>
+                        <span className="text-gray-500">Strand </span>
+                        <span className="font-medium text-gray-800">
+                          {selectedDocument.strand} — G{selectedDocument.gradeLevel}
+                        </span>
+                      </p>
                     </div>
                     {(() => {
                       const id = String(selectedDocument.id ?? "");
@@ -2867,8 +2992,8 @@ export function ReviewDocuments() {
                       }
                       return (
                         <DocumentConcernChips
-                          className="mb-2"
-                          size="md"
+                          className="mb-1.5"
+                          size="sm"
                           concernPct={avg}
                           mismatchPct={parts?.mismatchConcern ?? null}
                           tamperPct={parts?.tamperConcern ?? null}
@@ -2900,20 +3025,20 @@ export function ReviewDocuments() {
                       const rejected = String(selectedDocument.registrarDocDecision || "").toLowerCase() === "rejected";
                       const docRemarks = String(selectedDocument.registrarDocRemarks || "").trim();
                       return (
-                        <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
                           {reviewed ? (
-                            <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
-                              <CheckCircle className="w-3.5 h-3.5 mr-1" />
-                              Reviewed by registrar
+                            <Badge className="bg-emerald-600 text-xs text-white hover:bg-emerald-700">
+                              <CheckCircle className="mr-1 h-3 w-3" />
+                              Reviewed
                             </Badge>
                           ) : (
-                            <Badge variant="outline" className="border-gray-300 text-gray-600">
+                            <Badge variant="outline" className="border-gray-300 text-xs text-gray-600">
                               Not yet reviewed
                             </Badge>
                           )}
                           {rejected ? (
-                            <Badge className="bg-red-600 text-white hover:bg-red-700">
-                              <XCircle className="w-3.5 h-3.5 mr-1" />
+                            <Badge className="bg-red-600 text-xs text-white hover:bg-red-700">
+                              <XCircle className="mr-1 h-3 w-3" />
                               Re-upload required
                             </Badge>
                           ) : null}
@@ -2923,9 +3048,9 @@ export function ReviewDocuments() {
                             variant={reviewed ? "outline" : "default"}
                             disabled={submitting || !selectedDocument.id}
                             onClick={() => toggleDocumentReviewed(selectedDocument.id, !reviewed)}
-                            className={reviewed ? "" : "bg-emerald-600 hover:bg-emerald-700 text-white"}
+                            className={cn("h-7 px-2.5 text-xs", reviewed ? "" : "bg-emerald-600 hover:bg-emerald-700 text-white")}
                           >
-                            <CheckCircle className="w-4 h-4 mr-2" />
+                            <CheckCircle className="mr-1.5 h-3.5 w-3.5" />
                             {submitting
                               ? reviewed
                                 ? "Removing…"
@@ -2939,13 +3064,14 @@ export function ReviewDocuments() {
                             size="sm"
                             variant="destructive"
                             disabled={!selectedDocument.id || docDecisionSubmitting}
+                            className="h-7 px-2.5 text-xs"
                             onClick={() => {
                               setDocDecisionDialogOpen(true);
                               setDocDecisionRemarks(docRemarks);
                             }}
                           >
-                            <XCircle className="w-4 h-4 mr-2" />
-                            {docDecisionSubmitting ? "Rejecting…" : "Reject (require re-upload)"}
+                            <XCircle className="mr-1.5 h-3.5 w-3.5" />
+                            {docDecisionSubmitting ? "Rejecting…" : "Reject (re-upload)"}
                           </Button>
                           {rejected && docRemarks ? (
                             <p className="w-full text-xs text-gray-600">
@@ -2959,8 +3085,8 @@ export function ReviewDocuments() {
                 </div>
               </div>
 
-              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden lg:flex-row lg:gap-5">
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pb-6 pr-0.5 lg:min-w-0 lg:basis-0">
+              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden lg:flex-row lg:gap-3">
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pb-4 pr-0.5 lg:min-w-0 lg:basis-0">
                   {(() => {
                     const id = String(selectedDocument.id ?? "");
                     const raw = aiResultsByDocId[id];
@@ -2971,9 +3097,9 @@ export function ReviewDocuments() {
                       const tamperSignals = Array.isArray(r.tamper_signals) ? r.tamper_signals : [];
                       const syntheticSignals = Array.isArray(r.synthetic_signals) ? r.synthetic_signals : [];
                       return (
-                        <div className="min-w-0 rounded-lg border border-gray-200 bg-white p-4">
-                          <h4 className="mb-1 text-sm font-semibold text-gray-900">AI checks</h4>
-                          <p className="mb-3 text-xs text-gray-500">
+                        <div className="min-w-0 rounded-lg border border-gray-200 bg-white p-3">
+                          <h4 className="mb-0.5 text-xs font-semibold text-gray-900">AI checks</h4>
+                          <p className="mb-2 text-[11px] leading-snug text-gray-500">
                             {docType === "photo_2x2"
                               ? "Portrait authenticity check. Image quality was verified when the student uploaded this file."
                               : "Mismatch compares enrollment data to the scan. Tamper looks for edit signals."}
@@ -3092,21 +3218,21 @@ export function ReviewDocuments() {
                         : "border-slate-200 bg-white text-slate-800";
 
                     const tileClass =
-                      "flex min-h-[11rem] flex-col rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-800 shadow-sm";
+                      "flex min-h-0 flex-col rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-800 shadow-sm sm:text-sm";
 
                     return (
-                      <div className="space-y-3 text-sm text-gray-800">
+                      <div className="space-y-2 text-sm text-gray-800">
                         <div className="px-0.5">
                           <div className="flex flex-wrap items-baseline justify-between gap-2">
-                            <p className="text-base font-semibold text-gray-900">Check details</p>
-                            <span className="text-xs text-gray-500">{docTitle}</span>
+                            <p className="text-sm font-semibold text-gray-900">Check details</p>
+                            <span className="text-[11px] text-gray-500">{docTitle}</span>
                           </div>
-                          <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                          <p className="mt-0.5 text-[11px] leading-snug text-gray-500">
                             {checkDetailsIntro(docType)}
                           </p>
                         </div>
 
-                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <div className="grid grid-cols-1 gap-2">
                         {showTamper && tamperSummary ? (
                           <section
                             className={cn(tileClass, tamperSummary.tone)}
@@ -3514,16 +3640,17 @@ export function ReviewDocuments() {
                 </div>
 
               {/* Document Preview — fetched with apiFetch so X-User-Id is sent (img src alone cannot) */}
-              <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-gray-50 p-3 sm:p-4 lg:min-w-0 lg:basis-0">
-                <div className="mb-3 flex shrink-0 items-center justify-between">
-                  <h4 className="text-base font-semibold text-gray-900">Uploaded Document</h4>
+              <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-gray-50 p-2 sm:p-3 lg:w-[min(42%,340px)] lg:shrink-0 lg:flex-none">
+                <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
+                  <h4 className="text-xs font-semibold text-gray-900 sm:text-sm">Uploaded Document</h4>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="h-7 px-2 text-xs"
                     onClick={() => downloadDocument(selectedDocument)}
                   >
-                    <Download className="w-4 h-4 mr-2" />
+                    <Download className="mr-1 h-3.5 w-3.5" />
                     Download
                   </Button>
                 </div>

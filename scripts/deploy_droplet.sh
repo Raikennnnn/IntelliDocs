@@ -136,6 +136,23 @@ if [ -d public/report-assets ]; then
   cp -r public/report-assets/* "$APP_ROOT/public/report-assets/" 2>/dev/null || true
 fi
 
+step "Ensure Tesseract OCR (required for AI verification)"
+if ! command -v tesseract >/dev/null 2>&1; then
+  apt-get install -y tesseract-ocr || echo "WARNING: could not install tesseract-ocr"
+fi
+
+step "Ensure production env AI_BASE_URL"
+ENV_FILE="$APP_ROOT/env"
+if [ -f "$ENV_FILE" ]; then
+  if grep -q '^AI_BASE_URL=' "$ENV_FILE"; then
+    sed -i.bak 's|^AI_BASE_URL=.*|AI_BASE_URL=http://127.0.0.1:8080|' "$ENV_FILE"
+  else
+    echo 'AI_BASE_URL=http://127.0.0.1:8080' >> "$ENV_FILE"
+  fi
+  grep -q '^AI_OCR_ENGINE=' "$ENV_FILE" || echo 'AI_OCR_ENGINE=tesseract' >> "$ENV_FILE"
+  grep -q '^DISABLE_EASYOCR=' "$ENV_FILE" || echo 'DISABLE_EASYOCR=1' >> "$ENV_FILE"
+fi
+
 step "Python AI service"
 cd "$APP_ROOT/ai"
 if [ ! -d .venv ]; then
@@ -144,8 +161,8 @@ fi
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
-if [ ! -f /etc/systemd/system/intellidocs-ai.service ]; then
-  cat > /etc/systemd/system/intellidocs-ai.service <<'UNIT'
+write_ai_systemd_unit() {
+  cat > /etc/systemd/system/intellidocs-ai.service <<UNIT
 [Unit]
 Description=IntelliDocs AI Service
 After=network.target
@@ -153,23 +170,55 @@ After=network.target
 [Service]
 User=www-data
 Group=www-data
-WorkingDirectory=/var/www/intellidocs/ai
+WorkingDirectory=${APP_ROOT}/ai
 Environment=PORT=8080
 Environment=AI_OCR_ENGINE=tesseract
 Environment=DISABLE_EASYOCR=1
-ExecStart=/var/www/intellidocs/ai/.venv/bin/gunicorn --bind 127.0.0.1:8080 --workers 1 --threads 4 --timeout 120 app:app
+ExecStart=${APP_ROOT}/ai/.venv/bin/gunicorn --bind 127.0.0.1:8080 --workers 1 --worker-class gthread --threads 4 --timeout 120 --graceful-timeout 30 app:app
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-  systemctl daemon-reload
-  systemctl enable intellidocs-ai
-fi
+}
+
+wait_for_ai_health() {
+  local url="http://127.0.0.1:8080/health"
+  local max_wait="${1:-90}"
+  local deadline=$((SECONDS + max_wait))
+  echo "Waiting for AI health at ${url} (up to ${max_wait}s)…"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if AI_HEALTH="$(curl -fsS "$url" 2>/dev/null)"; then
+      echo "$AI_HEALTH" | head -c 400
+      echo ""
+      if echo "$AI_HEALTH" | grep -q '"ok": true'; then
+        echo "OK: AI service healthy (OCR ready)."
+        return 0
+      fi
+      if echo "$AI_HEALTH" | grep -q '"ok": false'; then
+        echo "ERROR: AI service running but OCR not available."
+        return 1
+      fi
+    fi
+    sleep 2
+  done
+  echo "ERROR: AI health check timed out at ${url}"
+  return 1
+}
+
+step "Install / update AI systemd unit"
+write_ai_systemd_unit
+systemctl daemon-reload
+systemctl enable intellidocs-ai
 
 systemctl restart intellidocs-ai
 systemctl --no-pager --full status intellidocs-ai || true
+
+if ! wait_for_ai_health 90; then
+  journalctl -u intellidocs-ai -n 30 --no-pager || true
+  exit 1
+fi
 
 step "Permissions + reload web stack"
 chown -R www-data:www-data "$APP_ROOT/public" "$APP_ROOT/uploads" "$APP_ROOT/ai/assets" 2>/dev/null || true
@@ -184,7 +233,10 @@ if systemctl is-active --quiet nginx; then
 fi
 
 step "Smoke checks"
-curl -fsS "http://127.0.0.1:8080/health" | head -c 200 || echo "AI health check failed"
+if ! wait_for_ai_health 15; then
+  echo "WARNING: AI health re-check failed after nginx reload (OCR may be busy). Service status:"
+  systemctl --no-pager --full status intellidocs-ai || true
+fi
 echo ""
 curl -fsS -o /dev/null -w "SPA root HTTP %{http_code}\n" "http://127.0.0.1/landing" || true
 curl -fsS -o /dev/null -w "SPA /app/ HTTP %{http_code}\n" "http://127.0.0.1/app/" || true
@@ -202,6 +254,15 @@ if [ -n "$ROOT_BUNDLE" ]; then
     echo "ERROR: Root JS bundle is STALE (old document review UI). Run git pull and rebuild."
     echo "       Hard refresh alone will not fix this — index.html must point to a new index-*.js."
     exit 1
+  fi
+  if grep -q '92vw,1120px' "$ROOT_BUNDLE" 2>/dev/null || grep -q '85dvh,780px' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "ERROR: Root JS bundle uses OLD oversized document modal (1120×780). Pull latest and rebuild."
+    exit 1
+  fi
+  if grep -q '88vw,960px' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "OK: Bundle includes compact document review modal (960×680)."
+  else
+    echo "WARNING: Bundle may be missing compact document modal — confirm git pull succeeded."
   fi
   if grep -q 'Portrait authenticity check' "$ROOT_BUNDLE" 2>/dev/null; then
     echo "OK: Bundle includes current photo review UI (Portrait authenticity check)."
