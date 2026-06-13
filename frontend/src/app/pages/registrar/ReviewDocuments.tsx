@@ -2959,8 +2959,8 @@ export function ReviewDocuments() {
                 </div>
               </div>
 
-              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden lg:grid-cols-2 lg:grid-rows-1 lg:items-stretch lg:gap-5">
-                <div className="min-h-0 h-full space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain pr-0.5">
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden lg:flex-row lg:gap-5">
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain pb-6 pr-0.5 lg:min-w-0 lg:basis-0">
                   {(() => {
                     const id = String(selectedDocument.id ?? "");
                     const raw = aiResultsByDocId[id];
@@ -3009,6 +3009,12 @@ export function ReviewDocuments() {
                     const docType = resolveEffectiveDocType(selectedDocument, raw);
                     const r = aiResultForDisplay(docType, raw);
                     const visibility = checkDetailVisibility(docType);
+                    const checksInPanel = photoChecksInSecurityPanel(docType, r);
+
+                    // 2×2 photos: AI checks panel is enough — skip duplicate detail tiles on all builds.
+                    if (checksInPanel && docType === "photo_2x2") {
+                      return null;
+                    }
 
                     const fieldChecks = Array.isArray(r?.field_checks) ? r.field_checks : [];
                     const issues = filterIssuesForDocType(
@@ -3026,7 +3032,6 @@ export function ReviewDocuments() {
                     const sealScan = r?.seal_scan;
                     const tamperPct = tamperPercentForDoc(r, docType);
                     const tamperSummary = summarizeTamper(r, docType);
-                    const checksInPanel = photoChecksInSecurityPanel(docType, r);
                     const showTamper =
                       visibility.tamper && tamperPct !== null && tamperSummary && !checksInPanel;
                     const syntheticPct = syntheticPercentForDoc(r, docType);
@@ -3509,7 +3514,7 @@ export function ReviewDocuments() {
                 </div>
 
               {/* Document Preview — fetched with apiFetch so X-User-Id is sent (img src alone cannot) */}
-              <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-gray-50 p-3 sm:p-4">
+              <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-gray-50 p-3 sm:p-4 lg:min-w-0 lg:basis-0">
                 <div className="mb-3 flex shrink-0 items-center justify-between">
                   <h4 className="text-base font-semibold text-gray-900">Uploaded Document</h4>
                   <Button
