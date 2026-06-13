@@ -111,6 +111,10 @@ mkdir -p "$APP_ROOT/public/assets"
 rm -rf "$APP_ROOT/public/assets/"*
 cp -r dist/assets/* "$APP_ROOT/public/assets/"
 cp dist/index.html "$APP_ROOT/public/index.html"
+for f in favicon.png apple-touch-icon.png; do
+  [ -f "dist/$f" ] && cp "dist/$f" "$APP_ROOT/public/$f"
+done
+rm -f "$APP_ROOT/public/favicon.ico"
 
 mkdir -p "$APP_ROOT/public/app"
 rm -rf "$APP_ROOT/public/app/"*

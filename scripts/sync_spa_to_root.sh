@@ -17,6 +17,13 @@ mkdir -p "$ROOT/assets"
 cp "$APP_DIR/index.html" "$ROOT/index.html"
 rm -rf "$ROOT/assets/"*
 cp -r "$APP_DIR/assets/"* "$ROOT/assets/"
+for f in favicon.png apple-touch-icon.png; do
+  if [ -f "$APP_DIR/$f" ]; then
+    cp "$APP_DIR/$f" "$ROOT/$f"
+  fi
+done
+# Drop legacy CodeIgniter flame icon if present
+rm -f "$ROOT/favicon.ico"
 
 BUNDLE="$(ls -1 "$ROOT/assets"/index-*.js | head -1)"
 echo "Root index.html now points to assets under $(basename "$BUNDLE")"
