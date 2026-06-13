@@ -88,33 +88,9 @@ export function SecureDocumentPreview({
     e.stopPropagation();
   };
 
-  const fillsContainer =
-    /\bflex-1\b/.test(fitHeightClass) || /\bh-full\b/.test(fitHeightClass);
-
-  const canEnlarge =
-    Boolean(url) && !loading && !error && (kind === "image" || kind === "pdf");
-
-  const previewZoneClass = cn(
-    "group relative flex w-full min-w-0 flex-col overflow-hidden bg-gray-50 transition-colors",
-    fillsContainer ? "min-h-0 flex-1" : fitHeightClass,
-    canEnlarge && "cursor-zoom-in hover:bg-gray-100/90 active:bg-gray-100",
-  );
-
-  const previewFitFrameClass =
-    "relative flex min-h-0 flex-1 items-center justify-center p-2";
-
-  const previewImageClass =
-    "pointer-events-none block max-h-full max-w-full select-none object-contain";
-
   return (
     <>
-      <div
-        className={cn(
-          "relative rounded-lg border bg-white",
-          fillsContainer && "flex min-h-0 flex-1 flex-col overflow-hidden",
-          className,
-        )}
-      >
+      <div className={cn("relative overflow-hidden rounded-lg border bg-white", className)}>
         {loading && (
           <div
             className={cn(
@@ -142,17 +118,17 @@ export function SecureDocumentPreview({
               if (e.key === "Enter" || e.key === " ") openLightbox(e);
             }}
             onPointerDown={stopDialogDismiss}
-            className={previewZoneClass}
-            aria-label="Enlarge document preview — click anywhere in this area"
-            title="Click anywhere to enlarge"
+            className={cn(
+              "group relative block w-full cursor-zoom-in overflow-hidden bg-gray-50",
+              fitHeightClass,
+            )}
+            aria-label="Enlarge document preview"
           >
-            <div className={previewFitFrameClass}>
-              <iframe
-                title={alt}
-                src={url}
-                className="pointer-events-none size-full border-0 object-contain"
-              />
-            </div>
+            <iframe
+              title={alt}
+              src={url}
+              className="pointer-events-none size-full border-0"
+            />
             <EnlargeHint />
           </div>
         )}
@@ -166,21 +142,21 @@ export function SecureDocumentPreview({
               if (e.key === "Enter" || e.key === " ") openLightbox(e);
             }}
             onPointerDown={stopDialogDismiss}
-            className={previewZoneClass}
-            aria-label="Enlarge image preview — click anywhere in this area"
-            title="Click anywhere to enlarge"
+            className={cn(
+              "group relative block w-full cursor-zoom-in overflow-hidden bg-gray-50",
+              fitHeightClass,
+            )}
+            aria-label="Enlarge image preview"
           >
-            <div className={previewFitFrameClass}>
-              <img
-                ref={imageRef}
-                src={url}
-                alt={alt}
-                className={previewImageClass}
-                draggable={false}
-                onLoad={onImageLoad}
-              />
-              {imageOverlay}
-            </div>
+            <img
+              ref={imageRef}
+              src={url}
+              alt={alt}
+              className="box-border size-full object-contain p-2"
+              draggable={false}
+              onLoad={onImageLoad}
+            />
+            {imageOverlay}
             <EnlargeHint />
           </div>
         )}
@@ -352,7 +328,7 @@ function DocumentLightbox({
 
 function EnlargeHint() {
   return (
-    <span className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1 rounded-md bg-black/65 px-2.5 py-1 text-xs text-white opacity-90 shadow-sm transition-opacity group-hover:opacity-100">
+    <span className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1 rounded-md bg-black/65 px-2 py-1 text-xs text-white opacity-90 transition-opacity group-hover:opacity-100">
       <ZoomIn className="h-3.5 w-3.5" />
       Click to enlarge
     </span>

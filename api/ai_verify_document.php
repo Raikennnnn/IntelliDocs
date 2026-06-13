@@ -177,6 +177,12 @@ if (!function_exists('curl_init')) {
     exit;
 }
 
+$aiBase = getenv('AI_BASE_URL');
+if (!$aiBase) {
+    $aiBase = 'http://127.0.0.1:5000';
+}
+$aiUrl = rtrim($aiBase, '/') . '/verify';
+
 $downloadName = (string)($row['download_name'] ?? ('document_' . $docId));
 $mimeType = trim((string)($row['mime_type'] ?? ''));
 if ($mimeType === '') {
@@ -192,9 +198,11 @@ if ($mimeType === '') {
 
 $postFields = [
     'doc_type' => $docType !== '' ? $docType : 'other',
+    'image' => new CURLFile($fullPath, $mimeType, $downloadName),
 ];
 
 // Optional: cross-check student-provided fields against OCR.
+// These are hints (best-effort) and should not block verification by themselves.
 if ($expectedName !== '') $postFields['expected_name'] = $expectedName;
 if ($expectedLrn !== '') $postFields['expected_lrn'] = $expectedLrn;
 if ($expectedSex !== '') $postFields['expected_sex'] = $expectedSex;
@@ -210,31 +218,43 @@ if ($expectedStrand !== '' && !$skipGradeStrandForMoral) {
     $postFields['expected_strand'] = $expectedStrand;
 }
 
-// SF10 / PSA OCR can exceed 30s on a cold or small server — stay below the frontend abort (180s).
-@set_time_limit(200);
+$ch = curl_init();
+curl_setopt_array($ch, [
+    CURLOPT_URL => $aiUrl,
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => $postFields,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_CONNECTTIMEOUT => 3,
+    CURLOPT_TIMEOUT => 30,
+]);
 
-$aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 180);
+$body = curl_exec($ch);
+$curlErr = curl_error($ch);
+$status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
 
-if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
-    $decoded = is_array($aiRes['body']) ? $aiRes['body'] : null;
-    $error = $aiRes['error'] ?? 'Failed to reach AI service';
-    if ($decoded && isset($decoded['error']) && is_string($decoded['error']) && $decoded['error'] !== '') {
-        $error = $decoded['error'];
-    }
-    if ($decoded && empty($decoded['error']) && isset($decoded['hint']) && is_string($decoded['hint'])) {
-        $error = $decoded['hint'];
-    }
+if ($body === false) {
     http_response_code(502);
-    echo json_encode([
-        'success' => false,
-        'error' => $error,
-        'detail' => $decoded ?? ($aiRes['base_url'] ?? null),
-        'ai_base_url' => $aiRes['base_url'] ?? aiServiceBaseUrl(),
-    ]);
+    echo json_encode(['success' => false, 'error' => 'Failed to reach AI service', 'detail' => $curlErr]);
     exit;
 }
 
-$decoded = $aiRes['body'];
+$decoded = json_decode((string)$body, true);
+if (!is_array($decoded)) {
+    http_response_code(502);
+    echo json_encode(['success' => false, 'error' => 'AI service returned invalid JSON', 'detail' => (string)$body]);
+    exit;
+}
+
+if ($status < 200 || $status >= 300) {
+    http_response_code(502);
+    echo json_encode([
+        'success' => false,
+        'error' => $decoded['error'] ?? ('AI verify failed (' . $status . ')'),
+        'detail' => $decoded,
+    ]);
+    exit;
+}
 
 try {
     persistDocumentAiResult($pdo, $docId, $decoded);

@@ -5,8 +5,6 @@ type DocumentConcernChipsProps = {
   concernPct: number | null;
   mismatchPct?: number | null;
   tamperPct?: number | null;
-  /** 2×2 photos use AI authenticity only — no enrollment mismatch (MM). */
-  photoOnly?: boolean;
   size?: "sm" | "md";
   className?: string;
 };
@@ -38,15 +36,13 @@ export function DocumentConcernChips({
   concernPct,
   mismatchPct,
   tamperPct,
-  photoOnly = false,
   size = "sm",
   className,
 }: DocumentConcernChipsProps) {
   if (concernPct === null) return null;
 
-  const showDocumentParts =
-    !photoOnly && typeof mismatchPct === "number" && typeof tamperPct === "number";
-  const showPhotoAi = photoOnly && typeof tamperPct === "number";
+  const showParts =
+    typeof mismatchPct === "number" && typeof tamperPct === "number";
 
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
@@ -56,23 +52,16 @@ export function DocumentConcernChips({
           size === "sm" ? "px-2 py-0.5 text-xs" : "px-2.5 py-1 text-sm",
           concernScoreBadgeClasses(concernPct),
         )}
-        title={
-          photoOnly
-            ? "Average concern from image quality (at upload) and AI authenticity"
-            : "Average of mismatch and tamper concern"
-        }
+        title="Average of mismatch and tamper concern"
       >
         <span className="font-medium opacity-80">Avg</span>
         {concernPct}%
       </span>
-      {showDocumentParts ? (
+      {showParts ? (
         <>
           <Chip label="MM" value={mismatchPct} size={size} />
           <Chip label="T" value={tamperPct} size={size} />
         </>
-      ) : null}
-      {showPhotoAi ? (
-        <Chip label="AI" value={tamperPct} size={size} />
       ) : null}
     </div>
   );

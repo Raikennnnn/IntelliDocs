@@ -256,19 +256,24 @@ if [ -n "$ROOT_BUNDLE" ]; then
   else
     echo "OK: Root JS bundle looks current (no signature overlay marker)."
   fi
-  if grep -q 'Preview loads securely for registrar accounts' "$ROOT_BUNDLE" 2>/dev/null; then
-    echo "ERROR: Root JS bundle is STALE (old document review UI). Run git pull and rebuild."
-    echo "       Hard refresh alone will not fix this — index.html must point to a new index-*.js."
+  if grep -q 'Stop & re-run AI' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "ERROR: Root JS bundle has stale auto-run AI UI — pull latest and rebuild."
+    exit 1
+  fi
+  if grep -q 'SF10 and certificates may take 1' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "ERROR: Root JS bundle has stale AI waiting banner — pull latest and rebuild."
     exit 1
   fi
   if grep -q '92vw,1120px' "$ROOT_BUNDLE" 2>/dev/null || grep -q '85dvh,780px' "$ROOT_BUNDLE" 2>/dev/null; then
-    echo "ERROR: Root JS bundle uses OLD oversized document modal (1120×780). Pull latest and rebuild."
+    echo "ERROR: Root JS bundle uses old cramped document modal (1120×780). Pull latest and rebuild."
     exit 1
   fi
-  if grep -q '88vw,960px' "$ROOT_BUNDLE" 2>/dev/null; then
-    echo "OK: Bundle includes compact document review modal (960×680)."
+  if grep -q '98vw,1280px' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "OK: Bundle includes wide document review modal (1280px)."
+  elif grep -q '96vw,1440px' "$ROOT_BUNDLE" 2>/dev/null; then
+    echo "OK: Bundle includes wide document review modal (1440px)."
   else
-    echo "WARNING: Bundle may be missing compact document modal — confirm git pull succeeded."
+    echo "WARNING: Bundle may be missing wide document modal — confirm git pull succeeded."
   fi
   if grep -q 'Portrait authenticity check' "$ROOT_BUNDLE" 2>/dev/null; then
     echo "OK: Bundle includes current photo review UI (Portrait authenticity check)."

@@ -35,10 +35,11 @@ import {
   Loader2,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { useRef } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
-import { apiFetch, formatApiError, parseApiJson } from "../../lib/api";
+import { apiFetch, formatApiError } from "../../lib/api";
 import { guessDocKind } from "../../lib/documentPreview";
 import { SecureDocumentPreview } from "../../components/SecureDocumentPreview";
 import {
@@ -344,8 +345,6 @@ function resolveApplicationVerifyFields(app: any) {
 }
 
 const AI_VERIFY_PAYLOAD_VERSION = 29;
-/** Per-document HTTP timeout (SF10 multi-pass OCR can take 2–3 min on 1-vCPU servers). */
-const AI_VERIFY_REQUEST_TIMEOUT_MS = 180_000;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -574,90 +573,6 @@ type EnrollmentCrossRow = {
   match_ratio?: number;
 };
 
-type CrossCheckVisualStatus = "match" | "partial" | "mismatch" | "missing" | "pending";
-
-function crossCheckVisualStatus(row: EnrollmentCrossRow): CrossCheckVisualStatus {
-  if (row.ok === null) return "pending";
-  if (String(row.field).toLowerCase() === "signature") {
-    return row.ok ? "match" : "missing";
-  }
-  if (row.ok === true) return "match";
-  const detected = String(row.detected || "").trim();
-  if (!detected) return "missing";
-  const ratio = row.match_ratio;
-  if (typeof ratio === "number" && Number.isFinite(ratio) && ratio >= 0.55) return "partial";
-  return "mismatch";
-}
-
-/** 0 = clean; higher = more concern (inverse of text similarity when available). */
-function crossCheckConcernPct(row: EnrollmentCrossRow): number | null {
-  if (row.ok === true) return 0;
-  if (typeof row.match_ratio === "number" && Number.isFinite(row.match_ratio)) {
-    return Math.max(1, 100 - Math.round(row.match_ratio * 100));
-  }
-  return 100;
-}
-
-function crossCheckDotClass(status: CrossCheckVisualStatus): string {
-  switch (status) {
-    case "match":
-      return "bg-emerald-600";
-    case "partial":
-      return "bg-amber-500";
-    case "missing":
-    case "mismatch":
-      return "bg-rose-600";
-    default:
-      return "bg-gray-300";
-  }
-}
-
-function crossCheckTextClass(status: CrossCheckVisualStatus): string {
-  switch (status) {
-    case "match":
-      return "text-emerald-800";
-    case "partial":
-      return "text-amber-800";
-    case "missing":
-    case "mismatch":
-      return "text-rose-800";
-    default:
-      return "text-gray-600";
-  }
-}
-
-function crossCheckStatusLabel(row: EnrollmentCrossRow, status: CrossCheckVisualStatus): string {
-  if (status === "pending") return "pending AI check";
-  if (String(row.field).toLowerCase() === "signature") {
-    return row.ok ? "detected on scan" : "not detected on scan";
-  }
-  if (status === "match") return "match";
-  if (status === "missing") return "not found on document";
-  if (status === "partial") {
-    const concern = crossCheckConcernPct(row);
-    return concern !== null ? `similar — verify (${concern}% concern)` : "similar — verify";
-  }
-  const concern = crossCheckConcernPct(row);
-  return concern !== null && concern < 100
-    ? `mismatch (${concern}% concern)`
-    : "mismatch";
-}
-
-function crossCheckSummaryBit(row: EnrollmentCrossRow): string {
-  const status = crossCheckVisualStatus(row);
-  const field = String(row.field);
-  if (status === "partial") {
-    const concern = crossCheckConcernPct(row);
-    return concern !== null ? `${field} (${concern}% concern)` : `${field} (verify)`;
-  }
-  if (status === "missing") return `${field} (not on document)`;
-  if (status === "mismatch") {
-    const concern = crossCheckConcernPct(row);
-    return concern !== null && concern < 100 ? `${field} (${concern}% concern)` : field;
-  }
-  return field;
-}
-
 /** Enrollment form fields that should be compared to OCR for each requirement type. */
 function enrollmentCrossCheckPlan(docType: AiDocType, app: any): EnrollmentCrossRow[] {
   const f = resolveApplicationVerifyFields(app);
@@ -714,33 +629,18 @@ function applyEnrollmentCrossChecks(
 
 function summarizeEnrollmentCrossRows(rows: EnrollmentCrossRow[]) {
   const judged = rows.filter((r) => r.ok !== null);
-  const withStatus = judged.map((row) => ({
-    row,
-    status: crossCheckVisualStatus(row),
-  }));
-  const okCount = withStatus.filter((s) => s.status === "match").length;
-  const partialCount = withStatus.filter((s) => s.status === "partial").length;
-  const badCount = withStatus.filter(
-    (s) => s.status === "mismatch" || s.status === "missing",
-  ).length;
+  const okCount = judged.filter((r) => r.ok === true).length;
+  const badCount = judged.filter((r) => r.ok === false).length;
   const pendingCount = rows.filter((r) => r.ok === null).length;
-  const badBits = withStatus
-    .filter((s) => s.status === "mismatch" || s.status === "missing")
-    .map((s) => crossCheckSummaryBit(s.row));
-  const partialBits = withStatus
-    .filter((s) => s.status === "partial")
-    .map((s) => crossCheckSummaryBit(s.row));
-  const okNames = withStatus.filter((s) => s.status === "match").map((s) => s.row.field);
-  return {
-    okCount,
-    partialCount,
-    badCount,
-    pendingCount,
-    total: rows.length,
-    badBits,
-    partialBits,
-    okNames,
-  };
+  const badBits = judged
+    .filter((r) => r.ok === false)
+    .map((r) =>
+      typeof r.match_ratio === "number" && Number.isFinite(r.match_ratio)
+        ? `${r.field} (${Math.round(r.match_ratio * 100)}%)`
+        : r.field,
+    );
+  const okNames = judged.filter((r) => r.ok === true).map((r) => r.field);
+  return { okCount, badCount, pendingCount, total: rows.length, badBits, okNames };
 }
 
 function isAiVerifyPayloadStale(docType: AiDocType, app: any, r?: AiVerifyResponse | null): boolean {
@@ -863,26 +763,6 @@ function checkDetailVisibility(docType: AiDocType): CheckDetailVisibility {
   }
 }
 
-function photoChecksInSecurityPanel(
-  docType: AiDocType,
-  r: AiVerifyResponse | null | undefined,
-): boolean {
-  return docType === "photo_2x2" && Boolean(r?.security_levels?.photo_only_checks);
-}
-
-/** Tamper / MM already shown in SecurityLevelsPanel — skip duplicate detail tiles. */
-function integrityChecksInSecurityPanel(
-  docType: AiDocType,
-  r: AiVerifyResponse | null | undefined,
-): boolean {
-  if (photoChecksInSecurityPanel(docType, r)) return true;
-  const levels = r?.security_levels?.levels;
-  if (!levels?.length) return false;
-  return levels.some((lv) =>
-    /mismatch|enrollment|tamper|integrity|authenticity|synthetic/i.test(lv.title),
-  );
-}
-
 function checkDetailsIntro(docType: AiDocType): string {
   switch (docType) {
     case "photo_2x2":
@@ -945,16 +825,11 @@ function documentAiSummaryLine(opts: {
   isPhoto: boolean;
   concernPct: number | null;
   aiState?: "pending" | "running" | "done" | "error";
-  aiError?: string;
   clearedOnFile?: boolean;
 }): string {
-  const { ai, isPhoto, concernPct, aiState, aiError, clearedOnFile } = opts;
+  const { ai, isPhoto, concernPct, aiState, clearedOnFile } = opts;
   if (aiState === "running") return "AI is checking this file…";
-  if (aiState === "error") {
-    return aiError?.trim()
-      ? `${aiError.trim()} — click Stop & re-run AI above.`
-      : "AI check did not finish — click Stop & re-run AI above.";
-  }
+  if (aiState === "error") return "AI check did not finish — open View and verify manually.";
   if (clearedOnFile && concernPct === null) {
     return "Previously verified on file. Re-run AI only if you need a fresh score.";
   }
@@ -973,34 +848,17 @@ function documentAiSummaryLine(opts: {
 }
 
 function summarizeFieldChecks(fieldChecks: NonNullable<AiVerifyResponse["field_checks"]>) {
-  const rows: EnrollmentCrossRow[] = fieldChecks.map((c) => ({
-    field: String(c.field || ""),
-    expected: String(c.expected || ""),
-    detected: c.detected ? String(c.detected) : "",
-    ok: Boolean(c.ok),
-    match_ratio: typeof c.match_ratio === "number" ? c.match_ratio : undefined,
-  }));
-  return summarizeEnrollmentCrossRows(rows);
-}
-
-function aiVerifyErrorMessage(parsed: unknown, httpStatus: number): string {
-  const p = parsed as { error?: string; detail?: unknown; ai_base_url?: string } | null;
-  const err = String(p?.error || "").trim();
-  const detail = p?.detail;
-  let extra = "";
-  if (typeof detail === "string" && detail.trim()) {
-    extra = detail.trim();
-  } else if (detail && typeof detail === "object") {
-    const d = detail as { error?: string; hint?: string; detail?: string };
-    extra = String(d.error || d.hint || d.detail || "").trim();
-  }
-  if (err && extra && !err.includes(extra)) return `${err} (${extra})`;
-  if (err) return err;
-  if (extra) return extra;
-  if (httpStatus === 502) {
-    return "AI service unreachable — start python ai/app.py locally or intellidocs-ai on the server.";
-  }
-  return `AI verify failed (${httpStatus})`;
+  const bad = fieldChecks.filter((c) => !c.ok);
+  const okCount = fieldChecks.length - bad.length;
+  const badBits = bad.map((c) => {
+    const n = String(c.field);
+    if (typeof c.match_ratio === "number" && Number.isFinite(c.match_ratio)) {
+      return `${n} (${Math.round(c.match_ratio * 100)}%)`;
+    }
+    return n;
+  });
+  const okNames = fieldChecks.filter((c) => c.ok).map((c) => String(c.field));
+  return { okCount, badCount: bad.length, total: fieldChecks.length, badBits, okNames };
 }
 
 export function ReviewDocuments() {
@@ -1042,19 +900,6 @@ export function ReviewDocuments() {
   const [docDecisionDialogOpen, setDocDecisionDialogOpen] = useState(false);
   const [docDecisionRemarks, setDocDecisionRemarks] = useState("");
   const [docDecisionSubmitting, setDocDecisionSubmitting] = useState(false);
-  const aiRunAbortRef = useRef<AbortController | null>(null);
-  const aiRunGenRef = useRef(0);
-  const aiResultsRef = useRef<Record<string, AiVerifyResponse>>({});
-  aiResultsRef.current = aiResultsByDocId;
-
-  const aiVerifyDocKey = useMemo(() => {
-    const docs = (application?.documents ?? []) as any[];
-    return docs
-      .filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image")
-      .map((d) => String(d.id))
-      .sort()
-      .join(",");
-  }, [application?.documents]);
 
   const mapDocType = (doc: any): AiDocType => {
     const label = String(doc?.requirementLabel ?? doc?.type ?? "").trim();
@@ -1245,16 +1090,6 @@ export function ReviewDocuments() {
       }
       if (Object.keys(seeded).length > 0) {
         setAiResultsByDocId((prev) => ({ ...seeded, ...prev }));
-        setAiDocStateById((prev) => {
-          const next = { ...prev };
-          for (const doc of Array.isArray(app?.documents) ? app.documents : []) {
-            const id = doc?.id ? String(doc.id) : "";
-            if (id && seeded[id] && next[id]?.state !== "running") {
-              next[id] = { state: "done" };
-            }
-          }
-          return next;
-        });
       }
 
       if (app?.isAlreadyEnrolled && app?.status !== "Rejected") {
@@ -1771,149 +1606,91 @@ export function ReviewDocuments() {
     };
   }, [isDocumentDialogOpen, previewObjectUrl, previewDisplayKind]);
 
-  const resetAiVerification = (rerun: boolean) => {
-    aiRunAbortRef.current?.abort();
-    aiRunAbortRef.current = null;
-    setAiRunning(false);
-    setAiResultsByDocId({});
-    setAiDocStateById({});
-    setAiServiceError(null);
-    if (rerun) setAiRerunNonce((n) => n + 1);
-  };
-
   // Automatically run AI verification for image documents when the application loads.
   useEffect(() => {
-    if (!application?.documents || !Array.isArray(application.documents) || application.documents.length === 0) {
-      return;
-    }
-    const docs = application.documents as any[];
-    const toVerify = docs.filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image");
-    if (toVerify.length === 0) return;
-
     let cancelled = false;
-    const runGen = ++aiRunGenRef.current;
-    const batchAbort = new AbortController();
-    aiRunAbortRef.current = batchAbort;
-
-    const finishRun = () => {
-      if (aiRunGenRef.current === runGen) {
-        setAiRunning(false);
-        aiRunAbortRef.current = null;
-      }
-    };
-
     const run = async () => {
+      if (!application?.documents || !Array.isArray(application.documents) || application.documents.length === 0) return;
+      const docs = application.documents as any[];
+      const toVerify = docs.filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image");
+      if (toVerify.length === 0) return;
+
       setAiRunning(true);
-      setAiServiceError(null);
+      try {
+        setAiServiceError(null);
 
-      for (const doc of toVerify) {
-        if (cancelled || batchAbort.signal.aborted || aiRunGenRef.current !== runGen) return;
+        for (const doc of toVerify) {
+          if (cancelled) return;
+          const id = String(doc.id);
+          const docType = mapDocType(doc);
+          const cached = aiResultsByDocId[id];
+          if (cached && !isAiVerifyPayloadStale(docType, application, cached)) continue;
 
-        const id = String(doc.id);
-        const docType = mapDocType(doc);
-        const cached = aiResultsRef.current[id];
-        if (cached && !isAiVerifyPayloadStale(docType, application, cached)) {
-          setAiDocStateById((prev) =>
-            prev[id]?.state === "running" ? prev : { ...prev, [id]: { state: "done" } },
-          );
-          continue;
+          try {
+            if (!cancelled) {
+              setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
+            }
+            const ac = new AbortController();
+            const timeoutMs = 45000;
+            const t = window.setTimeout(() => ac.abort(), timeoutMs);
+            const aiRes = await apiFetch(
+              `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
+                `&doc_type=${encodeURIComponent(docType)}` +
+                buildExpectedVerifyQuery(docType, application),
+              { signal: ac.signal },
+            );
+            window.clearTimeout(t);
+            const parsed = (await aiRes.json()) as
+              | { success: true; result: AiVerifyResponse }
+              | { success: false; error?: string; detail?: any };
+            if (!aiRes.ok || !parsed || (parsed as any).success !== true) {
+              const msg = (parsed as any)?.error || `AI verify failed (${aiRes.status})`;
+              if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
+              continue;
+            }
+            const data = (parsed as any).result as AiVerifyResponse;
+            if (!data || typeof (data as any).confidence !== "number") {
+              if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: "AI returned an invalid response" } }));
+              continue;
+            }
+            const effectiveDocType = resolveEffectiveDocType(doc, data);
+            if (!cancelled) {
+              setAiResultsByDocId((prev) => ({
+                ...prev,
+                [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
+              }));
+              setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
+            }
+          } catch (e) {
+            // Keep verifying the rest, but surface the real reason for this doc.
+            let msg = "Unexpected error running AI";
+            if (e && typeof e === "object") {
+              const anyE = e as any;
+              if (typeof anyE?.name === "string" && anyE.name === "AbortError") {
+                msg = "AI verification timed out (45s)";
+              } else if (typeof anyE?.message === "string" && anyE.message.trim()) {
+                msg = anyE.message.trim();
+              } else if (typeof anyE?.toString === "function") {
+                const s = String(anyE.toString());
+                if (s.trim()) msg = s.trim();
+              }
+            }
+            if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
+            continue;
+          }
         }
-
-        setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
-
-        const docAbort = new AbortController();
-        const onBatchAbort = () => docAbort.abort();
-        batchAbort.signal.addEventListener("abort", onBatchAbort);
-        const timeoutId = window.setTimeout(() => docAbort.abort(), AI_VERIFY_REQUEST_TIMEOUT_MS);
-
-        try {
-          const aiRes = await apiFetch(
-            `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
-              `&doc_type=${encodeURIComponent(docType)}` +
-              buildExpectedVerifyQuery(docType, application),
-            { signal: docAbort.signal },
-          );
-          const parsedRes = await parseApiJson<
-            | { success: true; result: AiVerifyResponse }
-            | { success: false; error?: string; detail?: unknown }
-          >(aiRes);
-
-          if (cancelled || batchAbort.signal.aborted || aiRunGenRef.current !== runGen) return;
-
-          if (!parsedRes.ok) {
-            setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: parsedRes.error } }));
-            if (/timeout|504|502|503|html instead of json|ai service|unreachable/i.test(parsedRes.error)) {
-              setAiServiceError(parsedRes.error);
-            }
-            continue;
-          }
-
-          const parsed = parsedRes.data;
-          if (!aiRes.ok || !parsed || (parsed as { success?: boolean }).success !== true) {
-            const msg = aiVerifyErrorMessage(parsed, aiRes.status);
-            setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
-            if (/ai service|unreachable|ocr engine|tesseract|502|503|504|connection refused/i.test(msg)) {
-              setAiServiceError(msg);
-            }
-            continue;
-          }
-
-          const data = (parsed as any).result as AiVerifyResponse;
-          if (!data || typeof (data as any).confidence !== "number") {
-            setAiDocStateById((prev) => ({
-              ...prev,
-              [id]: { state: "error", error: "AI returned an invalid response" },
-            }));
-            continue;
-          }
-
-          const effectiveDocType = resolveEffectiveDocType(doc, data);
-          setAiResultsByDocId((prev) => ({
-            ...prev,
-            [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
-          }));
-          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
-        } catch (e) {
-          if (cancelled || batchAbort.signal.aborted || aiRunGenRef.current !== runGen) return;
-
-          let msg = "Unexpected error running AI";
-          if (e && typeof e === "object") {
-            const anyE = e as any;
-            if (typeof anyE?.name === "string" && anyE.name === "AbortError") {
-              msg = batchAbort.signal.aborted
-                ? "AI check cancelled"
-                : `AI verification timed out (${Math.round(AI_VERIFY_REQUEST_TIMEOUT_MS / 1000)}s)`;
-            } else if (typeof anyE?.message === "string" && anyE.message.trim()) {
-              msg = anyE.message.trim();
-            }
-          }
-          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
-          if (/ai service|unreachable|502|503|504/i.test(msg)) {
-            setAiServiceError(msg);
-          }
-        } finally {
-          window.clearTimeout(timeoutId);
-          batchAbort.signal.removeEventListener("abort", onBatchAbort);
-        }
+      } finally {
+        if (!cancelled) setAiRunning(false);
       }
     };
-
-    run()
-      .catch(() => {
-        if (!cancelled && aiRunGenRef.current === runGen) {
-          setAiServiceError("Unexpected error while running AI checks.");
-        }
-      })
-      .finally(finishRun);
-
+    run();
     return () => {
       cancelled = true;
-      batchAbort.abort();
-      finishRun();
     };
-    // Re-run when document ids change or registrar clicks Re-run — not on every documents[] reference change.
+    // Intentionally depend on applicationId + application.documents snapshot only.
+    // aiRerunNonce is bumped by the "Re-run AI" button to force a re-run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applicationId, aiVerifyDocKey, aiRerunNonce]);
+  }, [applicationId, application?.documents, aiRerunNonce]);
 
   if (loading) {
     return (
@@ -2320,16 +2097,12 @@ export function ReviewDocuments() {
                   {aiRunning ? (
                     <span className="inline-flex items-center gap-2 text-indigo-700">
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                      Running AI checks… SF10 and certificates may take 1–3 min each (CPU-bound OCR).
+                      Running AI checks on uploaded files…
                     </span>
                   ) : aiServiceError ? (
                     <span className="text-rose-700">
-                      AI service unavailable — {aiServiceError}.{" "}
-                      {typeof window !== "undefined" &&
-                      (window.location.hostname === "localhost" ||
-                        window.location.hostname === "127.0.0.1")
-                        ? "Start: cd ai && python app.py"
-                        : "On server: systemctl status intellidocs-ai && curl http://127.0.0.1:8080/health"}
+                      AI service unavailable — {aiServiceError}. Start{" "}
+                      <code className="rounded bg-rose-50 px-1 text-xs">ai/app.py</code> on port 5000.
                     </span>
                   ) : (
                     <span>
@@ -2344,9 +2117,15 @@ export function ReviewDocuments() {
                   variant="outline"
                   size="sm"
                   className="shrink-0"
-                  onClick={() => resetAiVerification(true)}
+                  onClick={() => {
+                    setAiResultsByDocId({});
+                    setAiDocStateById({});
+                    setAiServiceError(null);
+                    setAiRerunNonce((n) => n + 1);
+                  }}
+                  disabled={aiRunning}
                 >
-                  {aiRunning ? "Stop & re-run AI" : "Re-run AI"}
+                  Re-run AI
                 </Button>
               </div>
               <ConcernScoringHelp />
@@ -2359,7 +2138,6 @@ export function ReviewDocuments() {
                   const ai = aiResultForDisplay(docType, rawAi) ?? rawAi;
                   const aiPct = documentConcernPercent(ai);
                   const aiState = aiDocStateById[key]?.state;
-                  const aiError = aiDocStateById[key]?.error;
                   const resubmitRequired =
                     String(doc?.registrarDocDecision || "").toLowerCase() === "rejected" ||
                     String(doc?.status || "").toLowerCase() === "flagged" ||
@@ -2433,19 +2211,11 @@ export function ReviewDocuments() {
                             tamperPct={concernParts?.tamperConcern ?? null}
                           />
                         ) : null}
-                        {aiPct !== null && isPhoto && concernParts ? (
-                          <DocumentConcernChips
-                            concernPct={aiPct}
-                            tamperPct={concernParts.tamperConcern}
-                            photoOnly
-                          />
-                        ) : null}
                         {aiPct !== null && concernParts ? (
                           <DocumentConcernFormula
                             mismatchPct={concernParts.mismatchConcern}
                             tamperPct={concernParts.tamperConcern}
                             averagePct={concernParts.documentAverage}
-                            photoOnly={isPhoto}
                           />
                         ) : null}
                         {ai?.security_levels ? (
@@ -2457,7 +2227,6 @@ export function ReviewDocuments() {
                               isPhoto,
                               concernPct: aiPct,
                               aiState,
-                              aiError,
                               clearedOnFile: registrarCleared,
                             })}
                           </p>
@@ -2886,7 +2655,12 @@ export function ReviewDocuments() {
       >
         <DialogContent
           className={cn(
-            "document-review-dialog !flex !max-w-[min(88vw,960px)] h-[min(82dvh,680px)] max-h-[min(82dvh,680px)] w-[min(88vw,960px)] flex-col gap-1.5 overflow-hidden p-2.5 text-sm sm:gap-2 sm:p-3 md:p-4 [&_button]:text-sm",
+            // Override DialogContent defaults (sm:max-w-lg) so the modal uses full intended width.
+            "!fixed !top-[2vh] !left-1/2 !-translate-x-1/2 !translate-y-0",
+            "!flex !h-[min(96dvh,940px)] !max-h-[min(96dvh,940px)]",
+            "!w-[min(98vw,1280px)] !max-w-[min(98vw,1280px)] sm:!max-w-[min(98vw,1280px)]",
+            "flex-col gap-3 overflow-hidden p-4 sm:p-5 md:p-6",
+            "data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100",
             previewLightboxOpen &&
               "[&>button.absolute]:pointer-events-none [&>button.absolute]:invisible",
           )}
@@ -2900,22 +2674,22 @@ export function ReviewDocuments() {
             if (previewLightboxOpen) e.preventDefault();
           }}
         >
-          <DialogHeader className="shrink-0 space-y-0.5">
-            <DialogTitle className="text-base">Document Verification Details</DialogTitle>
-            <DialogDescription className="sr-only">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Document Verification Details</DialogTitle>
+            <DialogDescription>
               Review AI verification results and detected issues
             </DialogDescription>
           </DialogHeader>
           {selectedDocument && (
-            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
-              <div className="shrink-0 rounded-lg border p-2 sm:p-3">
-                <div className="flex items-start gap-2">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+              <div className="border rounded-lg p-4">
+                <div className="flex items-start gap-3 flex-1">
                   {selectedDocument.status === "Verified" ? (
-                    <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
+                    <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
                   ) : selectedDocument.status === "Under Review" ? (
-                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600" />
+                    <AlertTriangle className="w-5 h-5 text-yellow-600 mt-0.5" />
                   ) : (
-                    <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                    <XCircle className="w-5 h-5 text-red-600 mt-0.5" />
                   )}
                   <div className="flex-1">
                     <p className="text-xs font-semibold text-[#8B1538] uppercase tracking-wide mb-1">
@@ -2946,29 +2720,29 @@ export function ReviewDocuments() {
                         </div>
                       );
                     })()}
-                    <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                      <h3 className="text-sm font-semibold text-gray-900">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <h3 className="font-semibold text-gray-900">
                         {selectedDocument.fileName || selectedDocument.name}
                       </h3>
-                      <Badge className={cn(getDocumentStatusColor(selectedDocument.status), "text-xs")}>
+                      <Badge className={getDocumentStatusColor(selectedDocument.status)}>
                         {selectedDocument.status}
                       </Badge>
                     </div>
-                    <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-600">
-                      <p>
-                        <span className="text-gray-500">Student </span>
-                        <span className="font-medium text-gray-800">{selectedDocument.studentName}</span>
-                      </p>
-                      <p>
-                        <span className="text-gray-500">App </span>
-                        <span className="font-medium text-gray-800">{selectedDocument.applicationId}</span>
-                      </p>
-                      <p>
-                        <span className="text-gray-500">Strand </span>
-                        <span className="font-medium text-gray-800">
-                          {selectedDocument.strand} — G{selectedDocument.gradeLevel}
-                        </span>
-                      </p>
+                    <div className="mb-3 grid grid-cols-1 gap-4 text-sm text-gray-600 sm:grid-cols-2 md:grid-cols-3">
+                      <div>
+                        <p className="text-xs text-gray-500">Student</p>
+                        <p className="font-medium">{selectedDocument.studentName}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500">Application ID</p>
+                        <p className="font-medium">{selectedDocument.applicationId}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500">Strand / Grade</p>
+                        <p className="font-medium">
+                          {selectedDocument.strand} — Grade {selectedDocument.gradeLevel}
+                        </p>
+                      </div>
                     </div>
                     {(() => {
                       const id = String(selectedDocument.id ?? "");
@@ -2987,21 +2761,17 @@ export function ReviewDocuments() {
                       }
                       return (
                         <DocumentConcernChips
-                          className="mb-1.5"
-                          size="sm"
+                          className="mb-2"
+                          size="md"
                           concernPct={avg}
                           mismatchPct={parts?.mismatchConcern ?? null}
                           tamperPct={parts?.tamperConcern ?? null}
-                          photoOnly={docType === "photo_2x2"}
                         />
                       );
                     })()}
                     {(() => {
                       const id = String(selectedDocument.id ?? "");
-                      const raw = aiResultsByDocId[id];
-                      const docType = resolveEffectiveDocType(selectedDocument, raw);
-                      if (docType === "photo_2x2") return null;
-                      const r = raw;
+                      const r = aiResultsByDocId[id];
                       if (!r || typeof r.ocr_confidence !== "number") return null;
                       const pct = Math.round(r.ocr_confidence * 100);
                       return (
@@ -3020,20 +2790,20 @@ export function ReviewDocuments() {
                       const rejected = String(selectedDocument.registrarDocDecision || "").toLowerCase() === "rejected";
                       const docRemarks = String(selectedDocument.registrarDocRemarks || "").trim();
                       return (
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <div className="mt-3 flex flex-wrap items-center gap-3">
                           {reviewed ? (
-                            <Badge className="bg-emerald-600 text-xs text-white hover:bg-emerald-700">
-                              <CheckCircle className="mr-1 h-3 w-3" />
-                              Reviewed
+                            <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
+                              <CheckCircle className="w-3.5 h-3.5 mr-1" />
+                              Reviewed by registrar
                             </Badge>
                           ) : (
-                            <Badge variant="outline" className="border-gray-300 text-xs text-gray-600">
+                            <Badge variant="outline" className="border-gray-300 text-gray-600">
                               Not yet reviewed
                             </Badge>
                           )}
                           {rejected ? (
-                            <Badge className="bg-red-600 text-xs text-white hover:bg-red-700">
-                              <XCircle className="mr-1 h-3 w-3" />
+                            <Badge className="bg-red-600 text-white hover:bg-red-700">
+                              <XCircle className="w-3.5 h-3.5 mr-1" />
                               Re-upload required
                             </Badge>
                           ) : null}
@@ -3043,9 +2813,9 @@ export function ReviewDocuments() {
                             variant={reviewed ? "outline" : "default"}
                             disabled={submitting || !selectedDocument.id}
                             onClick={() => toggleDocumentReviewed(selectedDocument.id, !reviewed)}
-                            className={cn("h-7 px-2.5 text-xs", reviewed ? "" : "bg-emerald-600 hover:bg-emerald-700 text-white")}
+                            className={reviewed ? "" : "bg-emerald-600 hover:bg-emerald-700 text-white"}
                           >
-                            <CheckCircle className="mr-1.5 h-3.5 w-3.5" />
+                            <CheckCircle className="w-4 h-4 mr-2" />
                             {submitting
                               ? reviewed
                                 ? "Removing…"
@@ -3059,14 +2829,13 @@ export function ReviewDocuments() {
                             size="sm"
                             variant="destructive"
                             disabled={!selectedDocument.id || docDecisionSubmitting}
-                            className="h-7 px-2.5 text-xs"
                             onClick={() => {
                               setDocDecisionDialogOpen(true);
                               setDocDecisionRemarks(docRemarks);
                             }}
                           >
-                            <XCircle className="mr-1.5 h-3.5 w-3.5" />
-                            {docDecisionSubmitting ? "Rejecting…" : "Reject (re-upload)"}
+                            <XCircle className="w-4 h-4 mr-2" />
+                            {docDecisionSubmitting ? "Rejecting…" : "Reject (require re-upload)"}
                           </Button>
                           {rejected && docRemarks ? (
                             <p className="w-full text-xs text-gray-600">
@@ -3080,41 +2849,23 @@ export function ReviewDocuments() {
                 </div>
               </div>
 
-              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden lg:flex-row lg:gap-3">
-                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pb-4 pr-0.5 lg:min-w-0 lg:basis-0">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)] lg:gap-5">
+                <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-0.5 lg:max-h-none">
                   {(() => {
                     const id = String(selectedDocument.id ?? "");
                     const raw = aiResultsByDocId[id];
                     const docType = resolveEffectiveDocType(selectedDocument, raw);
                     const r = aiResultForDisplay(docType, raw);
                     if (r?.security_levels) {
-                      const photoPanel = photoChecksInSecurityPanel(docType, r);
-                      const tamperSignals = Array.isArray(r.tamper_signals) ? r.tamper_signals : [];
-                      const syntheticSignals = Array.isArray(r.synthetic_signals) ? r.synthetic_signals : [];
                       return (
-                        <div className="min-w-0 rounded-lg border border-gray-200 bg-white p-3">
-                          <h4 className="mb-0.5 text-xs font-semibold text-gray-900">AI checks</h4>
-                          <p className="mb-2 text-[11px] leading-snug text-gray-500">
+                        <div className="rounded-lg border border-gray-200 bg-white p-4">
+                          <h4 className="mb-1 text-sm font-semibold text-gray-900">AI checks</h4>
+                          <p className="mb-3 text-xs text-gray-500">
                             {docType === "photo_2x2"
-                              ? "Portrait authenticity check. Image quality was verified when the student uploaded this file."
+                              ? "Image quality and AI authenticity for this 2×2 photo."
                               : "Mismatch compares enrollment data to the scan. Tamper looks for edit signals."}
                           </p>
                           <SecurityLevelsPanel security={r.security_levels} />
-                          {photoPanel && (tamperSignals.length > 0 || syntheticSignals.length > 0) ? (
-                            <details className="mt-3 text-xs text-gray-600">
-                              <summary className="cursor-pointer font-medium text-gray-600 hover:text-gray-900">
-                                View AI signal details
-                              </summary>
-                              <ul className="mt-2 space-y-1 border-l border-gray-200 pl-3">
-                                {tamperSignals.slice(0, 5).map((s, idx) => (
-                                  <li key={`t-${idx}`}>{s}</li>
-                                ))}
-                                {syntheticSignals.slice(0, 5).map((s, idx) => (
-                                  <li key={`s-${idx}`}>{s}</li>
-                                ))}
-                              </ul>
-                            </details>
-                          ) : null}
                         </div>
                       );
                     }
@@ -3130,12 +2881,6 @@ export function ReviewDocuments() {
                     const docType = resolveEffectiveDocType(selectedDocument, raw);
                     const r = aiResultForDisplay(docType, raw);
                     const visibility = checkDetailVisibility(docType);
-                    const checksInPanel = integrityChecksInSecurityPanel(docType, r);
-
-                    // Photos: AI checks panel is enough — skip duplicate detail tiles.
-                    if (checksInPanel && docType === "photo_2x2") {
-                      return null;
-                    }
 
                     const fieldChecks = Array.isArray(r?.field_checks) ? r.field_checks : [];
                     const issues = filterIssuesForDocType(
@@ -3153,11 +2898,10 @@ export function ReviewDocuments() {
                     const sealScan = r?.seal_scan;
                     const tamperPct = tamperPercentForDoc(r, docType);
                     const tamperSummary = summarizeTamper(r, docType);
-                    const showTamper =
-                      visibility.tamper && tamperPct !== null && tamperSummary && !checksInPanel;
+                    const showTamper = visibility.tamper && tamperPct !== null && tamperSummary;
                     const syntheticPct = syntheticPercentForDoc(r, docType);
                     const showSynthetic =
-                      visibility.synthetic && Boolean(r && syntheticPct !== null) && !checksInPanel;
+                      visibility.synthetic && Boolean(r && syntheticPct !== null);
                     const docTitle = docCheckShortTitle(docType);
                     const docSummary =
                       visibility.labels && labelDocChecks.length
@@ -3213,21 +2957,21 @@ export function ReviewDocuments() {
                         : "border-slate-200 bg-white text-slate-800";
 
                     const tileClass =
-                      "relative isolate flex min-h-0 flex-col rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-800 shadow-sm sm:text-sm";
+                      "flex min-h-[9.5rem] flex-col rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-800 shadow-sm";
 
                     return (
-                      <div className="space-y-2 text-sm text-gray-800">
+                      <div className="space-y-3 text-sm text-gray-800">
                         <div className="px-0.5">
                           <div className="flex flex-wrap items-baseline justify-between gap-2">
-                            <p className="text-sm font-semibold text-gray-900">Check details</p>
-                            <span className="text-[11px] text-gray-500">{docTitle}</span>
+                            <p className="text-base font-semibold text-gray-900">Check details</p>
+                            <span className="text-xs text-gray-500">{docTitle}</span>
                           </div>
-                          <p className="mt-0.5 text-[11px] leading-snug text-gray-500">
+                          <p className="mt-1 text-xs leading-relaxed text-gray-500">
                             {checkDetailsIntro(docType)}
                           </p>
                         </div>
 
-                        <div className="grid grid-cols-1 gap-2">
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         {showTamper && tamperSummary ? (
                           <section
                             className={cn(tileClass, tamperSummary.tone)}
@@ -3497,55 +3241,41 @@ export function ReviewDocuments() {
                               className="mt-2 flex flex-wrap items-center gap-2"
                               aria-label="Enrollment cross-check results"
                             >
-                              {crossRows.map((c, idx) => {
-                                const status = crossCheckVisualStatus(c);
-                                return (
+                              {crossRows.map((c, idx) => (
                                 <span
                                   key={idx}
                                   title={
-                                    status === "pending"
+                                    c.ok === null
                                       ? `${c.field}: awaiting AI check`
-                                      : `${c.field}: ${crossCheckStatusLabel(c, status)}`
+                                      : `${c.field}: ${c.ok ? "match" : "mismatch"}`
                                   }
-                                  className={`inline-block h-4 w-4 shrink-0 rounded-full ${crossCheckDotClass(status)}`}
+                                  className={`inline-block h-4 w-4 shrink-0 rounded-full ${
+                                    c.ok === null
+                                      ? "bg-gray-300"
+                                      : c.ok
+                                        ? "bg-emerald-600"
+                                        : "bg-rose-600"
+                                  }`}
                                 />
-                              );
-                              })}
+                              ))}
               </div>
                             <p className="mt-2 leading-snug text-gray-800">
                               <span className="font-medium">{cross.okCount}</span> matched
-                              {cross.partialCount > 0 ? (
-                                <>
-                                  <span className="text-gray-400"> · </span>
-                                  <span className="font-medium text-amber-800">{cross.partialCount}</span>{" "}
-                                  similar — verify
-                                </>
-                              ) : null}
-                              {cross.badCount > 0 ? (
-                                <>
-                                  <span className="text-gray-400"> · </span>
-                                  <span className="font-medium text-rose-800">{cross.badCount}</span>{" "}
-                                  {String(selectedDocument?.registrarDocDecision || "").toLowerCase() === "rejected"
-                                    ? "need resubmission"
-                                    : "mismatch"}
-                                </>
-                              ) : null}
+                              <span className="text-gray-400"> · </span>
+                              <span className="font-medium text-rose-800">{cross.badCount}</span>{" "}
+                              {String(selectedDocument?.registrarDocDecision || "").toLowerCase() === "rejected"
+                                ? "need resubmission"
+                                : "need review"}
                               {cross.pendingCount > 0 ? (
                                 <>
                                   <span className="text-gray-400"> · </span>
                                   <span className="font-medium text-gray-600">{cross.pendingCount}</span> pending AI
                                 </>
                               ) : null}
-                              {cross.partialBits.length > 0 ? (
-                                <>
-                                  <span className="text-gray-400">: </span>
-                                  <span className="text-amber-900">{cross.partialBits.join(" · ")}</span>
-                                </>
-                              ) : null}
                               {cross.badBits.length > 0 ? (
                                 <>
-                                  <span className="text-gray-400">{cross.partialBits.length > 0 ? " · " : ": "}</span>
-                                  <span className="text-rose-900">{cross.badBits.join(" · ")}</span>
+                                  <span className="text-gray-400">: </span>
+                                  {cross.badBits.join(" · ")}
                                 </>
                               ) : null}
                             </p>
@@ -3559,30 +3289,52 @@ export function ReviewDocuments() {
                                 Every enrollment field ({crossRows.length})
                               </summary>
                               <ul className="mt-2 space-y-1.5 border-l border-gray-200 pl-3">
-                                {crossRows.map((c, idx) => {
-                                  const status = crossCheckVisualStatus(c);
-                                  return (
+                                {crossRows.map((c, idx) => (
                                   <li key={idx} className="flex items-start gap-2 leading-snug">
                                     <span
-                                      className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${crossCheckDotClass(status)}`}
+                                      className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${
+                                        c.ok === null
+                                          ? "bg-gray-300"
+                                          : c.ok
+                                            ? "bg-emerald-600"
+                                            : "bg-rose-600"
+                                      }`}
                                       aria-hidden
                                     />
                                       <span className="min-w-0 text-gray-800">
                                       <span className="font-medium">{String(c.field)}</span>
-                                      <span className={crossCheckTextClass(status)}>
+                                      <span
+                                        className={
+                                          c.ok === null
+                                            ? " text-gray-600"
+                                            : c.ok
+                                              ? " text-emerald-800"
+                                              : " text-rose-800"
+                                        }
+                                      >
                                         {" "}
-                                        {crossCheckStatusLabel(c, status)}
+                                        {c.ok === null
+                                          ? "pending AI check"
+                                          : String(c.field).toLowerCase() === "signature"
+                                            ? c.ok
+                                              ? "detected on scan"
+                                              : "not detected on scan"
+                                            : c.ok
+                                              ? "match"
+                                              : "mismatch"}
+                                        {typeof c.match_ratio === "number" && Number.isFinite(c.match_ratio)
+                                          ? ` (${Math.round(c.match_ratio * 100)}%)`
+                                          : ""}
                                       </span>
                                       <span className="block text-gray-600">
                                         Form: {String(c.expected).trim()}
                                         {String(c.detected || "").trim()
                                           ? ` · Document: ${formatCrossCheckDetected(String(c.field), String(c.detected))}`
-                                          : " · Document: not read from scan"}
+                                          : ""}
                                       </span>
                                     </span>
                                   </li>
-                                );
-                                })}
+                                ))}
                               </ul>
                             </details>
                           </section>
@@ -3635,21 +3387,19 @@ export function ReviewDocuments() {
                 </div>
 
               {/* Document Preview — fetched with apiFetch so X-User-Id is sent (img src alone cannot) */}
-              <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-gray-50 p-2 sm:p-3 lg:w-[min(42%,340px)] lg:shrink-0 lg:flex-none">
-                <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
-                  <h4 className="text-xs font-semibold text-gray-900 sm:text-sm">Uploaded Document</h4>
+              <div className="flex min-h-[280px] min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-gray-50 p-4 lg:min-h-0">
+                <div className="mb-3 flex shrink-0 items-center justify-between">
+                  <h4 className="text-base font-semibold text-gray-900">Uploaded Document</h4>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-7 px-2 text-xs"
                     onClick={() => downloadDocument(selectedDocument)}
                   >
-                    <Download className="mr-1 h-3.5 w-3.5" />
+                    <Download className="w-4 h-4 mr-2" />
                     Download
                   </Button>
                 </div>
-                <div className="flex min-h-0 flex-1 flex-col">
                 {(() => {
                   const kind =
                     previewDisplayKind ??
@@ -3756,14 +3506,14 @@ export function ReviewDocuments() {
                     ) : null;
 
                   return (
+                    <div className="min-h-0 flex-1">
                     <SecureDocumentPreview
                       url={previewObjectUrl}
                       kind={kind}
                       alt={selectedDocument.fileName || selectedDocument.name}
                       loading={previewLoading}
                       error={previewError}
-                      className="min-h-0 flex-1"
-                      fitHeightClass="min-h-[12rem] h-full flex-1"
+                      fitHeightClass="h-[min(560px,58vh)] min-h-[280px]"
                       onLightboxOpenChange={setPreviewLightboxOpen}
                       imageRef={previewImgRef}
                       onImageLoad={() => {
@@ -3785,11 +3535,11 @@ export function ReviewDocuments() {
                         </div>
                       }
                     />
+                    </div>
                   );
                 })()}
-                </div>
                 <p className="mt-2 shrink-0 text-xs text-gray-500">
-                  Click anywhere on the preview to enlarge. Use Download to save a copy.
+                  Preview loads securely for registrar accounts. Use Download to save a copy.
                 </p>
               </div>
               </div>

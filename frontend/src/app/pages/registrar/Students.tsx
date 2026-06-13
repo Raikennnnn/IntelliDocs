@@ -2200,7 +2200,7 @@ export function Students() {
             )}
           </DialogHeader>
 
-          <div className="flex min-h-0 flex-1 flex-col bg-gray-50 p-4">
+          <div className="flex-1 min-h-0 p-4 bg-gray-50">
             <SecureDocumentPreview
               url={viewerObjectUrl}
               kind={viewerKind}
@@ -2208,8 +2208,7 @@ export function Students() {
               loading={viewerLoading}
               error={viewerError}
               onLightboxOpenChange={setViewerLightboxOpen}
-              className="min-h-0 flex-1"
-              fitHeightClass="min-h-[min(480px,65vh)] flex-1 h-full"
+              fitHeightClass="h-[min(480px,65vh)]"
               unavailableFallback={
                 <p className="text-center text-sm text-gray-600">
                   Preview is not available for this file type. Use the registrar review screen
