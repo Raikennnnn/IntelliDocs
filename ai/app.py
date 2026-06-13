@@ -2851,6 +2851,12 @@ def _evaluate(
             def _psa_parent_section_index(u_norm: list[str]) -> int:
                 """First line index where parent / informant blocks begin."""
                 for i, nl in enumerate(u_norm):
+                    if re.search(r"\b1\b", nl) and "NAME" in nl and "FATHER" not in nl and "MOTHER" not in nl:
+                        continue
+                    if re.search(r"\b[4-9]\b", nl) and "FATHER" in nl:
+                        return i
+                    if re.search(r"\b6\b", nl) and ("FATHER" in nl or "MAIDEN" in nl):
+                        return i
                     if re.search(r"\b6\b", nl) and "MAIDEN" in nl:
                         return i
                     if re.search(r"\b11\b", nl) and ("FATHER" in nl or "NAME" in nl):
@@ -2861,6 +2867,8 @@ def _evaluate(
                         k in nl
                         for k in (
                             "NAME OF FATHER",
+                            "FATHERS NAME",
+                            "FATHER S NAME",
                             "NAME OF MOTHER",
                             "MAIDEN NAME OF MOTHER",
                             "INFORMANT",
@@ -2874,10 +2882,32 @@ def _evaluate(
                         return i
                 return len(u_norm)
 
+            def _psa_parent_y_cut(normed: list[dict], image_h: int | None) -> float:
+                """Earliest y where parent (father/mother) blocks begin — child names must be above this."""
+                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
+                cuts = [ih * 0.22]
+                for b in normed:
+                    t = b["t"]
+                    if "NAME OF CHILD" in t or re.match(r"^1\.?\s*NAME", t):
+                        continue
+                    if re.search(r"\b[4-9]\b", t) and "FATHER" in t:
+                        cuts.append(float(b["y"]) - 6.0)
+                    if re.search(r"\b6\b", t) and ("FATHER" in t or "MAIDEN" in t):
+                        cuts.append(float(b["y"]) - 6.0)
+                    if "NAME OF FATHER" in t or "FATHERS NAME" in t or "FATHER S NAME" in t:
+                        cuts.append(float(b["y"]) - 6.0)
+                    if "NAME OF MOTHER" in t or ("MAIDEN" in t and "MOTHER" in t):
+                        cuts.append(float(b["y"]) - 6.0)
+                    if re.search(r"\b11\b", t) and ("FATHER" in t or "MOTHER" in t or "NAME" in t):
+                        cuts.append(float(b["y"]) - 8.0)
+                    if re.search(r"\bFATHER\b", t) and "CHILD" not in t:
+                        cuts.append(float(b["y"]) - 6.0)
+                return max(ih * 0.08, min(cuts))
+
             def _psa_child_name_y_max(normed: list[dict], image_h: int | None) -> float:
                 """Upper y-limit for field 1 (child name) — excludes father/mother blocks."""
                 ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
-                cuts = [ih * 0.26]
+                cuts = [ih * 0.22, _psa_parent_y_cut(normed, image_h)]
                 for b in normed:
                     t = b["t"]
                     if re.search(r"\b2\b", t) and "SEX" in t:
@@ -2886,13 +2916,7 @@ def _evaluate(
                         cuts.append(float(b["y"]) - 5.0)
                     if "MAIDEN" in t and "NAME" in t:
                         cuts.append(float(b["y"]) - 5.0)
-                    if re.search(r"\b11\b", t) and ("FATHER" in t or "NAME" in t):
-                        cuts.append(float(b["y"]) - 8.0)
-                    if "NAME OF FATHER" in t or "NAME OF MOTHER" in t:
-                        cuts.append(float(b["y"]) - 8.0)
-                    if re.search(r"\b(13|14|15)\b", t) and ("FATHER" in t or "MOTHER" in t):
-                        cuts.append(float(b["y"]) - 8.0)
-                return max(ih * 0.10, min(cuts))
+                return max(ih * 0.08, min(cuts))
 
             def _psa_name_from_parent_section(name: str, normed: list[dict], image_h: int | None) -> bool:
                 """True when the detected name's tokens sit in the lower parent section."""
@@ -2928,6 +2952,95 @@ def _evaluate(
                     if re.search(r"\b6\b", nl) and "MAIDEN" in nl:
                         return i
                 return end
+
+            def _enumerate_psa_child_name_candidates(
+                normed: list[dict],
+                image_h: int | None,
+                image_w: int | None,
+            ) -> list[tuple[str, dict, float]]:
+                """All plausible person-name rows in PSA field-1 zone (above father/mother)."""
+                if not normed:
+                    return []
+                iw = image_w or _infer_image_size_from_boxes(normed)[0] or 1000
+                ih = image_h or _infer_image_size_from_boxes(normed)[1] or 1400
+                y_header = ih * 0.08
+                y_child_max = _psa_child_name_y_max(normed, image_h)
+                x_child_max = iw * 0.62
+                row_band = max(14.0, ih * 0.018)
+
+                zone = [
+                    b
+                    for b in normed
+                    if y_header <= b["y"] <= y_child_max
+                    and b["x"] <= x_child_max
+                    and _box_looks_like_person_name_part(b["t"])
+                    and not _name_line_is_noise(b["t"])
+                ]
+                if not zone:
+                    return []
+
+                rows: dict[int, list[dict]] = {}
+                for b in zone:
+                    ry = int(round(float(b["y"]) / row_band))
+                    rows.setdefault(ry, []).append(b)
+
+                out: list[tuple[str, dict, float]] = []
+                for row_boxes in rows.values():
+                    row_boxes.sort(key=lambda b: b["x"])
+                    parts = [_strip_name_field_labels(b["t"]) for b in row_boxes[:4]]
+                    parts = [p for p in parts if p and _box_looks_like_person_name_part(p)]
+                    if len(parts) < 2:
+                        continue
+                    full = " ".join(parts)
+                    if not _candidate_name_is_plausible(full):
+                        continue
+                    y_center = sum(float(b["y"]) + float(b["h"]) / 2.0 for b in row_boxes[:4]) / min(
+                        4, len(row_boxes)
+                    )
+                    out.append((full[:64], _union_bbox(row_boxes[:4]), y_center))
+                out.sort(key=lambda item: item[2])
+                return out
+
+            def _pick_psa_child_name_for_expected(
+                expected_name: str,
+                normed: list[dict],
+                image_h: int | None,
+                image_w: int | None,
+            ) -> tuple[str, dict | None]:
+                """Prefer the child-zone row that best matches enrollment (not father/mother)."""
+                if not expected_name:
+                    return "", None
+                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
+                if not exp_tokens:
+                    return "", None
+
+                candidates = _enumerate_psa_child_name_candidates(normed, image_h, image_w)
+                structured, struct_bb = _detect_psa_child_name_from_boxes(normed, image_h, image_w)
+                if structured and struct_bb:
+                    y_c = float(struct_bb.get("y", 0)) + float(struct_bb.get("h", 0)) / 2.0
+                    candidates.append((structured, struct_bb, y_c))
+
+                best_name = ""
+                best_bb: dict | None = None
+                best_score = -1.0
+                for name, bb, y_center in candidates:
+                    if _psa_name_from_parent_section(name, normed, image_h):
+                        continue
+                    ok, ratio, missing, hits = _name_tokens_match(expected_name, name)
+                    # Strongly prefer enrollment first+last; upper rows win ties (child is above father).
+                    first_ok = exp_tokens[0] in norm_simple(name)
+                    last_ok = exp_tokens[-1] in norm_simple(name)
+                    score = ratio + (0.35 if first_ok else 0.0) + (0.35 if last_ok else 0.0) - y_center / 100000.0
+                    if not first_ok and last_ok and ratio < 0.67:
+                        score -= 0.5
+                    if score > best_score:
+                        best_score = score
+                        best_name = name
+                        best_bb = bb
+
+                if best_name and best_score >= 0.34:
+                    return best_name, best_bb
+                return "", None
 
             def _detect_psa_child_name_from_boxes(
                 normed: list[dict],
@@ -3362,6 +3475,10 @@ def _evaluate(
                         break
                     if re.search(r"\b11\b", nl) and "FATHER" in nl:
                         break
+                    if re.search(r"\b[4-9]\b", nl) and "FATHER" in nl:
+                        break
+                    if "NAME OF FATHER" in nl or "FATHERS NAME" in nl:
+                        break
                     if _name_line_is_noise(sl):
                         active = None
                         continue
@@ -3765,6 +3882,14 @@ def _evaluate(
                 Ignores father/mother rows and field labels (GENDER, etc.).
                 """
                 iw = _infer_image_size_from_boxes(normed_boxes)[0]
+
+                picked_name, picked_bb = _pick_psa_child_name_for_expected(
+                    expected_name, normed_boxes, image_h, iw
+                )
+                if picked_name:
+                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, picked_name)
+                    return ok, ratio, missing, picked_name, picked_bb
+
                 box_name, box_bb = _detect_psa_child_name_from_boxes(normed_boxes, image_h, iw)
                 if not box_name:
                     box_name, box_bb = _detect_name_from_boxes(
@@ -3778,7 +3903,12 @@ def _evaluate(
                     box_bb = None
                 if box_name and _candidate_name_is_plausible(box_name):
                     ok, ratio, missing, _hits = _name_tokens_match(expected_name, box_name)
-                    return ok, ratio, missing, box_name, box_bb
+                    exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
+                    if exp_tokens and exp_tokens[0] not in norm_simple(box_name):
+                        box_name = ""
+                        box_bb = None
+                    else:
+                        return ok, ratio, missing, box_name, box_bb
 
                 line_name = _extract_psa_child_name_from_lines(u_simple, u_norm, expected_name)
                 if line_name and _psa_name_from_parent_section(line_name, normed_boxes, image_h):
@@ -4749,7 +4879,7 @@ def _evaluate(
     if slot_mismatch_info:
         payload["document_slot_expected"] = slot_mismatch_info["expected"]
         payload["document_slot_detected"] = slot_mismatch_info["detected"]
-    payload["v"] = 18
+    payload["v"] = 19
 
     return payload
 
