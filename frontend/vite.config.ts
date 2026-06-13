@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
@@ -33,25 +33,27 @@ function figmaAssetPlugin(): Plugin {
  *   VITE_API_TARGET=http://127.0.0.1       (XAMPP Apache, default)
  *   VITE_API_TARGET=http://127.0.0.1:8080  (CI4 spark serve)
  */
-const PHP_PUBLIC_BASE = process.env.VITE_API_BASE ?? '/IntelliDocs/public';
-const API_TARGET = process.env.VITE_API_TARGET ?? 'http://127.0.0.1';
-
 /** Production build asset prefix — must match Apache/nginx public URL (see deploy_local.ps1 / deploy_droplet.sh). */
-function resolveViteBase(): string {
-  const explicit = (process.env.VITE_APP_BASE ?? '').trim();
+function resolveViteBase(env: Record<string, string>): string {
+  const explicit = (env.VITE_APP_BASE ?? '').trim();
   if (explicit) {
     return explicit.endsWith('/') ? explicit : `${explicit}/`;
   }
-  const apiBase = (process.env.VITE_API_BASE ?? '').trim();
+  const apiBase = (env.VITE_API_BASE ?? '').trim();
   if (!apiBase) {
     return '/';
   }
   return apiBase.endsWith('/') ? apiBase : `${apiBase}/`;
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, __dirname, '');
+  const phpPublicBase = env.VITE_API_BASE || '/IntelliDocs/public';
+  const apiTarget = env.VITE_API_TARGET || 'http://127.0.0.1';
+
+  return {
   // Dev server stays at / ; production build uses subpath on XAMPP or / on droplet.
-  base: process.env.NODE_ENV === 'production' ? resolveViteBase() : '/',
+  base: mode === 'production' ? resolveViteBase(env) : '/',
   plugins: [tailwindcss(), figmaAssetPlugin(), react()],
   server: {
     host: '127.0.0.1',
@@ -59,13 +61,13 @@ export default defineConfig({
     strictPort: false,
     proxy: {
       '/api': {
-        target: API_TARGET,
+        target: apiTarget,
         changeOrigin: true,
         secure: false,
-        rewrite: (reqPath) => PHP_PUBLIC_BASE + reqPath,
+        rewrite: (reqPath) => phpPublicBase + reqPath,
       },
       '/IntelliDocs/public/uploads': {
-        target: API_TARGET,
+        target: apiTarget,
         changeOrigin: true,
         secure: false,
       },
@@ -76,4 +78,5 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src/app'),
     },
   },
+};
 });
