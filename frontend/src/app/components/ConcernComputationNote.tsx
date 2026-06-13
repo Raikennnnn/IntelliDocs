@@ -6,6 +6,7 @@ type ConcernComputationNoteProps = {
   mismatchPct: number;
   tamperPct: number;
   averagePct: number;
+  photoOnly?: boolean;
   className?: string;
 };
 
@@ -14,8 +15,23 @@ export function DocumentConcernFormula({
   mismatchPct,
   tamperPct,
   averagePct,
+  photoOnly = false,
   className,
 }: ConcernComputationNoteProps) {
+  if (photoOnly) {
+    return (
+      <p
+        className={cn(
+          "font-mono text-[11px] leading-snug text-gray-500 tabular-nums",
+          className,
+        )}
+        title="2×2 photos: AI tamper/authenticity concern. Image quality is checked at upload."
+      >
+        Avg {averagePct}% — AI authenticity {tamperPct}% (quality checked at upload)
+      </p>
+    );
+  }
+
   return (
     <p
       className={cn(

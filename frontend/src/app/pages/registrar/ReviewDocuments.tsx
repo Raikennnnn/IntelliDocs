@@ -573,6 +573,90 @@ type EnrollmentCrossRow = {
   match_ratio?: number;
 };
 
+type CrossCheckVisualStatus = "match" | "partial" | "mismatch" | "missing" | "pending";
+
+function crossCheckVisualStatus(row: EnrollmentCrossRow): CrossCheckVisualStatus {
+  if (row.ok === null) return "pending";
+  if (String(row.field).toLowerCase() === "signature") {
+    return row.ok ? "match" : "missing";
+  }
+  if (row.ok === true) return "match";
+  const detected = String(row.detected || "").trim();
+  if (!detected) return "missing";
+  const ratio = row.match_ratio;
+  if (typeof ratio === "number" && Number.isFinite(ratio) && ratio >= 0.55) return "partial";
+  return "mismatch";
+}
+
+/** 0 = clean; higher = more concern (inverse of text similarity when available). */
+function crossCheckConcernPct(row: EnrollmentCrossRow): number | null {
+  if (row.ok === true) return 0;
+  if (typeof row.match_ratio === "number" && Number.isFinite(row.match_ratio)) {
+    return Math.max(1, 100 - Math.round(row.match_ratio * 100));
+  }
+  return 100;
+}
+
+function crossCheckDotClass(status: CrossCheckVisualStatus): string {
+  switch (status) {
+    case "match":
+      return "bg-emerald-600";
+    case "partial":
+      return "bg-amber-500";
+    case "missing":
+    case "mismatch":
+      return "bg-rose-600";
+    default:
+      return "bg-gray-300";
+  }
+}
+
+function crossCheckTextClass(status: CrossCheckVisualStatus): string {
+  switch (status) {
+    case "match":
+      return "text-emerald-800";
+    case "partial":
+      return "text-amber-800";
+    case "missing":
+    case "mismatch":
+      return "text-rose-800";
+    default:
+      return "text-gray-600";
+  }
+}
+
+function crossCheckStatusLabel(row: EnrollmentCrossRow, status: CrossCheckVisualStatus): string {
+  if (status === "pending") return "pending AI check";
+  if (String(row.field).toLowerCase() === "signature") {
+    return row.ok ? "detected on scan" : "not detected on scan";
+  }
+  if (status === "match") return "match";
+  if (status === "missing") return "not found on document";
+  if (status === "partial") {
+    const concern = crossCheckConcernPct(row);
+    return concern !== null ? `similar — verify (${concern}% concern)` : "similar — verify";
+  }
+  const concern = crossCheckConcernPct(row);
+  return concern !== null && concern < 100
+    ? `mismatch (${concern}% concern)`
+    : "mismatch";
+}
+
+function crossCheckSummaryBit(row: EnrollmentCrossRow): string {
+  const status = crossCheckVisualStatus(row);
+  const field = String(row.field);
+  if (status === "partial") {
+    const concern = crossCheckConcernPct(row);
+    return concern !== null ? `${field} (${concern}% concern)` : `${field} (verify)`;
+  }
+  if (status === "missing") return `${field} (not on document)`;
+  if (status === "mismatch") {
+    const concern = crossCheckConcernPct(row);
+    return concern !== null && concern < 100 ? `${field} (${concern}% concern)` : field;
+  }
+  return field;
+}
+
 /** Enrollment form fields that should be compared to OCR for each requirement type. */
 function enrollmentCrossCheckPlan(docType: AiDocType, app: any): EnrollmentCrossRow[] {
   const f = resolveApplicationVerifyFields(app);
@@ -629,18 +713,33 @@ function applyEnrollmentCrossChecks(
 
 function summarizeEnrollmentCrossRows(rows: EnrollmentCrossRow[]) {
   const judged = rows.filter((r) => r.ok !== null);
-  const okCount = judged.filter((r) => r.ok === true).length;
-  const badCount = judged.filter((r) => r.ok === false).length;
+  const withStatus = judged.map((row) => ({
+    row,
+    status: crossCheckVisualStatus(row),
+  }));
+  const okCount = withStatus.filter((s) => s.status === "match").length;
+  const partialCount = withStatus.filter((s) => s.status === "partial").length;
+  const badCount = withStatus.filter(
+    (s) => s.status === "mismatch" || s.status === "missing",
+  ).length;
   const pendingCount = rows.filter((r) => r.ok === null).length;
-  const badBits = judged
-    .filter((r) => r.ok === false)
-    .map((r) =>
-      typeof r.match_ratio === "number" && Number.isFinite(r.match_ratio)
-        ? `${r.field} (${Math.round(r.match_ratio * 100)}%)`
-        : r.field,
-    );
-  const okNames = judged.filter((r) => r.ok === true).map((r) => r.field);
-  return { okCount, badCount, pendingCount, total: rows.length, badBits, okNames };
+  const badBits = withStatus
+    .filter((s) => s.status === "mismatch" || s.status === "missing")
+    .map((s) => crossCheckSummaryBit(s.row));
+  const partialBits = withStatus
+    .filter((s) => s.status === "partial")
+    .map((s) => crossCheckSummaryBit(s.row));
+  const okNames = withStatus.filter((s) => s.status === "match").map((s) => s.row.field);
+  return {
+    okCount,
+    partialCount,
+    badCount,
+    pendingCount,
+    total: rows.length,
+    badBits,
+    partialBits,
+    okNames,
+  };
 }
 
 function isAiVerifyPayloadStale(docType: AiDocType, app: any, r?: AiVerifyResponse | null): boolean {
@@ -763,6 +862,13 @@ function checkDetailVisibility(docType: AiDocType): CheckDetailVisibility {
   }
 }
 
+function photoChecksInSecurityPanel(
+  docType: AiDocType,
+  r: AiVerifyResponse | null | undefined,
+): boolean {
+  return docType === "photo_2x2" && Boolean(r?.security_levels?.photo_only_checks);
+}
+
 function checkDetailsIntro(docType: AiDocType): string {
   switch (docType) {
     case "photo_2x2":
@@ -848,17 +954,14 @@ function documentAiSummaryLine(opts: {
 }
 
 function summarizeFieldChecks(fieldChecks: NonNullable<AiVerifyResponse["field_checks"]>) {
-  const bad = fieldChecks.filter((c) => !c.ok);
-  const okCount = fieldChecks.length - bad.length;
-  const badBits = bad.map((c) => {
-    const n = String(c.field);
-    if (typeof c.match_ratio === "number" && Number.isFinite(c.match_ratio)) {
-      return `${n} (${Math.round(c.match_ratio * 100)}%)`;
-    }
-    return n;
-  });
-  const okNames = fieldChecks.filter((c) => c.ok).map((c) => String(c.field));
-  return { okCount, badCount: bad.length, total: fieldChecks.length, badBits, okNames };
+  const rows: EnrollmentCrossRow[] = fieldChecks.map((c) => ({
+    field: String(c.field || ""),
+    expected: String(c.expected || ""),
+    detected: c.detected ? String(c.detected) : "",
+    ok: Boolean(c.ok),
+    match_ratio: typeof c.match_ratio === "number" ? c.match_ratio : undefined,
+  }));
+  return summarizeEnrollmentCrossRows(rows);
 }
 
 export function ReviewDocuments() {
@@ -2211,11 +2314,19 @@ export function ReviewDocuments() {
                             tamperPct={concernParts?.tamperConcern ?? null}
                           />
                         ) : null}
+                        {aiPct !== null && isPhoto && concernParts ? (
+                          <DocumentConcernChips
+                            concernPct={aiPct}
+                            tamperPct={concernParts.tamperConcern}
+                            photoOnly
+                          />
+                        ) : null}
                         {aiPct !== null && concernParts ? (
                           <DocumentConcernFormula
                             mismatchPct={concernParts.mismatchConcern}
                             tamperPct={concernParts.tamperConcern}
                             averagePct={concernParts.documentAverage}
+                            photoOnly={isPhoto}
                           />
                         ) : null}
                         {ai?.security_levels ? (
@@ -2761,12 +2872,16 @@ export function ReviewDocuments() {
                           concernPct={avg}
                           mismatchPct={parts?.mismatchConcern ?? null}
                           tamperPct={parts?.tamperConcern ?? null}
+                          photoOnly={docType === "photo_2x2"}
                         />
                       );
                     })()}
                     {(() => {
                       const id = String(selectedDocument.id ?? "");
-                      const r = aiResultsByDocId[id];
+                      const raw = aiResultsByDocId[id];
+                      const docType = resolveEffectiveDocType(selectedDocument, raw);
+                      if (docType === "photo_2x2") return null;
+                      const r = raw;
                       if (!r || typeof r.ocr_confidence !== "number") return null;
                       const pct = Math.round(r.ocr_confidence * 100);
                       return (
@@ -2852,15 +2967,33 @@ export function ReviewDocuments() {
                     const docType = resolveEffectiveDocType(selectedDocument, raw);
                     const r = aiResultForDisplay(docType, raw);
                     if (r?.security_levels) {
+                      const photoPanel = photoChecksInSecurityPanel(docType, r);
+                      const tamperSignals = Array.isArray(r.tamper_signals) ? r.tamper_signals : [];
+                      const syntheticSignals = Array.isArray(r.synthetic_signals) ? r.synthetic_signals : [];
                       return (
                         <div className="min-w-0 rounded-lg border border-gray-200 bg-white p-4">
                           <h4 className="mb-1 text-sm font-semibold text-gray-900">AI checks</h4>
                           <p className="mb-3 text-xs text-gray-500">
                             {docType === "photo_2x2"
-                              ? "Image quality and AI authenticity for this 2×2 photo."
+                              ? "Portrait authenticity check. Image quality was verified when the student uploaded this file."
                               : "Mismatch compares enrollment data to the scan. Tamper looks for edit signals."}
                           </p>
                           <SecurityLevelsPanel security={r.security_levels} />
+                          {photoPanel && (tamperSignals.length > 0 || syntheticSignals.length > 0) ? (
+                            <details className="mt-3 text-xs text-gray-600">
+                              <summary className="cursor-pointer font-medium text-gray-600 hover:text-gray-900">
+                                View AI signal details
+                              </summary>
+                              <ul className="mt-2 space-y-1 border-l border-gray-200 pl-3">
+                                {tamperSignals.slice(0, 5).map((s, idx) => (
+                                  <li key={`t-${idx}`}>{s}</li>
+                                ))}
+                                {syntheticSignals.slice(0, 5).map((s, idx) => (
+                                  <li key={`s-${idx}`}>{s}</li>
+                                ))}
+                              </ul>
+                            </details>
+                          ) : null}
                         </div>
                       );
                     }
@@ -2893,10 +3026,12 @@ export function ReviewDocuments() {
                     const sealScan = r?.seal_scan;
                     const tamperPct = tamperPercentForDoc(r, docType);
                     const tamperSummary = summarizeTamper(r, docType);
-                    const showTamper = visibility.tamper && tamperPct !== null && tamperSummary;
+                    const checksInPanel = photoChecksInSecurityPanel(docType, r);
+                    const showTamper =
+                      visibility.tamper && tamperPct !== null && tamperSummary && !checksInPanel;
                     const syntheticPct = syntheticPercentForDoc(r, docType);
                     const showSynthetic =
-                      visibility.synthetic && Boolean(r && syntheticPct !== null);
+                      visibility.synthetic && Boolean(r && syntheticPct !== null) && !checksInPanel;
                     const docTitle = docCheckShortTitle(docType);
                     const docSummary =
                       visibility.labels && labelDocChecks.length
@@ -3236,41 +3371,55 @@ export function ReviewDocuments() {
                               className="mt-2 flex flex-wrap items-center gap-2"
                               aria-label="Enrollment cross-check results"
                             >
-                              {crossRows.map((c, idx) => (
+                              {crossRows.map((c, idx) => {
+                                const status = crossCheckVisualStatus(c);
+                                return (
                                 <span
                                   key={idx}
                                   title={
-                                    c.ok === null
+                                    status === "pending"
                                       ? `${c.field}: awaiting AI check`
-                                      : `${c.field}: ${c.ok ? "match" : "mismatch"}`
+                                      : `${c.field}: ${crossCheckStatusLabel(c, status)}`
                                   }
-                                  className={`inline-block h-4 w-4 shrink-0 rounded-full ${
-                                    c.ok === null
-                                      ? "bg-gray-300"
-                                      : c.ok
-                                        ? "bg-emerald-600"
-                                        : "bg-rose-600"
-                                  }`}
+                                  className={`inline-block h-4 w-4 shrink-0 rounded-full ${crossCheckDotClass(status)}`}
                                 />
-                              ))}
+                              );
+                              })}
               </div>
                             <p className="mt-2 leading-snug text-gray-800">
                               <span className="font-medium">{cross.okCount}</span> matched
-                              <span className="text-gray-400"> · </span>
-                              <span className="font-medium text-rose-800">{cross.badCount}</span>{" "}
-                              {String(selectedDocument?.registrarDocDecision || "").toLowerCase() === "rejected"
-                                ? "need resubmission"
-                                : "need review"}
+                              {cross.partialCount > 0 ? (
+                                <>
+                                  <span className="text-gray-400"> · </span>
+                                  <span className="font-medium text-amber-800">{cross.partialCount}</span>{" "}
+                                  similar — verify
+                                </>
+                              ) : null}
+                              {cross.badCount > 0 ? (
+                                <>
+                                  <span className="text-gray-400"> · </span>
+                                  <span className="font-medium text-rose-800">{cross.badCount}</span>{" "}
+                                  {String(selectedDocument?.registrarDocDecision || "").toLowerCase() === "rejected"
+                                    ? "need resubmission"
+                                    : "mismatch"}
+                                </>
+                              ) : null}
                               {cross.pendingCount > 0 ? (
                                 <>
                                   <span className="text-gray-400"> · </span>
                                   <span className="font-medium text-gray-600">{cross.pendingCount}</span> pending AI
                                 </>
                               ) : null}
-                              {cross.badBits.length > 0 ? (
+                              {cross.partialBits.length > 0 ? (
                                 <>
                                   <span className="text-gray-400">: </span>
-                                  {cross.badBits.join(" · ")}
+                                  <span className="text-amber-900">{cross.partialBits.join(" · ")}</span>
+                                </>
+                              ) : null}
+                              {cross.badBits.length > 0 ? (
+                                <>
+                                  <span className="text-gray-400">{cross.partialBits.length > 0 ? " · " : ": "}</span>
+                                  <span className="text-rose-900">{cross.badBits.join(" · ")}</span>
                                 </>
                               ) : null}
                             </p>
@@ -3284,52 +3433,30 @@ export function ReviewDocuments() {
                                 Every enrollment field ({crossRows.length})
                               </summary>
                               <ul className="mt-2 space-y-1.5 border-l border-gray-200 pl-3">
-                                {crossRows.map((c, idx) => (
+                                {crossRows.map((c, idx) => {
+                                  const status = crossCheckVisualStatus(c);
+                                  return (
                                   <li key={idx} className="flex items-start gap-2 leading-snug">
                                     <span
-                                      className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${
-                                        c.ok === null
-                                          ? "bg-gray-300"
-                                          : c.ok
-                                            ? "bg-emerald-600"
-                                            : "bg-rose-600"
-                                      }`}
+                                      className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${crossCheckDotClass(status)}`}
                                       aria-hidden
                                     />
                                       <span className="min-w-0 text-gray-800">
                                       <span className="font-medium">{String(c.field)}</span>
-                                      <span
-                                        className={
-                                          c.ok === null
-                                            ? " text-gray-600"
-                                            : c.ok
-                                              ? " text-emerald-800"
-                                              : " text-rose-800"
-                                        }
-                                      >
+                                      <span className={crossCheckTextClass(status)}>
                                         {" "}
-                                        {c.ok === null
-                                          ? "pending AI check"
-                                          : String(c.field).toLowerCase() === "signature"
-                                            ? c.ok
-                                              ? "detected on scan"
-                                              : "not detected on scan"
-                                            : c.ok
-                                              ? "match"
-                                              : "mismatch"}
-                                        {typeof c.match_ratio === "number" && Number.isFinite(c.match_ratio)
-                                          ? ` (${Math.round(c.match_ratio * 100)}%)`
-                                          : ""}
+                                        {crossCheckStatusLabel(c, status)}
                                       </span>
                                       <span className="block text-gray-600">
                                         Form: {String(c.expected).trim()}
                                         {String(c.detected || "").trim()
                                           ? ` · Document: ${formatCrossCheckDetected(String(c.field), String(c.detected))}`
-                                          : ""}
+                                          : " · Document: not read from scan"}
                                       </span>
                                     </span>
                                   </li>
-                                ))}
+                                );
+                                })}
                               </ul>
                             </details>
                           </section>
