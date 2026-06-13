@@ -2959,8 +2959,8 @@ export function ReviewDocuments() {
                 </div>
               </div>
 
-              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden lg:grid-cols-2 lg:grid-rows-1 lg:gap-5 lg:items-stretch">
-                <div className="min-h-0 space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain pr-0.5">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden lg:grid-cols-2 lg:grid-rows-1 lg:items-stretch lg:gap-5">
+                <div className="min-h-0 h-full space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain pr-0.5">
                   {(() => {
                     const id = String(selectedDocument.id ?? "");
                     const raw = aiResultsByDocId[id];
@@ -3509,7 +3509,7 @@ export function ReviewDocuments() {
                 </div>
 
               {/* Document Preview — fetched with apiFetch so X-User-Id is sent (img src alone cannot) */}
-              <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-gray-50 p-3 sm:p-4">
+              <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border bg-gray-50 p-3 sm:p-4">
                 <div className="mb-3 flex shrink-0 items-center justify-between">
                   <h4 className="text-base font-semibold text-gray-900">Uploaded Document</h4>
                   <Button
@@ -3662,7 +3662,7 @@ export function ReviewDocuments() {
                 })()}
                 </div>
                 <p className="mt-2 shrink-0 text-xs text-gray-500">
-                  Preview loads securely for registrar accounts. Use Download to save a copy.
+                  Click anywhere on the preview to enlarge. Use Download to save a copy.
                 </p>
               </div>
               </div>
