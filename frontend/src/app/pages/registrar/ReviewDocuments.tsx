@@ -870,6 +870,19 @@ function photoChecksInSecurityPanel(
   return docType === "photo_2x2" && Boolean(r?.security_levels?.photo_only_checks);
 }
 
+/** Tamper / MM already shown in SecurityLevelsPanel — skip duplicate detail tiles. */
+function integrityChecksInSecurityPanel(
+  docType: AiDocType,
+  r: AiVerifyResponse | null | undefined,
+): boolean {
+  if (photoChecksInSecurityPanel(docType, r)) return true;
+  const levels = r?.security_levels?.levels;
+  if (!levels?.length) return false;
+  return levels.some((lv) =>
+    /mismatch|enrollment|tamper|integrity|authenticity|synthetic/i.test(lv.title),
+  );
+}
+
 function checkDetailsIntro(docType: AiDocType): string {
   switch (docType) {
     case "photo_2x2":
@@ -3107,9 +3120,9 @@ export function ReviewDocuments() {
                     const docType = resolveEffectiveDocType(selectedDocument, raw);
                     const r = aiResultForDisplay(docType, raw);
                     const visibility = checkDetailVisibility(docType);
-                    const checksInPanel = photoChecksInSecurityPanel(docType, r);
+                    const checksInPanel = integrityChecksInSecurityPanel(docType, r);
 
-                    // 2×2 photos: AI checks panel is enough — skip duplicate detail tiles on all builds.
+                    // Photos: AI checks panel is enough — skip duplicate detail tiles.
                     if (checksInPanel && docType === "photo_2x2") {
                       return null;
                     }
@@ -3190,7 +3203,7 @@ export function ReviewDocuments() {
                         : "border-slate-200 bg-white text-slate-800";
 
                     const tileClass =
-                      "flex min-h-0 flex-col rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-800 shadow-sm sm:text-sm";
+                      "relative isolate flex min-h-0 flex-col rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-800 shadow-sm sm:text-sm";
 
                     return (
                       <div className="space-y-2 text-sm text-gray-800">

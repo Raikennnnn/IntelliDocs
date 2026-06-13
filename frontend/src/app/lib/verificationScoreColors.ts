@@ -43,11 +43,11 @@ export function verificationScoreBadgeClasses(pct: number): string {
 export function verificationScoreSurfaceClasses(pct: number): string {
   switch (verificationScoreTier(pct)) {
     case "high":
-      return "border-emerald-200 bg-emerald-50/80 text-emerald-950";
+      return "border-emerald-200 bg-emerald-50 text-emerald-950";
     case "mid":
-      return "border-amber-200 bg-amber-50/80 text-amber-950";
+      return "border-amber-200 bg-amber-50 text-amber-950";
     default:
-      return "border-red-200 bg-red-50/80 text-red-950";
+      return "border-red-200 bg-red-50 text-red-950";
   }
 }
 
@@ -93,11 +93,11 @@ export function concernScoreBadgeClasses(pct: number): string {
 export function concernScoreSurfaceClasses(pct: number): string {
   switch (concernScoreTier(pct)) {
     case "high":
-      return "border-emerald-200 bg-emerald-50/80 text-emerald-950";
+      return "border-emerald-200 bg-emerald-50 text-emerald-950";
     case "mid":
-      return "border-amber-200 bg-amber-50/80 text-amber-950";
+      return "border-amber-200 bg-amber-50 text-amber-950";
     default:
-      return "border-red-200 bg-red-50/80 text-red-950";
+      return "border-red-200 bg-red-50 text-red-950";
   }
 }
 

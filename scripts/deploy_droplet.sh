@@ -161,6 +161,7 @@ fi
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
+AI_WORKERS="${AI_WORKERS:-2}"
 write_ai_systemd_unit() {
   cat > /etc/systemd/system/intellidocs-ai.service <<UNIT
 [Unit]
@@ -174,7 +175,7 @@ WorkingDirectory=${APP_ROOT}/ai
 Environment=PORT=8080
 Environment=AI_OCR_ENGINE=tesseract
 Environment=DISABLE_EASYOCR=1
-ExecStart=${APP_ROOT}/ai/.venv/bin/gunicorn --bind 127.0.0.1:8080 --workers 1 --worker-class gthread --threads 4 --timeout 300 --graceful-timeout 60 app:app
+ExecStart=${APP_ROOT}/ai/.venv/bin/gunicorn --bind 127.0.0.1:8080 --workers ${AI_WORKERS} --worker-class gthread --threads 2 --timeout 300 --graceful-timeout 60 app:app
 Restart=always
 RestartSec=5
 
