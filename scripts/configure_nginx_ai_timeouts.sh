@@ -4,54 +4,63 @@
 #   bash /var/www/intellidocs/scripts/configure_nginx_ai_timeouts.sh
 set -euo pipefail
 
-TIMEOUT="${AI_FASTCGI_TIMEOUT:-300}"
+TIMEOUT="${AI_FASTCGI_TIMEOUT:-600}"
 APP_ROOT="${APP_ROOT:-/var/www/intellidocs}"
 
-set_or_replace() {
+patch_file() {
   local file="$1"
-  local key="$2"
-  local value="$3"
-  if grep -qE "^[[:space:]]*${key}[[:space:]]" "$file"; then
-    sed -i "s/^[[:space:]]*${key}[[:space:]].*/        ${key} ${value};/" "$file"
+  [ -f "$file" ] || return 0
+  local changed=0
+  for key in fastcgi_read_timeout fastcgi_send_timeout; do
+    if grep -qE "[[:space:]]${key}[[:space:]]" "$file"; then
+      sed -i "s/^[[:space:]]*${key}[[:space:]].*/        ${key} ${TIMEOUT};/" "$file"
+      changed=1
+    elif grep -q "fastcgi_pass" "$file"; then
+      sed -i "/fastcgi_pass/a\\        ${key} ${TIMEOUT};" "$file"
+      changed=1
+    fi
+  done
+  if grep -qE "[[:space:]]fastcgi_connect_timeout[[:space:]]" "$file"; then
+    sed -i "s/^[[:space:]]*fastcgi_connect_timeout[[:space:]].*/        fastcgi_connect_timeout 60;/" "$file"
   elif grep -q "fastcgi_pass" "$file"; then
-    sed -i "/fastcgi_pass/a\\        ${key} ${value};" "$file"
+    sed -i "/fastcgi_pass/a\\        fastcgi_connect_timeout 60;" "$file"
+    changed=1
+  fi
+  if [ "$changed" = "1" ]; then
+    echo "  Patched: $file"
+    PATCHED=1
   fi
 }
 
 echo "=== Configure nginx fastcgi timeouts (${TIMEOUT}s) ==="
-CANDIDATES=(
-  /etc/nginx/sites-enabled/*
-  /etc/nginx/sites-available/*
-  /etc/nginx/conf.d/*.conf
-)
 PATCHED=0
-for f in "${CANDIDATES[@]}"; do
+
+# Drop-in snippet (included by many Debian/Ubuntu nginx setups).
+SNIP_DIR="/etc/nginx/snippets"
+SNIP_FILE="${SNIP_DIR}/intellidocs-php-timeouts.conf"
+mkdir -p "$SNIP_DIR"
+cat > "$SNIP_FILE" <<EOF
+# IntelliDocs — long AI OCR verify (auto-generated)
+fastcgi_read_timeout ${TIMEOUT};
+fastcgi_send_timeout ${TIMEOUT};
+fastcgi_connect_timeout 60;
+EOF
+echo "  Wrote snippet: $SNIP_FILE"
+PATCHED=1
+
+for f in /etc/nginx/sites-enabled/* /etc/nginx/sites-available/* /etc/nginx/conf.d/*.conf; do
   [ -f "$f" ] || continue
-  if ! grep -qE 'intellidocs|/var/www/intellidocs|fastcgi_pass' "$f" 2>/dev/null; then
-    continue
+  grep -q "fastcgi_pass" "$f" || continue
+  patch_file "$f"
+  if ! grep -q "intellidocs-php-timeouts.conf" "$f" 2>/dev/null; then
+    if grep -q "location.*php" "$f"; then
+      sed -i "/location.*php/i\\    include snippets/intellidocs-php-timeouts.conf;" "$f" 2>/dev/null || true
+    fi
   fi
-  if ! grep -q 'fastcgi_pass' "$f"; then
-    continue
-  fi
-  set_or_replace "$f" "fastcgi_read_timeout" "${TIMEOUT}"
-  set_or_replace "$f" "fastcgi_send_timeout" "${TIMEOUT}"
-  set_or_replace "$f" "fastcgi_connect_timeout" "60"
-  # Long AI verify responses can be large JSON payloads.
-  if grep -qE 'client_max_body_size' "$f"; then
-    sed -i "s/^[[:space:]]*client_max_body_size[[:space:]].*/    client_max_body_size 32M;/" "$f"
-  else
-    sed -i "/server_name/a\\    client_max_body_size 32M;" "$f" 2>/dev/null || true
-  fi
-  echo "  Patched: $f"
-  PATCHED=1
 done
 
 if [ "$PATCHED" = "0" ]; then
-  echo "WARNING: Could not auto-patch nginx site config."
-  echo "  Add inside your PHP location block:"
-  echo "    fastcgi_read_timeout ${TIMEOUT};"
-  echo "    fastcgi_send_timeout ${TIMEOUT};"
-  echo "    fastcgi_connect_timeout 60;"
+  echo "WARNING: No nginx PHP config found to patch."
 else
   nginx -t
   systemctl reload nginx
@@ -59,22 +68,17 @@ else
 fi
 
 echo "=== Configure PHP-FPM request timeout (${TIMEOUT}s) ==="
-POOL="$(ls /etc/php/*/fpm/pool.d/www.conf 2>/dev/null | head -1 || true)"
-if [ -n "$POOL" ]; then
+for POOL in /etc/php/*/fpm/pool.d/www.conf; do
+  [ -f "$POOL" ] || continue
   if grep -q '^request_terminate_timeout' "$POOL"; then
     sed -i "s/^request_terminate_timeout.*/request_terminate_timeout = ${TIMEOUT}/" "$POOL"
   else
     echo "request_terminate_timeout = ${TIMEOUT}" >> "$POOL"
   fi
-  if systemctl is-active --quiet php8.3-fpm; then
-    systemctl reload php8.3-fpm
-  elif systemctl is-active --quiet php-fpm; then
-    systemctl reload php-fpm
-  fi
-  echo "OK: PHP-FPM pool updated ($POOL)."
-else
-  echo "WARNING: PHP-FPM pool not found — set request_terminate_timeout = ${TIMEOUT} manually."
-fi
+  echo "  Pool: $POOL"
+  ver="$(basename "$(dirname "$(dirname "$POOL")")")"
+  systemctl reload "${ver}-fpm" 2>/dev/null || true
+done
 
 echo "=== Configure PHP max_execution_time (${TIMEOUT}s) ==="
 for INI in /etc/php/*/fpm/php.ini; do
@@ -85,10 +89,18 @@ for INI in /etc/php/*/fpm/php.ini; do
     echo "max_execution_time = ${TIMEOUT}" >> "$INI"
   fi
   echo "  Updated: $INI"
-  PHP_FPM="$(echo "$INI" | sed 's|/php.ini||')"
-  if systemctl is-active --quiet "$(basename "$(dirname "$PHP_FPM")")-fpm" 2>/dev/null; then
-    systemctl reload "$(basename "$(dirname "$PHP_FPM")")-fpm" || true
-  fi
 done
 
-echo "Done. AI verify can take up to ${TIMEOUT}s per document on a small server."
+# Apache + mod_php fallback (some XAMPP-style droplet images).
+for APACHE in /etc/apache2/sites-enabled/* /etc/httpd/conf.d/*.conf; do
+  [ -f "$APACHE" ] || continue
+  grep -qi "intellidocs\|/var/www" "$APACHE" || continue
+  if grep -q "Timeout" "$APACHE"; then
+    sed -i "s/^[[:space:]]*Timeout.*/Timeout ${TIMEOUT}/" "$APACHE" 2>/dev/null || true
+  fi
+  echo "  Apache: $APACHE (check Timeout manually if using Apache)"
+done
+
+echo ""
+echo "Done. Current nginx fastcgi_read_timeout values:"
+grep -rh "fastcgi_read_timeout" /etc/nginx/ 2>/dev/null | head -5 || true

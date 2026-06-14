@@ -210,11 +210,11 @@ if ($expectedStrand !== '' && !$skipGradeStrandForMoral) {
     $postFields['expected_strand'] = $expectedStrand;
 }
 
-// OCR + seal/signature scans can exceed 60s on a small droplet — align with nginx/PHP (300s).
-@set_time_limit(320);
-@ini_set('max_execution_time', '320');
+// OCR + seal/signature scans can exceed 60s on a small droplet — align with nginx/PHP (600s).
+@set_time_limit(620);
+@ini_set('max_execution_time', '620');
 
-$aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 290);
+$aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 580);
 
 if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
     $decoded = is_array($aiRes['body']) ? $aiRes['body'] : null;

@@ -16,17 +16,18 @@ git checkout -B "$BRANCH" "origin/$BRANCH"
 git reset --hard "origin/$BRANCH"
 echo "At: $(git log -1 --oneline)"
 
+step "Diagnose current 502 cause"
+bash "$APP_ROOT/scripts/diagnose_ai_502.sh" || true
+
 step "Deploy AI service"
 bash "$APP_ROOT/scripts/deploy_ai_hotfix.sh"
 
-step "Deploy registrar UI (stops auto re-OCR on every page open)"
+step "Deploy registrar UI (Run AI per document — one file at a time)"
 bash "$APP_ROOT/scripts/deploy_ui_hotfix.sh"
 
 step "Summary"
-echo "502 causes addressed:"
-echo "  1. nginx/PHP timeouts raised to 300s"
-echo "  2. Good moral / SF9 skip slow multi-pass OCR when first read is OK"
-echo "  3. Review page no longer re-runs AI on all 5 docs every time you open it"
-echo ""
-echo "Use Re-run AI on one application when you need fresh scores."
-echo "Form 137 (SF10) alone may still take 1–3 min — run Re-run AI once, not on every visit."
+echo "502 fix checklist:"
+echo "  1. nginx fastcgi_read_timeout should be 600 (see diagnose output above)"
+echo "  2. In registrar portal: click Run AI on ONE file at a time"
+echo "  3. Order: 2x2 photo → good moral → SF9 → PSA → Form 137 last (slowest)"
+echo "  4. Wait for each to finish before starting the next"

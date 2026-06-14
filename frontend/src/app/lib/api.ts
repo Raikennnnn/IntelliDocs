@@ -170,7 +170,7 @@ export async function parseApiJson<T>(
         ok: false,
         status,
         error:
-          `AI verify timed out (HTTP ${status}). On the server run: bash scripts/configure_nginx_ai_timeouts.sh then systemctl restart intellidocs-ai`,
+          `AI verify timed out (HTTP ${status}). On the droplet run: bash scripts/diagnose_ai_502.sh then bash scripts/configure_nginx_ai_timeouts.sh. Use Run AI on one file at a time.`,
       };
     }
     return {

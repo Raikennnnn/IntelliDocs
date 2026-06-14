@@ -35,7 +35,7 @@ import {
   Loader2,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRef } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
@@ -886,8 +886,7 @@ export function ReviewDocuments() {
   const [aiDocStateById, setAiDocStateById] = useState<
     Record<string, { state: "pending" | "running" | "done" | "error"; error?: string }>
   >({});
-  // Bumped by the "Run AI" button to trigger verification (saved results load from DB on open).
-  const [aiRerunNonce, setAiRerunNonce] = useState(0);
+  const [aiRunningDocId, setAiRunningDocId] = useState<string | null>(null);
   // Tracks an in-flight approve/reject so we can disable the buttons against double-submits.
   const [decisionSubmitting, setDecisionSubmitting] = useState<null | "approve" | "reject">(null);
   // Open confirmation dialog for the approve / reject decision. The big
@@ -970,6 +969,70 @@ export function ReviewDocuments() {
     }
     return q("expected_name", name) + identity;
   };
+
+  /** Verify one document at a time — avoids 502 when the droplet runs all files at once. */
+  const runAiVerifyForDocument = useCallback(
+    async (doc: any) => {
+      if (!application || !doc?.id) return;
+      if (guessDocKind(doc?.mimeType, doc?.fileName || doc?.name) !== "image") return;
+      if (aiRunningDocId) {
+        toast.message("AI is already running on another file — wait for it to finish.");
+        return;
+      }
+
+      const id = String(doc.id);
+      const docType = mapDocType(doc);
+      setAiRunningDocId(id);
+      setAiRunning(true);
+      setAiServiceError(null);
+      setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
+
+      try {
+        const aiRes = await apiFetch(
+          `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
+            `&doc_type=${encodeURIComponent(docType)}` +
+            buildExpectedVerifyQuery(docType, application),
+        );
+        const parsed = await parseApiJson<
+          | { success: true; result: AiVerifyResponse }
+          | { success: false; error?: string; detail?: unknown }
+        >(aiRes);
+        if (!parsed.ok) {
+          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: parsed.error } }));
+          toast.error(parsed.error);
+          return;
+        }
+        const body = parsed.data;
+        if (!aiRes.ok || !body || (body as { success?: boolean }).success !== true) {
+          const msg = (body as { error?: string })?.error || `AI verify failed (${parsed.status})`;
+          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
+          toast.error(msg);
+          return;
+        }
+        const data = (body as { result?: AiVerifyResponse }).result as AiVerifyResponse;
+        if (!data || typeof (data as { confidence?: number }).confidence !== "number") {
+          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: "AI returned an invalid response" } }));
+          toast.error("AI returned an invalid response");
+          return;
+        }
+        const effectiveDocType = resolveEffectiveDocType(doc, data);
+        setAiResultsByDocId((prev) => ({
+          ...prev,
+          [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
+        }));
+        setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
+        toast.success(`${doc.requirementLabel || "Document"} scored and saved.`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Unexpected error running AI";
+        setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
+        toast.error(msg);
+      } finally {
+        setAiRunningDocId(null);
+        setAiRunning(false);
+      }
+    },
+    [application, aiRunningDocId, buildExpectedVerifyQuery, mapDocType, resolveEffectiveDocType],
+  );
 
   const documentConcernPercent = (r: AiVerifyResponse | undefined): number | null =>
     documentAverageConcernFromAi(r);
@@ -1616,95 +1679,6 @@ export function ReviewDocuments() {
     };
   }, [isDocumentDialogOpen, previewObjectUrl, previewDisplayKind]);
 
-  // AI verify runs ONLY when the registrar clicks Run AI (aiRerunNonce > 0).
-  // Saved scores load from the database on page open — no automatic OCR on every visit.
-  useEffect(() => {
-    if (aiRerunNonce === 0) return;
-
-    let cancelled = false;
-    const run = async () => {
-      if (!application?.documents || !Array.isArray(application.documents) || application.documents.length === 0) return;
-      const docs = application.documents as any[];
-      const toVerify = docs.filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image");
-      if (toVerify.length === 0) return;
-
-      setAiRunning(true);
-      try {
-        setAiServiceError(null);
-
-        for (const doc of toVerify) {
-          if (cancelled) return;
-          const id = String(doc.id);
-          const docType = mapDocType(doc);
-
-          try {
-            if (!cancelled) {
-              setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
-            }
-            const aiRes = await apiFetch(
-              `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
-                `&doc_type=${encodeURIComponent(docType)}` +
-                buildExpectedVerifyQuery(docType, application),
-            );
-            const parsed = await parseApiJson<
-              | { success: true; result: AiVerifyResponse }
-              | { success: false; error?: string; detail?: unknown }
-            >(aiRes);
-            if (!parsed.ok) {
-              if (!cancelled) {
-                setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: parsed.error } }));
-              }
-              continue;
-            }
-            const body = parsed.data;
-            if (!aiRes.ok || !body || (body as { success?: boolean }).success !== true) {
-              const msg =
-                (body as { error?: string })?.error ||
-                `AI verify failed (${parsed.status})`;
-              if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
-              continue;
-            }
-            const data = (body as { result?: AiVerifyResponse }).result as AiVerifyResponse;
-            if (!data || typeof (data as any).confidence !== "number") {
-              if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: "AI returned an invalid response" } }));
-              continue;
-            }
-            const effectiveDocType = resolveEffectiveDocType(doc, data);
-            if (!cancelled) {
-              setAiResultsByDocId((prev) => ({
-                ...prev,
-                [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
-              }));
-              setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
-            }
-          } catch (e) {
-            let msg = "Unexpected error running AI";
-            if (e && typeof e === "object") {
-              const anyE = e as { message?: string; toString?: () => string };
-              if (typeof anyE?.message === "string" && anyE.message.trim()) {
-                msg = anyE.message.trim();
-              } else if (typeof anyE?.toString === "function") {
-                const s = String(anyE.toString());
-                if (s.trim()) msg = s.trim();
-              }
-            }
-            if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
-            continue;
-          }
-        }
-      } finally {
-        if (!cancelled) setAiRunning(false);
-      }
-    };
-    run();
-    return () => {
-      cancelled = true;
-    };
-    // Intentionally depend on applicationId + application.documents snapshot only.
-    // aiRerunNonce is bumped by the "Re-run AI" button to force a re-run.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applicationId, application?.documents, aiRerunNonce]);
-
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-gray-600 py-12">
@@ -2114,26 +2088,12 @@ export function ReviewDocuments() {
                     </span>
                   ) : (
                     <span>
-                      AI runs only when you click <strong className="font-medium text-gray-800">Run AI</strong>{" "}
-                      — results are saved on the server. Use it again only to double-check after updates.
+                      Click <strong className="font-medium text-gray-800">Run AI</strong> on{" "}
+                      <strong className="font-medium text-gray-800">one file at a time</strong> (start with
+                      2×2 photo or good moral — save Form 137 / SF10 for last). Scores are saved automatically.
                     </span>
                   )}
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={() => {
-                    // Keep saved scores visible while re-running; each file updates when its verify finishes.
-                    setAiDocStateById({});
-                    setAiServiceError(null);
-                    setAiRerunNonce((n) => n + 1);
-                  }}
-                  disabled={aiRunning}
-                >
-                  {aiRunning ? "Running AI…" : "Run AI"}
-                </Button>
                         </div>
               <ConcernScoringHelp />
               {(application.documents ?? []).map((doc: any, index: number) => (
@@ -2263,6 +2223,23 @@ export function ReviewDocuments() {
                         </span>
                       ) : null}
                       <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+                        {guessDocKind(doc?.mimeType, doc?.fileName || doc?.name) === "image" ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="flex-1 sm:flex-none"
+                            disabled={Boolean(aiRunningDocId)}
+                            onClick={() => runAiVerifyForDocument(doc)}
+                          >
+                            {aiStateRaw === "running" ? (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                              <Sparkles className="mr-2 h-4 w-4" />
+                            )}
+                            {aiStateRaw === "running" ? "Running…" : "Run AI"}
+                          </Button>
+                        ) : null}
                         <Button variant="outline" size="sm" className="flex-1 sm:flex-none" onClick={() => handleViewDocument(doc)}>
                           <Eye className="mr-2 h-4 w-4" />
                           View
