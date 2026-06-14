@@ -6,6 +6,8 @@ set -euo pipefail
 
 APP_ROOT="${APP_ROOT:-/var/www/intellidocs}"
 AI_PORT="${AI_PORT:-8080}"
+AI_WORKERS="${AI_WORKERS:-1}"
+GUNICORN_TIMEOUT="${GUNICORN_TIMEOUT:-620}"
 HEALTH_URL="http://127.0.0.1:${AI_PORT}/health"
 MAX_WAIT="${MAX_WAIT:-90}"
 
@@ -38,8 +40,7 @@ WorkingDirectory=${APP_ROOT}/ai
 Environment=PORT=${AI_PORT}
 Environment=AI_OCR_ENGINE=tesseract
 Environment=DISABLE_EASYOCR=1
-AI_WORKERS="${AI_WORKERS:-2}"
-ExecStart=${APP_ROOT}/ai/.venv/bin/gunicorn --bind 127.0.0.1:${AI_PORT} --workers ${AI_WORKERS} --worker-class gthread --threads 2 --timeout 300 --graceful-timeout 60 app:app
+ExecStart=${APP_ROOT}/ai/.venv/bin/gunicorn --bind 127.0.0.1:${AI_PORT} --workers ${AI_WORKERS} --worker-class gthread --threads 2 --timeout ${GUNICORN_TIMEOUT} --graceful-timeout 120 app:app
 Restart=always
 RestartSec=5
 

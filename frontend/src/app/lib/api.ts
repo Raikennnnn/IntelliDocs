@@ -170,7 +170,9 @@ export async function parseApiJson<T>(
         ok: false,
         status,
         error:
-          `AI verify timed out (HTTP ${status}). On the droplet run: bash scripts/diagnose_ai_502.sh then bash scripts/configure_nginx_ai_timeouts.sh. Use Run AI on one file at a time.`,
+          `Server timeout (HTTP ${status}): nginx closed the connection before PHP/AI finished. ` +
+            `Verify often takes 60–180s per file. On the droplet run: bash scripts/fix_ai_502_droplet.sh. ` +
+            `If testing on XAMPP locally, run scripts/configure_xampp_ai_timeouts.ps1 and restart Apache.`,
       };
     }
     return {

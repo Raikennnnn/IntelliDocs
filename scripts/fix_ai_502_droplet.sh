@@ -9,25 +9,33 @@ BRANCH="${BRANCH:-IntelliDocs-V4}"
 
 step() { printf '\n=== %s ===\n' "$1"; }
 
-step "Pull latest code (OCR speed + verify-on-demand fixes)"
+step "Pull latest code"
 cd "$APP_ROOT"
 git fetch origin
 git checkout -B "$BRANCH" "origin/$BRANCH"
 git reset --hard "origin/$BRANCH"
 echo "At: $(git log -1 --oneline)"
 
-step "Diagnose current 502 cause"
+step "Diagnose (before fix)"
 bash "$APP_ROOT/scripts/diagnose_ai_502.sh" || true
 
-step "Deploy AI service"
+step "nginx + PHP timeouts (600s — fixes HTML 502 from 60s default)"
+bash "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh"
+
+step "AI systemd: gunicorn 620s, 1 worker (small droplet)"
+AI_WORKERS=1 GUNICORN_TIMEOUT=620 bash "$APP_ROOT/scripts/fix_ai_service.sh"
+
+step "Deploy AI code + restart"
 bash "$APP_ROOT/scripts/deploy_ai_hotfix.sh"
 
-step "Deploy registrar UI (Run AI per document — one file at a time)"
+step "Deploy registrar UI (Run AI per document)"
 bash "$APP_ROOT/scripts/deploy_ui_hotfix.sh"
 
+step "Diagnose (after fix)"
+bash "$APP_ROOT/scripts/diagnose_ai_502.sh" || true
+
 step "Summary"
-echo "502 fix checklist:"
-echo "  1. nginx fastcgi_read_timeout should be 600 (see diagnose output above)"
-echo "  2. In registrar portal: click Run AI on ONE file at a time"
-echo "  3. Order: 2x2 photo → good moral → SF9 → PSA → Form 137 last (slowest)"
-echo "  4. Wait for each to finish before starting the next"
+echo "If direct /verify works in diagnose but browser still 502:"
+echo "  - Hard refresh browser (Ctrl+Shift+R)"
+echo "  - Run AI on ONE file at a time; Form 137 last"
+echo "  - If using Cloudflare in front of the droplet, its proxy timeout is 100s — use DNS-only (grey cloud) or skip Cloudflare for /api"

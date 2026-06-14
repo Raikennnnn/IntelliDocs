@@ -54,8 +54,8 @@ server {
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:/run/php/php8.3-fpm.sock;
-        fastcgi_read_timeout 300;
-        fastcgi_send_timeout 300;
+        fastcgi_read_timeout 600;
+        fastcgi_send_timeout 600;
     }
 
     location / {
@@ -142,7 +142,7 @@ AUTH_ALLOW_LEGACY_HEADER=0
 |-------|-----|
 | `fatal: not a git repository` | You uploaded files without `git clone`. See **Fix: not a git repo** below. |
 | `git pull` auth failed | Use GitHub PAT or upload via SFTP |
-| AI error: Unexpected token '<', "<!DOCTYPE "... | **nginx/PHP timeout** (default 60s). SF10 OCR takes 2–3 min. Run `bash scripts/configure_nginx_ai_timeouts.sh` on the droplet, then re-run AI. |
+| AI error: Unexpected token '<', "<!DOCTYPE "... | **nginx/PHP timeout** (default **60s**). Verify takes 60–180s+ per file. Run `bash scripts/fix_ai_502_droplet.sh` on the droplet (not just the nginx script). Confirm `nginx -T \| grep fastcgi_read` shows **600**. |
 | Deploy says AI health failed but service is running | Old deploy checked health once with no wait. Pull latest and re-run deploy, or run `bash scripts/fix_ai_service.sh`. |
 | `vite build` appears stuck / deploy dies silently | Low RAM on 2 GB droplet — wait 2–6 min, or add swap (`fallocate -l 2G /swapfile && mkswap /swapfile && swapon /swapfile`). Latest deploy script auto-creates swap. |
 | Old UI after deploy (no Forgot password, old layout) | **Git tag `IntelliDocs-V4` conflicts with branch** — run `bash scripts/fix_droplet_git_and_deploy.sh` on the server |

@@ -35,7 +35,6 @@ patch_file() {
 echo "=== Configure nginx fastcgi timeouts (${TIMEOUT}s) ==="
 PATCHED=0
 
-# Drop-in snippet (included by many Debian/Ubuntu nginx setups).
 SNIP_DIR="/etc/nginx/snippets"
 SNIP_FILE="${SNIP_DIR}/intellidocs-php-timeouts.conf"
 mkdir -p "$SNIP_DIR"
@@ -48,14 +47,30 @@ EOF
 echo "  Wrote snippet: $SNIP_FILE"
 PATCHED=1
 
+# Debian/Ubuntu default PHP snippet often has no timeout — patch it too.
+FASTCGI_SNIP="/etc/nginx/snippets/fastcgi-php.conf"
+if [ -f "$FASTCGI_SNIP" ]; then
+  if ! grep -q "intellidocs-php-timeouts" "$FASTCGI_SNIP" 2>/dev/null; then
+    cat >> "$FASTCGI_SNIP" <<EOF
+
+# IntelliDocs AI verify (auto-generated)
+include snippets/intellidocs-php-timeouts.conf;
+EOF
+    echo "  Appended timeout include to $FASTCGI_SNIP"
+    PATCHED=1
+  fi
+fi
+
 for f in /etc/nginx/sites-enabled/* /etc/nginx/sites-available/* /etc/nginx/conf.d/*.conf; do
   [ -f "$f" ] || continue
-  grep -q "fastcgi_pass" "$f" || continue
+  grep -q "fastcgi_pass\|intellidocs\|/var/www" "$f" || continue
   patch_file "$f"
-  if ! grep -q "intellidocs-php-timeouts.conf" "$f" 2>/dev/null; then
-    if grep -q "location.*php" "$f"; then
+  if grep -q "location.*php" "$f" && ! grep -q "intellidocs-php-timeouts.conf" "$f" 2>/dev/null; then
+    # Include INSIDE the PHP location (after opening brace) so it overrides defaults.
+    sed -i "/location.*\\.php.*{/a\\        include snippets/intellidocs-php-timeouts.conf;" "$f" 2>/dev/null || \
       sed -i "/location.*php/i\\    include snippets/intellidocs-php-timeouts.conf;" "$f" 2>/dev/null || true
-    fi
+    echo "  Added snippet include to: $f"
+    PATCHED=1
   fi
 done
 
@@ -91,16 +106,8 @@ for INI in /etc/php/*/fpm/php.ini; do
   echo "  Updated: $INI"
 done
 
-# Apache + mod_php fallback (some XAMPP-style droplet images).
-for APACHE in /etc/apache2/sites-enabled/* /etc/httpd/conf.d/*.conf; do
-  [ -f "$APACHE" ] || continue
-  grep -qi "intellidocs\|/var/www" "$APACHE" || continue
-  if grep -q "Timeout" "$APACHE"; then
-    sed -i "s/^[[:space:]]*Timeout.*/Timeout ${TIMEOUT}/" "$APACHE" 2>/dev/null || true
-  fi
-  echo "  Apache: $APACHE (check Timeout manually if using Apache)"
-done
-
 echo ""
-echo "Done. Current nginx fastcgi_read_timeout values:"
-grep -rh "fastcgi_read_timeout" /etc/nginx/ 2>/dev/null | head -5 || true
+echo "=== Verify effective nginx timeouts ==="
+nginx -T 2>/dev/null | grep -E "fastcgi_read_timeout|fastcgi_send_timeout" | sort -u | head -10 || true
+echo ""
+echo "Done. Run: bash $APP_ROOT/scripts/diagnose_ai_502.sh"

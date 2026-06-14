@@ -12,7 +12,7 @@ app = Flask(__name__)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(APP_DIR)
 # Bumped when verify/seal/signature behavior changes — visible on GET /health.
-AI_VERIFY_BUILD = "20250603-verify-fast-v3"
+AI_VERIFY_BUILD = "20250603-verify-fast-v4"
 app.config['UPLOAD_FOLDER'] = os.path.join(APP_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
@@ -7451,22 +7451,29 @@ def verify_doc():
                     "Good moral: possible field tampering signals detected (review highlighted fields)"
                 ]
 
-        # OCR-INDEPENDENT whole-image hotspot scan (catches edits even when OCR misses the labels).
-        try:
-            tmap = tamper_map_cached
-            region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
-            if region_hits:
-                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
-                n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
-                payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                    f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
-                    + (f" ({n_high} high-risk)" if n_high else "")
-                ]
-                payload["issues"] = (payload.get("issues") or []) + [
-                    "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
-                ]
-        except Exception:
-            pass
+        # Whole-image grid hotspot is CPU-heavy — run on PSA / SF10 only (not good moral / SF9).
+        if effective_doc_type in (
+            "birth_certificate",
+            "birthcert",
+            "form137",
+            "sf10",
+            "form157",
+        ):
+            try:
+                tmap = tamper_map_cached
+                region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
+                if region_hits:
+                    payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
+                    n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
+                    payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
+                        f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
+                        + (f" ({n_high} high-risk)" if n_high else "")
+                    ]
+                    payload["issues"] = (payload.get("issues") or []) + [
+                        "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
+                    ]
+            except Exception:
+                pass
 
         # Merge localized tamper hotspots into headline tamper_score (global-only check often stayed at 100%).
         cells_all = list(payload.get("tamper_cells") or [])
