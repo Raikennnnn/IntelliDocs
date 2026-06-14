@@ -354,18 +354,35 @@ const ENROLLMENT_MM_EXCLUDED_FIELDS = new Set(["signature"]);
 
 type FieldCheckRow = NonNullable<AiVerifyResponse["field_checks"]>[number];
 
+function isSignatureFieldCheck(fc: FieldCheckRow): boolean {
+  return String(fc.field || "").trim().toLowerCase() === "signature";
+}
+
 function filterFieldChecksForDocType(docType: AiDocType, fieldChecks: FieldCheckRow[]): FieldCheckRow[] {
+  let filtered = fieldChecks;
+  if (docType !== "good_moral") {
+    filtered = filtered.filter((fc) => !isSignatureFieldCheck(fc));
+  }
   if (docType === "good_moral") {
-    return fieldChecks.filter(
+    filtered = filtered.filter(
       (fc) => !GOOD_MORAL_EXCLUDED_CROSS_FIELDS.has(String(fc.field || "").trim().toLowerCase()),
     );
   }
   if (docType === "sf9" || docType === "form137") {
-    return fieldChecks.filter(
+    filtered = filtered.filter(
       (fc) => String(fc.field || "").trim().toLowerCase() !== "grade level",
     );
   }
-  return fieldChecks;
+  return filtered;
+}
+
+function filterIssuesForDisplay(docType: AiDocType, issues: string[]): string[] {
+  return issues.filter((issue) => {
+    const lower = issue.toLowerCase();
+    if (docType !== "good_moral" && lower.includes("signature")) return false;
+    if (docType !== "birth_certificate" && (lower.includes("seal") || lower.includes("logo"))) return false;
+    return true;
+  });
 }
 
 function filterIssuesForDocType(
@@ -482,8 +499,19 @@ function aiResultForDisplay(
     docType,
     Array.isArray(r.field_checks) ? r.field_checks : [],
   );
-  const doc_checks = (Array.isArray(r.doc_checks) ? r.doc_checks : []).filter(
-    (c) => docType !== "good_moral" || !isRedundantAuthoritySignatureKeywordCheck(c),
+  const doc_checks = (Array.isArray(r.doc_checks) ? r.doc_checks : []).filter((c) => {
+    if (docType !== "good_moral" && isSignatureRelatedDocCheck(c)) return false;
+    if (docType !== "birth_certificate" && isVisualSealOrLogoCheck(c)) return false;
+    if (docType === "good_moral" && isRedundantAuthoritySignatureKeywordCheck(c)) return false;
+    return true;
+  });
+  const issuesFiltered = filterIssuesForDisplay(
+    docType,
+    filterIssuesForDocType(
+      docType,
+      Array.isArray(r.issues) ? r.issues : [],
+      field_checks,
+    ),
   );
   const base =
     docType === "good_moral"
@@ -491,15 +519,12 @@ function aiResultForDisplay(
           ...r,
           field_checks,
           doc_checks,
-          issues: filterIssuesForDocType(
-            docType,
-            Array.isArray(r.issues) ? r.issues : [],
-            field_checks,
-          ),
+          issues: issuesFiltered,
         }
-      : { ...r, field_checks, doc_checks };
+      : { ...r, field_checks, doc_checks, issues: issuesFiltered };
   return {
     ...base,
+    seal_scan: docType === "birth_certificate" ? base.seal_scan : undefined,
     security_levels: filterSecurityLevelsForDocType(
       docType,
       base.security_levels,
@@ -602,7 +627,6 @@ function enrollmentCrossCheckPlan(docType: AiDocType, app: any): EnrollmentCross
       maybe("Sex", f.sex),
       maybe("School year", f.schoolYear),
       maybe("Previous school", f.prevSchool),
-      { field: "Signature", expected: "Handwritten signature present", ok: null },
     ].filter(Boolean) as EnrollmentCrossRow[];
   }
   const nameRow = maybe("Name", f.name);
@@ -651,20 +675,18 @@ function isAiVerifyPayloadStale(docType: AiDocType, app: any, r?: AiVerifyRespon
   if (!r.resolved_doc_type) return true;
   const effective = aiDocTypeFromResolved(String(r.resolved_doc_type ?? "")) ?? docType;
   if (
-    (effective === "birth_certificate" || effective === "good_moral" || effective === "sf9" || effective === "form137") &&
+    effective === "birth_certificate" &&
     !r.seal_scan &&
     !r.doc_checks?.some((c) => /seal|logo/i.test(String(c.field || "")))
   ) {
     return true;
   }
-  if ((effective === "good_moral" || effective === "sf9" || effective === "form137") && Array.isArray(r.field_checks)) {
+  if (effective === "good_moral" && Array.isArray(r.field_checks)) {
     const hasExcluded = r.field_checks.some((fc) =>
       GOOD_MORAL_EXCLUDED_CROSS_FIELDS.has(String(fc.field || "").trim().toLowerCase()),
     );
     if (hasExcluded) return true;
-    const hasSignatureScan = r.field_checks.some(
-      (fc) => String(fc.field || "").trim().toLowerCase() === "signature",
-    );
+    const hasSignatureScan = r.field_checks.some((fc) => isSignatureFieldCheck(fc));
     if (!hasSignatureScan) return true;
   }
   const mismatchLv = r.security_levels?.levels?.find((lv) =>
@@ -709,6 +731,11 @@ function isRedundantAuthoritySignatureKeywordCheck(c: DocCheckRow): boolean {
   return /authority\/signature keyword/i.test(String(c.field || ""));
 }
 
+function isSignatureRelatedDocCheck(c: DocCheckRow): boolean {
+  const field = String(c.field || "").toLowerCase();
+  return isRedundantAuthoritySignatureKeywordCheck(c) || /signature/i.test(field);
+}
+
 function splitDocChecksForDisplay(docChecks: DocCheckRow[]) {
   const visual = docChecks.filter(isVisualSealOrLogoCheck);
   const labels = docChecks.filter(
@@ -736,11 +763,18 @@ function checkDetailVisibility(docType: AiDocType): CheckDetailVisibility {
         enrollment: false,
       };
     case "birth_certificate":
-    case "good_moral":
       return {
         tamper: true,
         synthetic: true,
         sealLogo: true,
+        labels: true,
+        enrollment: true,
+      };
+    case "good_moral":
+      return {
+        tamper: true,
+        synthetic: true,
+        sealLogo: false,
         labels: true,
         enrollment: true,
       };
@@ -749,7 +783,7 @@ function checkDetailVisibility(docType: AiDocType): CheckDetailVisibility {
       return {
         tamper: true,
         synthetic: true,
-        sealLogo: true,
+        sealLogo: false,
         labels: true,
         enrollment: true,
       };
@@ -771,11 +805,11 @@ function checkDetailsIntro(docType: AiDocType): string {
     case "birth_certificate":
       return "PSA seal/logo, document labels, identity cross-check, and integrity signals.";
     case "good_moral":
-      return "School seal/logo, certificate labels, enrollment cross-check, and signature scan.";
+      return "Certificate labels, enrollment cross-check, signature scan, and integrity signals.";
     case "sf9":
-      return "Report card labels, school seal/logo, enrollment cross-check, signature scan, and integrity signals.";
+      return "Report card labels, enrollment cross-check, and integrity signals.";
     case "form137":
-      return "Form 137 labels, school seal/logo, enrollment cross-check, signature scan, and integrity signals.";
+      return "Form 137 labels, enrollment cross-check, and integrity signals.";
     default:
       return "Supporting signals from OCR and rules — always confirm against the original file.";
   }
@@ -3231,7 +3265,7 @@ export function ReviewDocuments() {
                               {enrollmentCrossCheckTitle(docType)}
                             </h3>
                             <p className="mt-1 text-xs text-gray-500">
-                              {docType === "good_moral" || docType === "sf9" || docType === "form137"
+                              {docType === "good_moral"
                                 ? "Enrollment fields plus a visual signature scan on the document — re-run AI after updates."
                                 : "Compared against the student\u2019s enrollment form — re-run AI after form updates."}
                             </p>
