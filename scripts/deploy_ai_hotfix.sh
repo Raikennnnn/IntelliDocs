@@ -60,4 +60,6 @@ if [ -f "$APP_ROOT/scripts/verify_ai_deploy.sh" ]; then
 fi
 
 echo ""
-echo "AI hotfix deployed. In the registrar portal: Re-run AI verify on each document (old results are cached)."
+echo "AI hotfix deployed. For registrar UI changes also run: bash scripts/deploy_ui_hotfix.sh"
+echo "Or deploy both: bash scripts/deploy_all_hotfix.sh"
+echo "Re-run AI verify on documents in the portal (old results are cached)."

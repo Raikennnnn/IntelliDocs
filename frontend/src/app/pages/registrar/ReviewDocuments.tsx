@@ -2097,12 +2097,7 @@ export function ReviewDocuments() {
               })()}
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2.5">
                 <div className="min-w-0 text-sm text-gray-600">
-                  {aiRunning ? (
-                    <span className="inline-flex items-center gap-2 text-indigo-700">
-                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                      Running AI checks… SF10 may take 2–3 min per file on the server.
-                    </span>
-                  ) : aiServiceError ? (
+                  {aiServiceError ? (
                     <span className="text-rose-700">
                       AI service unavailable — {aiServiceError}. Start{" "}
                       <code className="rounded bg-rose-50 px-1 text-xs">ai/app.py</code> on port 5000.
