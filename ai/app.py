@@ -10,6 +10,9 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(APP_DIR)
+# Bumped when verify/seal/signature behavior changes — visible on GET /health.
+AI_VERIFY_BUILD = "20250603-seal-signature-v2"
 app.config['UPLOAD_FOLDER'] = os.path.join(APP_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
@@ -2668,6 +2671,29 @@ def add_cors_headers(response):
     return _corsify(response)
 
 
+def _ai_deploy_rev() -> str:
+    """Git short rev written by scripts/deploy_ai_hotfix.sh on the droplet."""
+    rev_file = os.path.join(APP_DIR, "BUILD_REV")
+    try:
+        if os.path.isfile(rev_file):
+            rev = open(rev_file, encoding="utf-8").read().strip()
+            if rev:
+                return rev
+    except OSError:
+        pass
+    try:
+        import subprocess
+
+        return subprocess.check_output(
+            ["git", "-C", REPO_ROOT, "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        ).strip()
+    except Exception:
+        return "dev"
+
+
 @app.route("/health", methods=["GET"])
 def health():
     payload = {
@@ -2677,6 +2703,14 @@ def health():
         "tesseract_available": _tesseract_available,
         "easyocr_available": _easyocr_available,
         "ocr_fallback_enabled": not _env_flag("DISABLE_OCR_FALLBACK"),
+        "ai_verify_build": AI_VERIFY_BUILD,
+        "git_rev": _ai_deploy_rev(),
+        "capabilities": [
+            "exif_bgr",
+            "seal_layout_agnostic",
+            "signature_multi_layout",
+            "generic_header_emblem",
+        ],
     }
     if _tesseract_available and _tesseract_exe:
         payload["tesseract"] = _tesseract_exe

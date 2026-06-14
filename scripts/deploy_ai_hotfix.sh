@@ -21,6 +21,9 @@ git fetch origin
 git checkout -B "$BRANCH" "origin/$BRANCH"
 git reset --hard "origin/$BRANCH"
 echo "Commit: $(git log -1 --oneline)"
+git rev-parse --short HEAD > "$APP_ROOT/ai/BUILD_REV"
+git log -1 --format=%s > "$APP_ROOT/ai/BUILD_MSG" 2>/dev/null || true
+echo "Stamped ai/BUILD_REV=$(cat "$APP_ROOT/ai/BUILD_REV")"
 
 step "Install Python deps (if requirements changed)"
 cd "$APP_ROOT/ai"
@@ -51,5 +54,10 @@ else
   exit 1
 fi
 
+step "Verify AI code markers and /health build"
+if [ -f "$APP_ROOT/scripts/verify_ai_deploy.sh" ]; then
+  bash "$APP_ROOT/scripts/verify_ai_deploy.sh" || exit 1
+fi
+
 echo ""
-echo "AI hotfix deployed. Re-run AI verify on documents to apply photocopy/signature rules."
+echo "AI hotfix deployed. In the registrar portal: Re-run AI verify on each document (old results are cached)."

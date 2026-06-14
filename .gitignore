@@ -97,6 +97,8 @@ __pycache__/
 *.pyo
 ai/uploads/*
 !ai/uploads/.gitkeep
+ai/BUILD_REV
+ai/BUILD_MSG
 
 #-------------------------
 # Node / Frontend
