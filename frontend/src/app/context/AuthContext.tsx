@@ -109,7 +109,7 @@ export type LoginResult =
 
 export type VerifyLoginOtpResult =
   | { ok: true; user: User }
-  | { ok: false; errorCode?: string };
+  | { ok: false; errorCode?: string; errorMessage?: string };
 
 interface AuthContextType {
   user: User | null;
@@ -200,7 +200,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         method: 'POST',
         body: JSON.stringify({ action: 'verify_login_otp', email, otp }),
       });
-      const data = (await response.json().catch(() => null)) as AuthLoginResponse | null;
+      const data = (await response.json().catch(() => null)) as (AuthLoginResponse & {
+        attempts_remaining?: number;
+        retry_after_minutes?: number;
+      }) | null;
       if (data?.success && data.user) {
         const nextUser = applyLoginPayload(data);
         if (!nextUser) return { ok: false, errorCode: 'invalid_otp' };
@@ -210,7 +213,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!data) {
         return { ok: false, errorCode: 'server_error' };
       }
-      return { ok: false, errorCode: data?.error || 'invalid_otp' };
+      return {
+        ok: false,
+        errorCode: data.code || data.error || 'invalid_otp',
+        errorMessage: data.error,
+      };
     } catch (error) {
       console.error('Login OTP error:', error);
       return { ok: false, errorCode: 'server_error' };
@@ -228,11 +235,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         message?: string;
         dev_otp?: string;
         error?: string;
+        code?: string;
       } | null;
       if (data?.success) {
         return { ok: true, message: data.message, devOtp: data.dev_otp };
       }
-      return { ok: false, errorCode: data?.error || 'resend_failed' };
+      return { ok: false, errorCode: data?.code || data?.error || 'resend_failed' };
     } catch {
       return { ok: false, errorCode: 'server_error' };
     }

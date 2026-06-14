@@ -1,10 +1,11 @@
-import { useState } from 'react';
-import { useNavigate, Link, useSearchParams } from 'react-router';
+import { useState, useEffect } from 'react';
+import { useNavigate, Link, useSearchParams, useLocation } from 'react-router';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Label } from '../../components/ui/label';
+import { toast } from 'sonner';
 import schoolLogo from "../../../assets/logo.png";
 import homePageImage from "../../../assets/homepage-Bxdbuq6s.png";
 
@@ -35,6 +36,15 @@ export function Login() {
   const { login, verifyLoginOtp, resendLoginOtp } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
+
+  useEffect(() => {
+    const state = location.state as { passwordReset?: boolean } | null;
+    if (state?.passwordReset) {
+      toast.success('Password updated. Sign in with your new password.');
+      navigate(location.pathname + location.search, { replace: true, state: null });
+    }
+  }, [location.pathname, location.search, location.state, navigate]);
 
   const sessionReason = searchParams.get('reason');
   const sessionReasonMessage =
@@ -140,8 +150,12 @@ export function Login() {
       if (!result.ok) {
         if (result.errorCode === 'server_error') {
           setError('Verification failed due to a server error. Please try again or contact support.');
+        } else if (result.errorCode === 'otp_locked') {
+          setError(result.errorMessage || 'Too many incorrect OTP attempts. Try again in 15 minutes.');
+        } else if (result.errorCode === 'otp_resend_limit') {
+          setError(result.errorMessage || 'Maximum OTP requests per hour reached.');
         } else {
-          setError('Invalid or expired OTP. Request a new code below or sign in from the start.');
+          setError(result.errorMessage || 'Invalid or expired OTP. Request a new code below or sign in from the start.');
         }
         return;
       }
@@ -158,7 +172,11 @@ export function Login() {
     try {
       const result = await resendLoginOtp(otpEmail);
       if (!result.ok) {
-        setError('Could not resend the login code. Try signing in from the start.');
+        setError(
+          result.errorCode === 'otp_resend_limit'
+            ? 'Maximum 3 OTP requests per hour. Please wait before requesting another code.'
+            : 'Could not resend the login code. Try signing in from the start.',
+        );
         return;
       }
       setOtp(['', '', '', '', '', '']);
@@ -177,32 +195,32 @@ export function Login() {
   };
 
   return (
-    <div className="relative w-full h-screen overflow-hidden bg-white">
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <img alt="" className="absolute h-full left-0 top-0 w-full object-cover scale-110" src={homePageImage} />
+    <div className="relative h-screen w-full overflow-hidden bg-white">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <img alt="" className="absolute left-0 top-0 h-full w-full scale-110 object-cover" src={homePageImage} />
       </div>
       <div className="absolute inset-0 bg-[rgba(72,0,21,0.32)]" />
 
-      <div className="absolute left-0 top-0 z-10 flex h-[63px] w-full items-center bg-[#8B1538] px-4 shadow-md sm:px-8">
-        <Link to="/landing" className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <div className="h-10 w-10 shrink-0">
+      <div className="absolute left-0 top-0 z-10 flex h-[63px] w-full items-center bg-[#8B1538] px-8 shadow-md">
+        <Link to="/landing" className="flex items-center gap-3">
+          <div className="h-10 w-10">
             <img alt="School Logo" className="h-full w-full object-contain" src={schoolLogo} />
           </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-bold leading-tight text-white sm:text-lg">Nuestra Señora De Guia</p>
-            <p className="truncate text-xs font-semibold text-white">Academy of Marikina</p>
+          <div>
+            <p className="text-lg font-bold leading-tight text-white">Nuestra Señora De Guia</p>
+            <p className="text-xs font-semibold text-white">Academy of Marikina</p>
           </div>
         </Link>
       </div>
 
-      <div className="relative z-10 flex h-full items-center justify-center px-4 py-20">
-        <div className="w-full max-w-[527px] rounded-lg border border-gray-300 bg-white/80 p-5 shadow-lg backdrop-blur-sm sm:p-8">
+      <div className="relative z-10 flex h-full items-center justify-center px-4">
+        <div className="w-full max-w-[527px] rounded-lg border border-gray-300 bg-white/80 p-8 shadow-lg backdrop-blur-sm">
           <div className="space-y-6">
             <div>
-              <h2 className="font-bold text-2xl text-[#101828] mb-2">
+              <h2 className="mb-2 text-2xl font-bold text-[#101828]">
                 {step === 'credentials' ? 'Login' : 'Email verification'}
               </h2>
-              <p className="font-normal text-base text-black">
+              <p className="text-base text-black">
                 {step === 'credentials'
                   ? 'Enter your credentials to access the system'
                   : 'Complete login with the OTP sent to your email (MFA)'}
@@ -230,7 +248,7 @@ export function Login() {
                     value={credential}
                     onChange={(e) => setCredential(e.target.value)}
                     required
-                    className="w-full h-12 bg-[#F9FAFB] border-[#D1D5DC] border rounded-lg px-3 text-sm"
+                    className="h-12 w-full rounded-lg border border-[#D1D5DC] bg-[#F9FAFB] px-3 text-sm"
                     placeholder="Enter your email or school username"
                   />
                 </div>
@@ -241,9 +259,14 @@ export function Login() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
-                    className="w-full h-12 bg-[#F9FAFB] border-[#D1D5DC] border rounded-lg px-3 text-sm"
+                    className="h-12 w-full rounded-lg border border-[#D1D5DC] bg-[#F9FAFB] px-3 text-sm"
                     placeholder="Enter password"
                   />
+                  <div className="text-right">
+                    <Link to="/forgot-password" className="text-xs font-semibold text-[#8B1538] hover:underline">
+                      Forgot password?
+                    </Link>
+                  </div>
                 </div>
                 <Button type="submit" disabled={submittingCredentials} className="w-full h-12 bg-[#8B1538] hover:bg-[#8B1538]/90 text-white text-base font-semibold rounded-lg">
                   {submittingCredentials ? 'Signing in…' : 'Continue'}
@@ -261,9 +284,9 @@ export function Login() {
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
                 )}
-                <div>
-                  <Label className="text-gray-700 mb-3 block">Enter OTP Code</Label>
-                  <div className="flex flex-wrap justify-center gap-2 sm:justify-between sm:gap-3" onPaste={handleOtpPaste}>
+                <div className="min-w-0">
+                  <Label className="mb-3 block text-gray-700">Enter OTP Code</Label>
+                  <div className="flex justify-between gap-3" onPaste={handleOtpPaste}>
                     {otp.map((digit, index) => (
                       <Input
                         key={index}
@@ -275,11 +298,14 @@ export function Login() {
                         value={digit}
                         onChange={(e) => handleOtpChange(index, e.target.value)}
                         onPaste={handleOtpPaste}
-                        className="h-11 w-11 min-w-[2.5rem] max-w-12 flex-1 text-center text-lg font-semibold sm:h-12 sm:w-12 sm:flex-none"
+                        className="h-14 w-14 text-center text-2xl font-semibold"
                       />
                     ))}
                   </div>
                 </div>
+                <p className="text-xs text-gray-500 text-center">
+                  Codes expire in 5 minutes. Max 5 attempts, then a 15-minute lockout. Up to 3 code requests per hour.
+                </p>
                 <Button type="submit" disabled={submittingOtp} className="w-full h-12 bg-[#8B1538] hover:bg-[#8B1538]/90 text-white text-base font-semibold rounded-lg">
                   {submittingOtp ? 'Verifying…' : 'Verify & Sign in'}
                 </Button>

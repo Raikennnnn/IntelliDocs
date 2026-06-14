@@ -7,6 +7,7 @@ import { type ReactNode } from 'react';
 
 // Auth pages
 import { Login } from './pages/auth/Login';
+import { ForgotPasswordPage } from './pages/auth/ForgotPasswordPage';
 
 // Student pages
 import { StudentDashboard } from './pages/student/StudentDashboard';
@@ -66,6 +67,11 @@ export const router = createBrowserRouter([
   {
     path: '/login',
     element: <Login />,
+    errorElement: <ErrorBoundary />,
+  },
+  {
+    path: '/forgot-password',
+    element: <ForgotPasswordPage />,
     errorElement: <ErrorBoundary />,
   },
   {

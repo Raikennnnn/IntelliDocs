@@ -63,7 +63,7 @@ function writeSystemSetting(PDO $pdo, string $key, ?string $value): void
 function getOtpExpiryMinutes(PDO $pdo): int
 {
     $raw = readSystemSetting($pdo, 'otp_expiry_minutes');
-    $minutes = $raw !== null ? (int)$raw : 10;
+    $minutes = $raw !== null ? (int)$raw : 5;
 
     return max(5, min(60, $minutes));
 }

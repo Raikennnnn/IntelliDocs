@@ -15,6 +15,7 @@ require_once __DIR__ . '/session_token.php';
 require_once __DIR__ . '/password_policy.php';
 require_once __DIR__ . '/email_deliverability.php';
 require_once __DIR__ . '/pending_registration.php';
+require_once __DIR__ . '/otp_guard.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -218,7 +219,7 @@ function storeOtpCode(PDO $pdo, string $email, string $code, int $minutes = 10, 
  * unless $forceNew is set — prevents double-submit / duplicate login requests
  * from invalidating the OTP the user already received by email.
  */
-function issueLoginOtp(PDO $pdo, string $email, int $minutes = 10, bool $forceNew = false): string
+function issueLoginOtp(PDO $pdo, string $email, int $minutes = 10, bool $forceNew = false): ?string
 {
     ensureOtpPurposeColumn($pdo);
     $normalizedEmail = strtolower(trim($email));
@@ -238,6 +239,10 @@ function issueLoginOtp(PDO $pdo, string $email, int $minutes = 10, bool $forceNe
         if ($existing !== false && $existing !== null && $existing !== '') {
             return (string)$existing;
         }
+    }
+    $sendCheck = otpGuardCheckSendAllowed($pdo, $normalizedEmail, 'login');
+    if (!$sendCheck['allowed']) {
+        return null;
     }
     $code = generateOtpCode();
     storeOtpCode($pdo, $normalizedEmail, $code, $minutes, 'login');
@@ -374,6 +379,19 @@ if ($action === 'register') {
             'terms_privacy_accepted' => true,
             'dpa_accepted' => true,
         ]);
+
+        $sendCheck = otpGuardCheckSendAllowed($pdo, $email, 'registration');
+        if (!$sendCheck['allowed']) {
+            $limitResp = otpGuardSendLimitResponse();
+            appLogEvent($pdo, 'otp_send', 'auth', 'failed', null, 'pending_registration', $email, ['reason' => 'send_limit']);
+            http_response_code($limitResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $limitResp['error'],
+                'code' => $limitResp['code'],
+            ]);
+            exit;
+        }
 
         $otpCode = generateOtpCode();
         $otpMinutes = getOtpExpiryMinutes($pdo);
@@ -656,6 +674,20 @@ if ($action === 'login') {
             ensureOtpTable($pdo);
             $otpMinutes = getOtpExpiryMinutes($pdo);
             $otpCode = issueLoginOtp($pdo, $accountEmail, $otpMinutes, false);
+            if ($otpCode === null) {
+                $limitResp = otpGuardSendLimitResponse();
+                appLogEvent($pdo, 'login_otp_send', 'auth', 'failed', (int)$user['id'], 'user', (string)$user['id'], [
+                    'email' => $accountEmail,
+                    'reason' => 'send_limit',
+                ]);
+                http_response_code($limitResp['http']);
+                echo json_encode([
+                    'success' => false,
+                    'error' => $limitResp['error'],
+                    'code' => $limitResp['code'],
+                ]);
+                exit;
+            }
             $queueId = queueEmail($pdo, $accountEmail, otpEmailSubject(), buildOtpEmailBodyWithExpiry($pdo, $otpCode));
             $otpSent = processSingleQueuedEmail($pdo, $queueId);
             $mailError = $otpSent ? null : getEmailQueueLastError($pdo, $queueId);
@@ -882,11 +914,25 @@ if ($action === 'verify_login_otp') {
         if (!$user) {
             appLogEvent($pdo, 'login_otp_verify', 'auth', 'failed', null, 'user', null, ['reason' => 'user_not_found']);
             http_response_code(401);
-            echo json_encode(['success' => false, 'error' => 'invalid_otp']);
+            echo json_encode(['success' => false, 'error' => 'invalid_otp', 'code' => 'invalid_otp']);
             exit;
         }
 
         $accountEmail = strtolower(trim((string)($user['email'] ?? '')));
+        $verifyCheck = otpGuardCheckVerificationAllowed($pdo, $accountEmail, 'login');
+        if (!$verifyCheck['allowed']) {
+            $lockedResp = otpGuardLockedResponse($verifyCheck);
+            appLogEvent($pdo, 'login_otp_verify', 'auth', 'failed', (int)$user['id'], 'otp', null, ['reason' => 'locked']);
+            http_response_code($lockedResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $lockedResp['error'],
+                'code' => $lockedResp['code'],
+                'retry_after_minutes' => $lockedResp['retry_after_minutes'],
+            ]);
+            exit;
+        }
+
         $purposeClause = columnExists($pdo, 'otp_codes', 'purpose')
             ? " AND purpose = 'login'"
             : '';
@@ -902,13 +948,25 @@ if ($action === 'verify_login_otp') {
         ]);
         $otpRow = $stmt->fetch();
         if (!$otpRow) {
-            appLogEvent($pdo, 'login_otp_verify', 'auth', 'failed', (int)$user['id'], 'otp', null, ['reason' => 'invalid_or_expired']);
-            http_response_code(401);
-            echo json_encode(['success' => false, 'error' => 'invalid_otp']);
+            $failure = otpGuardRecordVerifyFailure($pdo, $accountEmail, 'login');
+            $invalidResp = otpGuardInvalidVerifyResponse($failure);
+            appLogEvent($pdo, 'login_otp_verify', 'auth', 'failed', (int)$user['id'], 'otp', null, [
+                'reason' => 'invalid_or_expired',
+                'attempts_remaining' => $invalidResp['attempts_remaining'] ?? null,
+            ]);
+            http_response_code($invalidResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $invalidResp['error'],
+                'code' => $invalidResp['code'],
+                'attempts_remaining' => $invalidResp['attempts_remaining'] ?? null,
+                'retry_after_minutes' => $invalidResp['retry_after_minutes'] ?? null,
+            ]);
             exit;
         }
 
         $pdo->prepare('UPDATE otp_codes SET used = 1 WHERE id = :id')->execute([':id' => (int)$otpRow['id']]);
+        otpGuardClearVerifyFailures($pdo, $accountEmail, 'login');
         appLogEvent($pdo, 'login_otp_verify', 'auth', 'success', (int)$user['id'], 'otp', (string)$otpRow['id'], []);
 
         echo json_encode(finalizeLoginResponse($pdo, $user, $accountEmail));
@@ -946,8 +1004,31 @@ if ($action === 'resend_login_otp') {
             exit;
         }
 
+        $verifyCheck = otpGuardCheckVerificationAllowed($pdo, $accountEmail, 'login');
+        if (!$verifyCheck['allowed']) {
+            $lockedResp = otpGuardLockedResponse($verifyCheck);
+            http_response_code($lockedResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $lockedResp['error'],
+                'code' => $lockedResp['code'],
+                'retry_after_minutes' => $lockedResp['retry_after_minutes'],
+            ]);
+            exit;
+        }
+
         $otpMinutes = getOtpExpiryMinutes($pdo);
         $otpCode = issueLoginOtp($pdo, $accountEmail, $otpMinutes, true);
+        if ($otpCode === null) {
+            $limitResp = otpGuardSendLimitResponse();
+            http_response_code($limitResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $limitResp['error'],
+                'code' => $limitResp['code'],
+            ]);
+            exit;
+        }
         $queueId = queueEmail($pdo, $accountEmail, otpEmailSubject(), buildOtpEmailBodyWithExpiry($pdo, $otpCode));
         $sent = processSingleQueuedEmail($pdo, $queueId);
         $mailError = $sent ? null : getEmailQueueLastError($pdo, $queueId);
@@ -1011,6 +1092,20 @@ if ($action === 'verify_otp') {
         exit;
     }
     try {
+        $verifyCheck = otpGuardCheckVerificationAllowed($pdo, $email, 'registration');
+        if (!$verifyCheck['allowed']) {
+            $lockedResp = otpGuardLockedResponse($verifyCheck);
+            appLogEvent($pdo, 'otp_verify', 'auth', 'failed', null, 'otp', null, ['reason' => 'locked', 'email' => $email]);
+            http_response_code($lockedResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $lockedResp['error'],
+                'code' => $lockedResp['code'],
+                'retry_after_minutes' => $lockedResp['retry_after_minutes'],
+            ]);
+            exit;
+        }
+
         $purposeClause = columnExists($pdo, 'otp_codes', 'purpose')
             ? " AND purpose = 'registration'"
             : '';
@@ -1027,9 +1122,21 @@ if ($action === 'verify_otp') {
         ]);
         $otpRow = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$otpRow) {
-            appLogEvent($pdo, 'otp_verify', 'auth', 'failed', null, 'otp', null, ['reason' => 'invalid_or_expired', 'email' => $email]);
-            http_response_code(400);
-            echo json_encode(['success' => false, 'error' => 'Invalid or expired OTP']);
+            $failure = otpGuardRecordVerifyFailure($pdo, $email, 'registration');
+            $invalidResp = otpGuardInvalidVerifyResponse($failure);
+            appLogEvent($pdo, 'otp_verify', 'auth', 'failed', null, 'otp', null, [
+                'reason' => 'invalid_or_expired',
+                'email' => $email,
+                'attempts_remaining' => $invalidResp['attempts_remaining'] ?? null,
+            ]);
+            http_response_code($invalidResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $invalidResp['error'],
+                'code' => $invalidResp['code'],
+                'attempts_remaining' => $invalidResp['attempts_remaining'] ?? null,
+                'retry_after_minutes' => $invalidResp['retry_after_minutes'] ?? null,
+            ]);
             exit;
         }
 
@@ -1071,6 +1178,7 @@ if ($action === 'verify_otp') {
         $pdo->prepare('UPDATE otp_codes SET used = 1 WHERE id = :id')->execute([
             ':id' => (int)$otpRow['id'],
         ]);
+        otpGuardClearVerifyFailures($pdo, $email, 'registration');
 
         appLogEvent($pdo, 'register', 'auth', 'success', $userId, 'user', (string)$userId, [
             'email' => $email,
@@ -1132,6 +1240,18 @@ if ($action === 'resend_otp') {
         }
 
         touchPendingRegistrationExpiry($pdo, $email);
+        $sendCheck = otpGuardCheckSendAllowed($pdo, $email, 'registration');
+        if (!$sendCheck['allowed']) {
+            $limitResp = otpGuardSendLimitResponse();
+            appLogEvent($pdo, 'otp_resend', 'auth', 'failed', null, 'pending_registration', $email, ['reason' => 'send_limit']);
+            http_response_code($limitResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $limitResp['error'],
+                'code' => $limitResp['code'],
+            ]);
+            exit;
+        }
         $otpCode = generateOtpCode();
         $otpMinutes = getOtpExpiryMinutes($pdo);
         storeOtpCode($pdo, $email, $otpCode, $otpMinutes, 'registration');
@@ -1160,6 +1280,171 @@ if ($action === 'resend_otp') {
         appLogEvent($pdo, 'otp_resend', 'auth', 'failed', null, 'otp', null, ['reason' => 'server_error', 'email' => $email]);
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => 'Failed to resend OTP']);
+        exit;
+    }
+}
+
+if ($action === 'forgot_password') {
+    ensureOtpTable($pdo);
+    $email = strtolower(trim((string)($payload['email'] ?? '')));
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'Valid email is required']);
+        exit;
+    }
+
+    $genericMessage = 'If an account exists for this email, a password reset code has been sent.';
+    try {
+        $user = findUserByCredential($pdo, $email);
+        if (!$user) {
+            echo json_encode(['success' => true, 'message' => $genericMessage]);
+            exit;
+        }
+
+        $accountEmail = strtolower(trim((string)($user['email'] ?? '')));
+        if ($accountEmail === '') {
+            echo json_encode(['success' => true, 'message' => $genericMessage]);
+            exit;
+        }
+
+        $sendCheck = otpGuardCheckSendAllowed($pdo, $accountEmail, 'password_reset');
+        if (!$sendCheck['allowed']) {
+            $limitResp = otpGuardSendLimitResponse();
+            http_response_code($limitResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $limitResp['error'],
+                'code' => $limitResp['code'],
+            ]);
+            exit;
+        }
+
+        $otpMinutes = getOtpExpiryMinutes($pdo);
+        $otpCode = generateOtpCode();
+        storeOtpCode($pdo, $accountEmail, $otpCode, $otpMinutes, 'password_reset');
+        $subject = 'NSDGA IntelliDocs password reset code';
+        $body = buildOtpEmailBodyWithExpiry($pdo, $otpCode);
+        $queueId = queueEmail($pdo, $accountEmail, $subject, $body);
+        $sent = processSingleQueuedEmail($pdo, $queueId);
+        $mailError = $sent ? null : getEmailQueueLastError($pdo, $queueId);
+
+        appLogEvent($pdo, 'password_reset_otp_send', 'auth', $sent ? 'success' : 'failed', (int)$user['id'], 'user', (string)$user['id'], [
+            'email' => $accountEmail,
+            'mail_error' => $mailError,
+        ]);
+
+        $response = [
+            'success' => true,
+            'message' => $sent ? $genericMessage : 'Reset code generated but email delivery failed. Try again shortly.',
+            'email' => $accountEmail,
+            'email_masked' => maskEmailForOtp($accountEmail),
+            'otp_delivery' => $sent ? 'sent' : 'failed',
+        ];
+        if (!$sent && $mailError !== null) {
+            $response['mail_error'] = $mailError;
+        }
+        $isLocal = in_array((string)($_SERVER['REMOTE_ADDR'] ?? ''), ['127.0.0.1', '::1'], true);
+        if ($isLocal && ((!$sent && mailDevOtpFallbackEnabled()) || ($sent && mailLocalOtpInResponseEnabled()))) {
+            $response['dev_otp'] = $otpCode;
+        }
+        echo json_encode($response);
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Failed to process password reset request']);
+        exit;
+    }
+}
+
+if ($action === 'reset_password') {
+    ensureOtpTable($pdo);
+    $email = strtolower(trim((string)($payload['email'] ?? '')));
+    $otp = preg_replace('/\D/', '', (string)($payload['otp'] ?? ''));
+    $newPassword = (string)($payload['new_password'] ?? '');
+
+    if ($email === '' || $otp === '' || $newPassword === '') {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'Email, OTP, and new password are required']);
+        exit;
+    }
+
+    $policy = validatePasswordStrength($newPassword);
+    if ($policy !== null) {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => $policy['error'], 'code' => $policy['code']]);
+        exit;
+    }
+
+    try {
+        $user = findUserByCredential($pdo, $email);
+        if (!$user) {
+            http_response_code(401);
+            echo json_encode(['success' => false, 'error' => 'Invalid or expired reset code', 'code' => 'invalid_otp']);
+            exit;
+        }
+
+        $accountEmail = strtolower(trim((string)($user['email'] ?? '')));
+        $verifyCheck = otpGuardCheckVerificationAllowed($pdo, $accountEmail, 'password_reset');
+        if (!$verifyCheck['allowed']) {
+            $lockedResp = otpGuardLockedResponse($verifyCheck);
+            http_response_code($lockedResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $lockedResp['error'],
+                'code' => $lockedResp['code'],
+                'retry_after_minutes' => $lockedResp['retry_after_minutes'],
+            ]);
+            exit;
+        }
+
+        $purposeClause = columnExists($pdo, 'otp_codes', 'purpose')
+            ? " AND purpose = 'password_reset'"
+            : '';
+        $stmt = $pdo->prepare(
+            "SELECT id FROM otp_codes
+             WHERE email = :email AND code = :code AND used = 0 AND expires_at >= NOW(){$purposeClause}
+             ORDER BY id DESC LIMIT 1"
+        );
+        $stmt->execute([':email' => $accountEmail, ':code' => $otp]);
+        $otpRow = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$otpRow) {
+            $failure = otpGuardRecordVerifyFailure($pdo, $accountEmail, 'password_reset');
+            $invalidResp = otpGuardInvalidVerifyResponse($failure);
+            http_response_code($invalidResp['http']);
+            echo json_encode([
+                'success' => false,
+                'error' => $invalidResp['error'],
+                'code' => $invalidResp['code'],
+                'attempts_remaining' => $invalidResp['attempts_remaining'] ?? null,
+                'retry_after_minutes' => $invalidResp['retry_after_minutes'] ?? null,
+            ]);
+            exit;
+        }
+
+        $hash = password_hash($newPassword, PASSWORD_BCRYPT);
+        if (columnExists($pdo, 'users', 'must_change_password')) {
+            $pdo->prepare('UPDATE users SET password = :hash, must_change_password = 0 WHERE id = :id')
+                ->execute([':hash' => $hash, ':id' => (int)$user['id']]);
+        } else {
+            $pdo->prepare('UPDATE users SET password = :hash WHERE id = :id')
+                ->execute([':hash' => $hash, ':id' => (int)$user['id']]);
+        }
+
+        $pdo->prepare('UPDATE otp_codes SET used = 1 WHERE id = :id')->execute([':id' => (int)$otpRow['id']]);
+        otpGuardClearVerifyFailures($pdo, $accountEmail, 'password_reset');
+
+        appLogEvent($pdo, 'password_reset', 'auth', 'success', (int)$user['id'], 'user', (string)$user['id'], [
+            'email' => $accountEmail,
+        ]);
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Password updated. You can now sign in with your new password.',
+        ]);
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Failed to reset password']);
         exit;
     }
 }

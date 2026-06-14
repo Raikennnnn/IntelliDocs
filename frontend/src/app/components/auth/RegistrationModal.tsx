@@ -240,7 +240,10 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
 
               <div>
                 <Label className="mb-3 block text-center">Enter OTP Code</Label>
-                <div className="flex gap-2 justify-center" onPaste={handleOtpPaste}>
+                <div
+                  className="mx-auto grid w-full max-w-xs grid-cols-6 gap-1.5 sm:max-w-sm sm:gap-2"
+                  onPaste={handleOtpPaste}
+                >
                   {otp.map((digit, index) => (
                     <Input
                       key={index}
@@ -252,7 +255,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                       onChange={(e) => handleOtpChange(index, e.target.value)}
                       onPaste={handleOtpPaste}
                       autoComplete="one-time-code"
-                      className="w-12 h-12 text-center text-xl font-semibold"
+                      className="aspect-square h-auto w-full min-w-0 max-h-12 p-0 text-center text-base font-semibold sm:max-h-14"
                     />
                   ))}
                 </div>
