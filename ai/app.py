@@ -90,8 +90,10 @@ def health():
         payload["tesseract"] = _tesseract_exe
     elif _ocr_engine == "none" and _easyocr_reader is None:
         payload["hint"] = (
-            "Install Tesseract OCR for Windows (UB Mannheim build), or set TESSERACT_CMD to the full path of tesseract.exe. "
-            "Alternatively install PyTorch + EasyOCR on Python 3.11–3.12."
+            "No OCR engine found. On Linux (droplet): install the Tesseract binary with "
+            "'sudo apt-get update && sudo apt-get install -y tesseract-ocr', then restart the service. "
+            "On Windows: install the UB Mannheim Tesseract build, or set TESSERACT_CMD to tesseract.exe. "
+            "Alternatively install PyTorch + EasyOCR on Python 3.11-3.12."
         )
     return jsonify(payload)
 
@@ -1261,7 +1263,7 @@ def verify_doc():
         return (
             jsonify(
                 {
-                    "error": "No OCR engine available. Install PyTorch+EasyOCR, or install Tesseract OCR and: pip install pytesseract Pillow",
+                    "error": "No OCR engine available. On Linux install Tesseract ('sudo apt-get install -y tesseract-ocr') or install PyTorch+EasyOCR, then restart the AI service.",
                 }
             ),
             503,
@@ -1492,4 +1494,10 @@ def verify_doc():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # Production (droplet) runs this behind a process manager (systemd + gunicorn)
+    # or directly. Host/port/debug are env-driven so the same file works locally
+    # and on the server without code changes.
+    host = os.environ.get("AI_HOST", "127.0.0.1")
+    port = int(os.environ.get("AI_PORT", "5000"))
+    debug = os.environ.get("AI_DEBUG", "0").strip().lower() in ("1", "true", "yes", "on")
+    app.run(host=host, port=port, debug=debug)

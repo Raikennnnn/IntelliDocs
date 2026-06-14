@@ -67,3 +67,13 @@
 #--------------------------------------------------------------------
 
 # logger.threshold = 4
+
+#--------------------------------------------------------------------
+# AI VERIFICATION SERVICE
+#--------------------------------------------------------------------
+# Base URL of the Python/Flask OCR service used by the document scanner.
+# PHP reaches this server-side, so on a single droplet leave it as localhost.
+# Only uncomment/change this if the AI service runs on a different host or port.
+
+# AI_BASE_URL = http://127.0.0.1:5000
+

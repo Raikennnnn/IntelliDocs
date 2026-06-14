@@ -15,7 +15,8 @@ import {
   XCircle,
   FileText,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { apiFetch } from "../../lib/api";
 
 type DocType =
   | "form137"
@@ -46,6 +47,14 @@ interface VerificationHistoryItem {
   result: VerifyApiResponse;
 }
 
+type AiHealth = {
+  loading: boolean;
+  online: boolean;
+  ocrReady: boolean;
+  ocrEngine?: string;
+  error?: string | null;
+};
+
 export function AIVerification() {
   const [docType, setDocType] = useState<DocType>("form137");
   const [file, setFile] = useState<File | null>(null);
@@ -53,9 +62,49 @@ export function AIVerification() {
   const [error, setError] = useState<string | null>(null);
   const [latest, setLatest] = useState<VerificationHistoryItem | null>(null);
   const [history, setHistory] = useState<VerificationHistoryItem[]>([]);
+  const [health, setHealth] = useState<AiHealth>({
+    loading: true,
+    online: false,
+    ocrReady: false,
+  });
 
-  const AI_BASE_URL =
-    (import.meta as any).env?.VITE_AI_BASE_URL || "http://127.0.0.1:5000";
+  // Same-origin proxy: the browser uploads to PHP, which forwards to the AI
+  // service server-side. This avoids CORS / HTTPS mixed-content issues and works
+  // on the droplet without exposing the Python service to the public internet.
+  const VERIFY_ENDPOINT = "/api/ai/verify-upload";
+  const HEALTH_ENDPOINT = "/api/ai/health";
+
+  const checkHealth = async () => {
+    setHealth((h) => ({ ...h, loading: true }));
+    try {
+      const res = await apiFetch(HEALTH_ENDPOINT);
+      const data = (await res.json()) as {
+        online?: boolean;
+        ocr_ready?: boolean;
+        ocr_engine?: string;
+        error?: string;
+      };
+      setHealth({
+        loading: false,
+        online: Boolean(data?.online),
+        ocrReady: Boolean(data?.ocr_ready),
+        ocrEngine: data?.ocr_engine,
+        error: data?.error ?? null,
+      });
+    } catch (e: any) {
+      setHealth({
+        loading: false,
+        online: false,
+        ocrReady: false,
+        error: e?.message || "Unable to reach the AI service.",
+      });
+    }
+  };
+
+  useEffect(() => {
+    void checkHealth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const statusBadge = (status: VerifyStatus) => {
     if (status === "verified") return <Badge className="bg-green-600">Verified</Badge>;
@@ -82,15 +131,18 @@ export function AIVerification() {
 
     setLoading(true);
     try {
-      const res = await fetch(`${AI_BASE_URL}/verify`, {
+      const res = await apiFetch(VERIFY_ENDPOINT, {
         method: "POST",
         body: form,
       });
-      const data = (await res.json()) as VerifyApiResponse | { error?: string };
-      if (!res.ok) {
-        const msg = (data as any)?.error || "AI verification failed.";
+      const payload = (await res.json()) as
+        | { success: true; result: VerifyApiResponse }
+        | { success?: false; error?: string };
+      if (!res.ok || (payload as any)?.success === false) {
+        const msg = (payload as any)?.error || "AI verification failed.";
         throw new Error(msg);
       }
+      const data = (payload as { success: true; result: VerifyApiResponse }).result;
       const item: VerificationHistoryItem = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         filename: file.name,
@@ -122,12 +174,66 @@ export function AIVerification() {
       <Alert className="border-[#8B1538] bg-red-50">
         <Brain className="h-4 w-4 text-[#8B1538]" />
         <AlertDescription className="text-gray-700">
-          <strong>AI Verification System:</strong> This uses a local Python OCR
-          service (default{" "}
-          <code className="font-mono">http://127.0.0.1:5000</code>). If you
-          haven’t started it yet, run it from <code className="font-mono">ai/</code>.
+          <strong>AI Verification System:</strong> Uploads are checked by the
+          server-side OCR service. If verification fails to connect, make sure the
+          Python service (<code className="font-mono">ai/app.py</code>) is running on
+          the server and an OCR engine (Tesseract) is installed.
         </AlertDescription>
       </Alert>
+
+      {/* AI service health */}
+      <Card>
+        <CardContent className="py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span
+                className={`inline-block h-2.5 w-2.5 rounded-full ${
+                  health.loading
+                    ? "bg-gray-300"
+                    : health.online && health.ocrReady
+                    ? "bg-green-500"
+                    : health.online
+                    ? "bg-yellow-500"
+                    : "bg-red-500"
+                }`}
+              />
+              <div>
+                <div className="text-sm font-medium text-gray-900">
+                  AI service status
+                </div>
+                <div className="text-xs text-gray-600">
+                  {health.loading
+                    ? "Checking..."
+                    : !health.online
+                    ? `Offline${health.error ? ` — ${health.error}` : ""}`
+                    : health.ocrReady
+                    ? `Online — OCR engine: ${health.ocrEngine}`
+                    : "Online, but no OCR engine installed (install Tesseract on the server)"}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {health.loading ? (
+                <Badge className="bg-gray-400">Checking</Badge>
+              ) : health.online && health.ocrReady ? (
+                <Badge className="bg-green-600">Ready</Badge>
+              ) : health.online ? (
+                <Badge className="bg-yellow-600">No OCR</Badge>
+              ) : (
+                <Badge className="bg-red-600">Offline</Badge>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void checkHealth()}
+                disabled={health.loading}
+              >
+                Recheck
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Verify form */}
       <Card>
@@ -237,7 +343,7 @@ export function AIVerification() {
             <div className="p-4 border rounded-md">
               <div className="text-sm text-gray-600">Service</div>
               <div className="text-sm font-medium text-gray-900 break-all">
-                {AI_BASE_URL}
+                {VERIFY_ENDPOINT}
               </div>
             </div>
 

@@ -78,6 +78,14 @@ switch ($route) {
     case 'ai/verify-document/':
         require_once __DIR__ . '/../api/ai_verify_document.php';
         break;
+    case 'ai/verify-upload':
+    case 'ai/verify-upload/':
+        require_once __DIR__ . '/../api/ai_verify_upload.php';
+        break;
+    case 'ai/health':
+    case 'ai/health/':
+        require_once __DIR__ . '/../api/ai_health.php';
+        break;
     case 'announcements':
     case 'announcements/':
         require_once __DIR__ . '/../api/announcements.php';
