@@ -832,9 +832,9 @@ function documentAiSummaryLine(opts: {
   if (aiState === "running") return "AI is checking this file…";
   if (aiState === "error") return "AI check did not finish — open View and verify manually.";
   if (clearedOnFile && concernPct === null) {
-    return "Previously verified on file. Re-run AI only if you need a fresh score.";
+    return "Previously verified on file. Click Run AI only if you need a fresh score.";
   }
-  if (concernPct === null) return "Not scored yet. Click Re-run AI above after uploads finish.";
+  if (concernPct === null) return "Not scored yet — click Run AI above when you are ready to check this file.";
 
   if (concernPct > CONCERN_STRICT_THRESHOLD || ai?.status === "failed") {
     return "High concern — open View and verify before approving.";
@@ -884,7 +884,7 @@ export function ReviewDocuments() {
   const [aiDocStateById, setAiDocStateById] = useState<
     Record<string, { state: "pending" | "running" | "done" | "error"; error?: string }>
   >({});
-  // Bumped by the "Re-run AI" button to trigger the verification effect again.
+  // Bumped by the "Run AI" button to trigger verification (saved results load from DB on open).
   const [aiRerunNonce, setAiRerunNonce] = useState(0);
   // Tracks an in-flight approve/reject so we can disable the buttons against double-submits.
   const [decisionSubmitting, setDecisionSubmitting] = useState<null | "approve" | "reject">(null);
@@ -1091,6 +1091,13 @@ export function ReviewDocuments() {
       }
       if (Object.keys(seeded).length > 0) {
         setAiResultsByDocId((prev) => ({ ...seeded, ...prev }));
+        const doneStates: Record<string, { state: "done" }> = {};
+        for (const doc of Array.isArray(app?.documents) ? app.documents : []) {
+          if (doc?.id && aiVerifyFromDocument(doc)) {
+            doneStates[String(doc.id)] = { state: "done" };
+          }
+        }
+        setAiDocStateById((prev) => ({ ...doneStates, ...prev }));
       }
 
       if (app?.isAlreadyEnrolled && app?.status !== "Rejected") {
@@ -1607,8 +1614,11 @@ export function ReviewDocuments() {
     };
   }, [isDocumentDialogOpen, previewObjectUrl, previewDisplayKind]);
 
-  // Automatically run AI verification for image documents when the application loads.
+  // AI verify runs ONLY when the registrar clicks Run AI (aiRerunNonce > 0).
+  // Saved scores load from the database on page open — no automatic OCR on every visit.
   useEffect(() => {
+    if (aiRerunNonce === 0) return;
+
     let cancelled = false;
     const run = async () => {
       if (!application?.documents || !Array.isArray(application.documents) || application.documents.length === 0) return;
@@ -1624,9 +1634,6 @@ export function ReviewDocuments() {
           if (cancelled) return;
           const id = String(doc.id);
           const docType = mapDocType(doc);
-          const stored = aiVerifyFromDocument(doc) ?? aiResultsByDocId[id];
-          // Page load: only verify documents never scored before (prevents 5× OCR → nginx 502).
-          if (aiRerunNonce === 0 && stored) continue;
 
           try {
             if (!cancelled) {
@@ -2105,9 +2112,8 @@ export function ReviewDocuments() {
                     </span>
                   ) : (
                     <span>
-                      Each file is scored on <strong className="font-medium text-gray-800">mismatch (MM)</strong>{" "}
-                      and <strong className="font-medium text-gray-800">tamper (T)</strong>. Image quality is
-                      checked at upload.
+                      AI runs only when you click <strong className="font-medium text-gray-800">Run AI</strong>{" "}
+                      — results are saved on the server. Use it again only to double-check after updates.
                     </span>
                   )}
                 </div>
@@ -2124,7 +2130,7 @@ export function ReviewDocuments() {
                   }}
                   disabled={aiRunning}
                 >
-                  Re-run AI
+                  {aiRunning ? "Running AI…" : "Run AI"}
                 </Button>
                         </div>
               <ConcernScoringHelp />
