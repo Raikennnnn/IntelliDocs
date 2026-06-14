@@ -83,15 +83,24 @@ Update the IP if your droplet changed: `.\scripts\deploy_droplet_from_pc.ps1 -Dr
 bash /var/www/intellidocs/scripts/deploy_droplet.sh
 ```
 
-Or manually:
+Or manually (use `-B origin/...` — **not** plain `checkout IntelliDocs-V4`, an old tag has the same name):
 
 ```bash
 cd /var/www/intellidocs
-git pull origin IntelliDocs-V4
+git fetch origin
+git checkout -B IntelliDocs-V4 origin/IntelliDocs-V4
+git reset --hard origin/IntelliDocs-V4
+git log -1 --oneline
 bash scripts/deploy_droplet.sh
 ```
 
-After deploy, confirm the server commit matches GitHub (`2485e7d6` or newer):
+**Still old UI?** Run the fix script on the droplet:
+
+```bash
+bash /var/www/intellidocs/scripts/fix_droplet_git_and_deploy.sh
+```
+
+After deploy, confirm the server commit matches GitHub (`e1b4a6c8` or newer):
 
 ```bash
 cd /var/www/intellidocs && git log -1 --oneline
@@ -136,6 +145,7 @@ AUTH_ALLOW_LEGACY_HEADER=0
 | AI error: Unexpected token '<', "<!DOCTYPE "... | **nginx/PHP timeout** (default 60s). SF10 OCR takes 2–3 min. Run `bash scripts/configure_nginx_ai_timeouts.sh` on the droplet, then re-run AI. |
 | Deploy says AI health failed but service is running | Old deploy checked health once with no wait. Pull latest and re-run deploy, or run `bash scripts/fix_ai_service.sh`. |
 | `vite build` appears stuck / deploy dies silently | Low RAM on 2 GB droplet — wait 2–6 min, or add swap (`fallocate -l 2G /swapfile && mkswap /swapfile && swapon /swapfile`). Latest deploy script auto-creates swap. |
+| Old UI after deploy (no Forgot password, old layout) | **Git tag `IntelliDocs-V4` conflicts with branch** — run `bash scripts/fix_droplet_git_and_deploy.sh` on the server |
 | Old UI after deploy (small report dialog, signature overlay) | Deploy was only updating `public/app/` while nginx serves **`public/index.html` + `public/assets/`**. Re-run the latest `deploy_droplet.sh`, then hard refresh |
 | Blank SPA | Re-run deploy script; check `public/index.html` and `public/assets/index-*.js` exist |
 | OCR errors | `apt install tesseract-ocr`; restart `intellidocs-ai` |

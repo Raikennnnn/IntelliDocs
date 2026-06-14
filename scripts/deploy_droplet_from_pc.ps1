@@ -67,7 +67,7 @@ try {
     Write-Host "=== SSH: pull and build on droplet ===" -ForegroundColor Cyan
     Write-Host "This usually takes several minutes. Wait for 'Deploy finished.'" -ForegroundColor Yellow
 
-    $remoteCmd = 'cd ' + $AppRoot + ' && git fetch origin && git checkout ' + $Branch + ' && git pull origin ' + $Branch + ' && git log -1 --oneline && bash scripts/deploy_droplet.sh'
+    $remoteCmd = 'cd ' + $AppRoot + ' && git fetch origin && git checkout -B ' + $Branch + ' origin/' + $Branch + ' && git reset --hard origin/' + $Branch + ' && git log -1 --oneline && bash scripts/deploy_droplet.sh'
     $sshTarget = "${SshUser}@${DropletIp}"
 
     & ssh -o ConnectTimeout=30 $sshTarget $remoteCmd

@@ -44,8 +44,15 @@ cd "$APP_ROOT"
 if [ "${SKIP_GIT:-0}" = "0" ] && [ -d .git ]; then
   step "Pull latest code ($BRANCH)"
   git fetch origin
-  git checkout "$BRANCH"
-  git pull origin "$BRANCH"
+  # IMPORTANT: a legacy tag also named "IntelliDocs-V4" exists on GitHub.
+  # `git checkout IntelliDocs-V4` can land on that old tag instead of the branch.
+  if ! git show-ref --verify --quiet "refs/remotes/origin/${BRANCH}"; then
+    echo "ERROR: origin/${BRANCH} not found after fetch. Check GIT_REMOTE and branch name."
+    exit 1
+  fi
+  git checkout -B "$BRANCH" "origin/${BRANCH}"
+  git reset --hard "origin/${BRANCH}"
+  echo "Checked out branch ${BRANCH} at $(git rev-parse --short HEAD) ($(git log -1 --format=%s))"
 else
   step "Skip git pull (not a repository)"
 fi
