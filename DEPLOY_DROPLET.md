@@ -68,6 +68,17 @@ The deploy script copies the Vite build to **`public/index.html`** and **`public
 
 ### Every update
 
+**From your PC** (if SSH works on your network):
+
+```powershell
+cd C:\xampp\htdocs\IntelliDocs
+.\scripts\deploy_droplet_from_pc.ps1
+```
+
+Update the IP if your droplet changed: `.\scripts\deploy_droplet_from_pc.ps1 -DropletIp YOUR_IP`
+
+**On the droplet** (DigitalOcean → Access → Launch Droplet Console):
+
 ```bash
 bash /var/www/intellidocs/scripts/deploy_droplet.sh
 ```
@@ -79,6 +90,14 @@ cd /var/www/intellidocs
 git pull origin IntelliDocs-V4
 bash scripts/deploy_droplet.sh
 ```
+
+After deploy, confirm the server commit matches GitHub (`2485e7d6` or newer):
+
+```bash
+cd /var/www/intellidocs && git log -1 --oneline
+```
+
+Hard refresh the browser (`Ctrl+Shift+R`). Pushing to GitHub alone does **not** update the live site — you must run deploy on the server.
 
 ## Production `env` essentials
 
