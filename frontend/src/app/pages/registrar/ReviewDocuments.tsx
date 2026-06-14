@@ -602,6 +602,7 @@ function enrollmentCrossCheckPlan(docType: AiDocType, app: any): EnrollmentCross
       maybe("Sex", f.sex),
       maybe("School year", f.schoolYear),
       maybe("Previous school", f.prevSchool),
+      { field: "Signature", expected: "Handwritten signature present", ok: null },
     ].filter(Boolean) as EnrollmentCrossRow[];
   }
   const nameRow = maybe("Name", f.name);
@@ -650,13 +651,13 @@ function isAiVerifyPayloadStale(docType: AiDocType, app: any, r?: AiVerifyRespon
   if (!r.resolved_doc_type) return true;
   const effective = aiDocTypeFromResolved(String(r.resolved_doc_type ?? "")) ?? docType;
   if (
-    (effective === "birth_certificate" || effective === "good_moral") &&
+    (effective === "birth_certificate" || effective === "good_moral" || effective === "sf9" || effective === "form137") &&
     !r.seal_scan &&
     !r.doc_checks?.some((c) => /seal|logo/i.test(String(c.field || "")))
   ) {
     return true;
   }
-  if (effective === "good_moral" && Array.isArray(r.field_checks)) {
+  if ((effective === "good_moral" || effective === "sf9" || effective === "form137") && Array.isArray(r.field_checks)) {
     const hasExcluded = r.field_checks.some((fc) =>
       GOOD_MORAL_EXCLUDED_CROSS_FIELDS.has(String(fc.field || "").trim().toLowerCase()),
     );
@@ -748,7 +749,7 @@ function checkDetailVisibility(docType: AiDocType): CheckDetailVisibility {
       return {
         tamper: true,
         synthetic: true,
-        sealLogo: false,
+        sealLogo: true,
         labels: true,
         enrollment: true,
       };
@@ -772,9 +773,9 @@ function checkDetailsIntro(docType: AiDocType): string {
     case "good_moral":
       return "School seal/logo, certificate labels, enrollment cross-check, and signature scan.";
     case "sf9":
-      return "Report card labels, enrollment cross-check, and integrity signals.";
+      return "Report card labels, school seal/logo, enrollment cross-check, signature scan, and integrity signals.";
     case "form137":
-      return "Form 137 labels, enrollment cross-check, and integrity signals.";
+      return "Form 137 labels, school seal/logo, enrollment cross-check, signature scan, and integrity signals.";
     default:
       return "Supporting signals from OCR and rules — always confirm against the original file.";
   }
@@ -3235,8 +3236,8 @@ export function ReviewDocuments() {
                               {enrollmentCrossCheckTitle(docType)}
                             </h3>
                             <p className="mt-1 text-xs text-gray-500">
-                              {docType === "good_moral"
-                                ? "Enrollment fields plus a visual signature scan on the certificate — re-run AI after updates."
+                              {docType === "good_moral" || docType === "sf9" || docType === "form137"
+                                ? "Enrollment fields plus a visual signature scan on the document — re-run AI after updates."
                                 : "Compared against the student\u2019s enrollment form — re-run AI after form updates."}
                             </p>
                             <div
