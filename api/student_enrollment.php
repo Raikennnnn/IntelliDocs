@@ -992,6 +992,19 @@ if ($method === 'POST') {
                 $u->execute([':v' => $val, ':id' => $userId]);
             }
         }
+        if (columnExists($pdo, 'users', 'full_name')) {
+            $composedName = studentEnrollmentFormDisplayName($formData, [
+                'full_name' => '',
+                'first_name' => $syncMap['first_name'] ?? '',
+                'middle_name' => $syncMap['middle_name'] ?? '',
+                'last_name' => $syncMap['last_name'] ?? '',
+                'extension_name' => $syncMap['extension_name'] ?? '',
+            ]);
+            if ($composedName !== '') {
+                $u = $pdo->prepare('UPDATE users SET full_name = :v WHERE id = :id');
+                $u->execute([':v' => $composedName, ':id' => $userId]);
+            }
+        }
 
         syncStudentCohortForEnrollment($pdo, $enrollmentId);
         if ($status === 'enrolled') {

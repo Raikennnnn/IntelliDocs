@@ -108,6 +108,12 @@ try {
     // cases. Rejected applications stay so the registrar can audit them.
     // One in-flight application per student (newest row) so an older enrolled
     // record does not hide a current Grade 12 draft/pending application.
+    $extraUserCols = '';
+    foreach (['first_name', 'middle_name', 'last_name', 'extension_name'] as $col) {
+        if (columnExists($pdo, 'users', $col)) {
+            $extraUserCols .= ", u.{$col}";
+        }
+    }
     $sql = "
         SELECT
             e.*,
@@ -116,6 +122,7 @@ try {
             u.full_name,
             u.email,
             u.id AS user_id
+            {$extraUserCols}
         FROM enrollments e
         INNER JOIN users u ON u.id = e.user_id
         INNER JOIN (
@@ -192,10 +199,30 @@ try {
             $documentsVerified = (int)($count['verified_docs'] ?? 0);
         }
 
+        $formData = [];
+        $stepsRaw = $row['enrollment_steps'] ?? null;
+        if ($stepsRaw !== null && $stepsRaw !== '') {
+            $steps = json_decode((string)$stepsRaw, true);
+            if (is_array($steps) && is_array($steps['form_data'] ?? null)) {
+                $formData = $steps['form_data'];
+            }
+        }
+        $userRow = [
+            'full_name' => (string)($row['full_name'] ?? ''),
+            'first_name' => (string)($row['first_name'] ?? ''),
+            'middle_name' => (string)($row['middle_name'] ?? ''),
+            'last_name' => (string)($row['last_name'] ?? ''),
+            'extension_name' => (string)($row['extension_name'] ?? ''),
+        ];
+        $studentName = studentEnrollmentFormDisplayName($formData, $userRow);
+        if ($studentName === '') {
+            $studentName = 'Unknown Applicant';
+        }
+
         $applications[] = [
             'id' => 'APP-' . date('Y') . '-' . str_pad((string)$enrollmentId, 3, '0', STR_PAD_LEFT),
             'rawId' => (string)$enrollmentId,
-            'studentName' => (string)($row['full_name'] ?? 'Unknown Applicant'),
+            'studentName' => $studentName,
             'email' => (string)($row['email'] ?? ''),
             'strand' => (string)($row['strand'] ?? ''),
             'gradeLevel' => (string)($row['grade_level'] ?? ''),

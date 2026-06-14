@@ -67,7 +67,7 @@ export function Applications() {
       setApplications(
         rows.map((row) => ({
           id: String(row.id ?? ""),
-          studentName: String(row.studentName ?? "Unknown Applicant"),
+          studentName: String(row.studentName || "Unknown Applicant"),
           email: String(row.email ?? ""),
           strand: String(row.strand ?? ""),
           gradeLevel: String(row.gradeLevel ?? ""),
