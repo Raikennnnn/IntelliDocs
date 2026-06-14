@@ -210,10 +210,11 @@ if ($expectedStrand !== '' && !$skipGradeStrandForMoral) {
     $postFields['expected_strand'] = $expectedStrand;
 }
 
-// SF10 / PSA OCR can exceed 30s on a small server — stay below nginx fastcgi timeout (300s).
-@set_time_limit(200);
+// OCR + seal/signature scans can exceed 60s on a small droplet — align with nginx/PHP (300s).
+@set_time_limit(320);
+@ini_set('max_execution_time', '320');
 
-$aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 180);
+$aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 290);
 
 if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
     $decoded = is_array($aiRes['body']) ? $aiRes['body'] : null;

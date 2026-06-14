@@ -880,6 +880,8 @@ def _scan_handwritten_signature(
     boxes: list[dict] | None,
     img_w: int,
     img_h: int,
+    *,
+    img_bgr=None,
 ) -> dict:
     """
     Visual signature scan — looks for ink strokes in the authority/signature area.
@@ -898,7 +900,10 @@ def _scan_handwritten_signature(
         return fallback
 
     try:
-        img, img_w, img_h = _cv2_read_bgr(filepath)
+        if img_bgr is not None:
+            img = img_bgr
+        else:
+            img, img_w, img_h = _cv2_read_bgr(filepath)
         if img is None:
             return fallback
         if img_w <= 0 or img_h <= 0:
@@ -963,14 +968,22 @@ def _append_signature_field_check(
     boxes: list[dict] | None,
     img_w: int | None,
     img_h: int | None,
+    *,
+    img_bgr=None,
 ) -> None:
     """Add visual signature scan result to field_checks for registrar cross-check UI."""
-    img, cv_w, cv_h = _cv2_read_bgr(filepath)
-    if img is not None and cv_w > 0 and cv_h > 0:
-        img_w, img_h = cv_w, cv_h
+    if img_bgr is not None and img_w and img_h:
+        cv_w, cv_h = int(img_w), int(img_h)
+    else:
+        img, cv_w, cv_h = _cv2_read_bgr(filepath)
+        img_bgr = img
+        if cv_w > 0 and cv_h > 0:
+            img_w, img_h = cv_w, cv_h
     if not img_w or not img_h:
         return
-    sig = _scan_handwritten_signature(filepath, boxes, int(img_w), int(img_h))
+    sig = _scan_handwritten_signature(
+        filepath, boxes, int(img_w), int(img_h), img_bgr=img_bgr
+    )
     detected = bool(sig.get("detected"))
     confidence = float(sig.get("confidence") or 0.0)
     row: dict = {
@@ -2105,7 +2118,15 @@ def _scan_school_header_seal(
     }
 
 
-def _scan_seal_or_logo(filepath: str, doc_type: str, *, ocr_text: str = "") -> dict:
+def _scan_seal_or_logo(
+    filepath: str,
+    doc_type: str,
+    *,
+    ocr_text: str = "",
+    img_bgr=None,
+    img_w: int | None = None,
+    img_h: int | None = None,
+) -> dict:
     """
     Visual seal/logo scan for PSA birth certificates and school documents.
     Uses templates when available, plus generic emblem heuristics for varied layouts.
@@ -2130,7 +2151,10 @@ def _scan_seal_or_logo(filepath: str, doc_type: str, *, ocr_text: str = "") -> d
         return fallback
 
     try:
-        img, w, h = _cv2_read_bgr(filepath)
+        if img_bgr is not None and img_w and img_h:
+            img, w, h = img_bgr, int(img_w), int(img_h)
+        else:
+            img, w, h = _cv2_read_bgr(filepath)
         if img is None or w <= 0 or h <= 0:
             fallback["signals"] = ["Could not read image for seal/logo scan."]
             return fallback
@@ -2222,9 +2246,19 @@ def _append_seal_logo_doc_check(
     doc_type: str,
     *,
     ocr_text: str = "",
+    img_bgr=None,
+    img_w: int | None = None,
+    img_h: int | None = None,
 ) -> None:
     """Add seal/logo visual check to doc_checks and refresh match confidence."""
-    scan = _scan_seal_or_logo(filepath, doc_type, ocr_text=ocr_text)
+    scan = _scan_seal_or_logo(
+        filepath,
+        doc_type,
+        ocr_text=ocr_text,
+        img_bgr=img_bgr,
+        img_w=img_w,
+        img_h=img_h,
+    )
     label = str(scan.get("label") or "Seal/logo (visual)")
     detected = bool(scan.get("detected"))
     confidence = float(scan.get("confidence") or 0.0)
@@ -3424,6 +3458,9 @@ class _VerifyImageCache:
         "filepath",
         "_lock",
         "_rgb",
+        "_bgr",
+        "_bgr_w",
+        "_bgr_h",
         "_ela_diff",
         "_ela_var",
         "_ela_done",
@@ -3437,6 +3474,9 @@ class _VerifyImageCache:
         self.filepath = filepath
         self._lock = threading.Lock()
         self._rgb = None
+        self._bgr = None
+        self._bgr_w = 0
+        self._bgr_h = 0
         self._ela_diff = None
         self._ela_var = None
         self._ela_done = False
@@ -3444,6 +3484,19 @@ class _VerifyImageCache:
         self._noise_done = False
         self._tamper_map = None
         self._field_diff = None
+
+    def get_bgr(self):
+        """EXIF-corrected BGR image — shared by seal/signature scans (one decode per verify)."""
+        with self._lock:
+            if self._bgr is not None:
+                return self._bgr, self._bgr_w, self._bgr_h
+        bgr, w, h = _cv2_read_bgr(self.filepath)
+        with self._lock:
+            if self._bgr is None:
+                self._bgr = bgr
+                self._bgr_w = int(w)
+                self._bgr_h = int(h)
+            return self._bgr, self._bgr_w, self._bgr_h
 
     def _load_rgb(self):
         with self._lock:
@@ -7319,8 +7372,26 @@ def verify_doc():
         sig_dt = (effective_doc_type or "").strip().lower()
         if sig_dt in ("goodmoral",):
             sig_dt = "good_moral"
-        if sig_dt in _SIGNATURE_SCAN_DOC_TYPES and img_w and img_h:
-            _append_signature_field_check(payload, filepath, boxes, img_w, img_h)
+        need_sig = sig_dt in _SIGNATURE_SCAN_DOC_TYPES and img_w and img_h
+        need_seal = effective_doc_type in (
+            "birth_certificate",
+            "birthcert",
+            "good_moral",
+            "goodmoral",
+            "sf9",
+            "report_card",
+            "form137",
+            "sf10",
+            "form157",
+        )
+        bgr_img = bgr_w = bgr_h = None
+        if need_sig or need_seal:
+            bgr_img, bgr_w, bgr_h = img_cache.get_bgr()
+
+        if need_sig and bgr_img is not None:
+            _append_signature_field_check(
+                payload, filepath, boxes, img_w, img_h, img_bgr=bgr_img
+            )
 
         if effective_doc_type in ("good_moral", "goodmoral"):
             diff_arr = field_diff_arr
@@ -7378,19 +7449,15 @@ def verify_doc():
                 tamper_score = _clamp01(tamper_score - 0.14)
                 payload["tamper_score"] = tamper_score
 
-        if effective_doc_type in (
-            "birth_certificate",
-            "birthcert",
-            "good_moral",
-            "goodmoral",
-            "sf9",
-            "report_card",
-            "form137",
-            "sf10",
-            "form157",
-        ):
+        if need_seal:
             _append_seal_logo_doc_check(
-                payload, filepath, effective_doc_type, ocr_text=text or ""
+                payload,
+                filepath,
+                effective_doc_type,
+                ocr_text=text or "",
+                img_bgr=bgr_img,
+                img_w=bgr_w or img_w,
+                img_h=bgr_h or img_h,
             )
             if effective_doc_type in ("birth_certificate", "birthcert"):
                 _upgrade_birth_cert_header_doc_checks(payload, text or "", boxes, img_h)

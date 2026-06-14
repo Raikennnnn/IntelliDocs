@@ -165,18 +165,18 @@ export async function parseApiJson<T>(
   const text = await res.text();
   const trimmed = text.trim();
   if (trimmed.startsWith('<!') || trimmed.toLowerCase().startsWith('<html')) {
-    if (status === 504 || /gateway timeout/i.test(trimmed)) {
+    if (status === 502 || status === 504 || /gateway timeout|bad gateway/i.test(trimmed)) {
       return {
         ok: false,
         status,
         error:
-          'Server timed out (504) while running OCR. SF10 can take 2–3 minutes — ask admin to run configure_nginx_ai_timeouts.sh on the server.',
+          `AI verify timed out (HTTP ${status}). On the server run: bash scripts/configure_nginx_ai_timeouts.sh then systemctl restart intellidocs-ai`,
       };
     }
     return {
       ok: false,
       status,
-      error: `Server returned HTML instead of JSON (HTTP ${status}). The OCR request may have timed out.`,
+      error: `Server returned HTML instead of JSON (HTTP ${status}). Check that the AI service is running.`,
     };
   }
   if (!trimmed) {

@@ -36,6 +36,11 @@ systemctl restart intellidocs-ai
 sleep 2
 systemctl --no-pager --full status intellidocs-ai || true
 
+step "Configure nginx/PHP timeouts (prevents HTML 502 on long OCR)"
+if [ -f "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" ]; then
+  bash "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" || true
+fi
+
 step "Health check"
 HEALTH="$(curl -fsS --max-time 15 http://127.0.0.1:8080/health || true)"
 echo "$HEALTH"
