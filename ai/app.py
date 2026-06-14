@@ -4,15 +4,10 @@ import re
 import shutil
 import sys
 import tempfile
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.dirname(APP_DIR)
-# Bumped when verify/seal/signature behavior changes — visible on GET /health.
-AI_VERIFY_BUILD = "20250603-verify-fast-v4"
 app.config['UPLOAD_FOLDER'] = os.path.join(APP_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
@@ -268,84 +263,6 @@ def _resolve_doc_type_from_content(norm_text: str, requested: str) -> str:
     return req
 
 
-def _photocopy_scan_issues(gray, lap_var: float) -> list[str]:
-    """
-    Detect noisy photocopies, scan-of-scan artifacts, and washed-out duplicates.
-    These often pass Laplacian blur checks because speckle adds false sharpness.
-    """
-    import cv2
-    import numpy as np
-
-    issues: list[str] = []
-    blur = cv2.GaussianBlur(gray, (7, 7), 0)
-    residual = cv2.absdiff(gray, blur)
-    noise_mean = float(np.mean(residual))
-    noise_std = float(np.std(residual))
-    mean_brightness = float(np.mean(gray))
-
-    if noise_mean >= 5.5 and lap_var >= 600:
-        issues.append(
-            "This looks like a noisy photocopy or a scan of a scan. "
-            "Take a clear, straight photo of the original document in good lighting."
-        )
-    if mean_brightness >= 228 and noise_std >= 14:
-        issues.append(
-            "The image is washed out with heavy scan or photocopy noise. "
-            "Upload a clear photo of the original — not a faded duplicate copy."
-        )
-    if lap_var >= 1200 and noise_mean >= 4.5 and mean_brightness >= 215:
-        issues.append(
-            "Document text is not sharp enough to verify. Retake with the full page in frame, "
-            "even lighting, and no flash glare."
-        )
-    return issues
-
-
-def _ocr_gibberish_ratio(text: str) -> float:
-    """Share of OCR tokens that look like noise rather than real words."""
-    import re
-
-    words = re.findall(r"[A-Za-z]{3,}", (text or ""))
-    if not words:
-        return 1.0
-    bad = 0
-    for word in words:
-        letters = word.upper()
-        vowels = sum(1 for c in letters if c in "AEIOU")
-        if vowels == 0:
-            bad += 1
-            continue
-        if len(letters) >= 5 and vowels / len(letters) < 0.12:
-            bad += 1
-    return bad / len(words)
-
-
-def _document_acceptability_check(filepath: str, doc_type: str) -> dict:
-    """Combined Level 1 image + readability gate for uploads and verification."""
-    quality = _image_quality_check(filepath, doc_type)
-    dt = _normalize_doc_type_key(doc_type)
-    readability = None
-    if dt not in PHOTO_DOC_TYPES:
-        readability = _upload_document_readability_check(filepath, doc_type)
-    if not quality.get("pass"):
-        out = dict(quality)
-        out["readability"] = readability
-        return out
-    if readability and not readability.get("pass"):
-        issues = list(quality.get("issues") or []) + list(readability.get("issues") or [])
-        return {
-            "pass": False,
-            "score": min(int(quality.get("score") or 0), 35),
-            "blur_variance": quality.get("blur_variance", 0.0),
-            "message": str(readability.get("message") or (issues[0] if issues else "Document is not readable.")),
-            "issues": issues,
-            "readability": readability,
-        }
-    out = dict(quality)
-    out["readability"] = readability
-    return out
-
-
 def _image_quality_check(filepath: str, doc_type: str) -> dict:
     """
     Level 1 — image quality gate (blur, size, brightness).
@@ -387,9 +304,6 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             issues.append("Image is too dark. Use brighter lighting.")
         elif mean_brightness > 235:
             issues.append("Image is overexposed (too bright). Reduce glare and retake.")
-
-        if not is_photo:
-            issues.extend(_photocopy_scan_issues(gray, lap_var))
 
         score = _clamp01(lap_var / (min_lap * 2.2))
         passed = len(issues) == 0
@@ -448,13 +362,9 @@ def _quick_ocr_for_upload_screen(filepath: str, doc_type: str) -> tuple[str, flo
             if _ocr_candidate_score(t2, c2, doc_type) > _ocr_candidate_score(text, conf, doc_type):
                 text, conf = t2, c2
             if dt in ("birth_certificate", "birthcert"):
-                header_probe = re.sub(r"\s+", " ", (text or "").upper())
-                if not (
-                    _psa_has_authority_header(header_probe) and _psa_has_republic_header(header_probe)
-                ):
-                    extra = _ocr_birth_cert_header_text(filepath)
-                    if extra and extra not in text:
-                        text = f"{text}\n{extra}".strip()
+                extra = _ocr_birth_cert_header_text(filepath)
+                if extra and extra not in text:
+                    text = f"{text}\n{extra}".strip()
         except Exception:
             pass
     return text, conf
@@ -508,25 +418,18 @@ def _upload_document_readability_check(filepath: str, doc_type: str) -> dict:
 
     keywords = _upload_doc_type_keywords(doc_type)
     hits = sum(1 for k in keywords if k in norm)
-    min_hits = 3 if dt in ("sf9", "report_card", "form137", "sf10", "form157", "good_moral", "goodmoral", "birth_certificate", "birthcert") else 2
+    min_hits = 2
     if hits < min_hits:
         issues.append(
-            "This file does not look like a clear, readable copy of the required document. "
-            "Retake the photo with the full page straight, steady, and in good lighting."
+            "This file does not look like a readable copy of the required document. "
+            "Check that you selected the correct requirement and that all text is sharp and legible."
         )
 
-    gibberish = _ocr_gibberish_ratio(text)
     try:
         conf_val = float(avg_conf)
     except (TypeError, ValueError):
         conf_val = 0.0
-    if gibberish >= 0.34 and conf_val < 0.55:
-        issues.append(
-            "Much of the text could not be read clearly. Avoid photocopies, shadows, glare, and camera shake."
-        )
-    if conf_val < 0.42 and hits < min_hits + 1:
-        issues.append("Text is too faint or blurry to read. Avoid shadows, glare, and camera shake.")
-    elif conf_val < 0.22 and word_count < min_words + 4:
+    if conf_val < 0.22 and word_count < min_words + 4:
         issues.append("Text is too faint or blurry to read. Avoid shadows, glare, and camera shake.")
 
     passed = len(issues) == 0
@@ -540,44 +443,6 @@ def _upload_document_readability_check(filepath: str, doc_type: str) -> dict:
 
 
 _ENROLLMENT_MM_EXCLUDE_FIELDS = frozenset({"signature"})
-
-# Visual signature scan tuning — wider/taller ROIs for varied certificate layouts.
-_SIGNATURE_MIN_HEIGHT_PX = 40
-_SIGNATURE_HEIGHT_FRAC = 0.17
-_SIGNATURE_WIDTH_FRAC = 0.58
-_SIGNATURE_SEARCH_TOP_FRAC = 0.38
-_SIGNATURE_BODY_TOP_FRAC = 0.18
-_SIGNATURE_BODY_BOTTOM_FRAC = 0.93
-
-# Doc types that receive visual seal/logo and signature scans (varied PH school formats).
-_SEAL_SCAN_DOC_TYPES = frozenset(
-    {
-        "birth_certificate",
-        "birthcert",
-        "good_moral",
-        "goodmoral",
-        "sf9",
-        "report_card",
-        "form137",
-        "sf10",
-        "form157",
-    }
-)
-_SIGNATURE_SCAN_DOC_TYPES = frozenset(
-    {
-        "good_moral",
-        "goodmoral",
-        "sf9",
-        "report_card",
-        "form137",
-        "sf10",
-        "form157",
-    }
-)
-
-
-def _is_landscape_layout(img_w: int, img_h: int) -> bool:
-    return img_w > img_h * 1.12
 
 
 def _clamp_signature_region(
@@ -617,62 +482,15 @@ def _signature_candidate_regions(
             seen.add(region)
             candidates.append(region)
 
-    lower_start = int(img_h * _SIGNATURE_SEARCH_TOP_FRAC)
-    sig_h = max(_SIGNATURE_MIN_HEIGHT_PX, int(img_h * _SIGNATURE_HEIGHT_FRAC))
-    sig_w = max(120, int(img_w * _SIGNATURE_WIDTH_FRAC))
-    sig_h_tall = min(img_h - 8, int(sig_h * 1.2))
+    lower_start = int(img_h * 0.45)
+    sig_h = max(28, int(img_h * 0.11))
+    sig_w = max(int(img_w * 0.38), int(img_w * 0.45))
 
-    authority_kw = (
-        "PRINCIPAL",
-        "REGISTRAR",
-        "HEAD",
-        "ADMINISTRATOR",
-        "SCHOOL PRINCIPAL",
-        "DIRECTOR",
-        "OFFICER",
-        "RECOMMEND",
-        "ISSUED",
-        "ADVISER",
-        "ADVISOR",
-        "CLASS ADVISER",
-        "CLASS ADVISOR",
-        "SUBJECT TEACHER",
-        "TEACHER",
-        "PREPARED BY",
-        "CERTIFIED BY",
-        "APPROVED BY",
-        "NOTED BY",
-    )
-    signature_label_kw = (
-        "SIGNATURE",
-        "SIGNED",
-        "SIGNATORY",
-        "SIGN HERE",
-        "PREPARED BY",
-        "APPROVED BY",
-        "NOTED BY",
-    )
-    name_prefix = ("MR.", "MR ", "MRS.", "MS.", "DR.", "SR.", "FR.")
+    authority_kw = ("PRINCIPAL", "REGISTRAR", "HEAD", "ADMINISTRATOR", "SCHOOL PRINCIPAL")
+    name_prefix = ("MR.", "MR ", "MRS.", "MS.", "DR.")
     authority_boxes: list[dict] = []
     body_boxes: list[dict] = []
-    body_kw = (
-        "CERTIFY",
-        "CERTIFIES",
-        "MORAL",
-        "CHARACTER",
-        "GRADE",
-        "STUDENT",
-        "SCHOOL",
-        "HEREBY",
-        "RECOMMEND",
-        "CONDUCT",
-        "BEHAVIOR",
-        "BEHAVIOUR",
-        "PERMANENT RECORD",
-        "FORM 137",
-        "SF10",
-    )
-    signature_label_boxes: list[dict] = []
+    body_kw = ("CERTIFY", "CERTIFIES", "MORAL", "CHARACTER", "GRADE", "STUDENT", "SCHOOL", "HEREBY")
 
     if boxes:
         for b in boxes:
@@ -685,39 +503,17 @@ def _signature_candidate_regions(
                 or any(t.startswith(p) for p in name_prefix)
             ):
                 authority_boxes.append(b)
-            if (
-                img_h * _SIGNATURE_BODY_TOP_FRAC < cy < img_h * _SIGNATURE_BODY_BOTTOM_FRAC
-                and any(k in t for k in body_kw)
-            ):
+            if img_h * 0.30 < cy < img_h * 0.86 and any(k in t for k in body_kw):
                 body_boxes.append(b)
-            if cy >= lower_start and any(k in t for k in signature_label_kw):
-                signature_label_boxes.append(b)
-
-    # 0) Near OCR "Signature" / "Prepared by" labels (common on report cards and Form 137).
-    if signature_label_boxes:
-        signature_label_boxes.sort(key=lambda b: float(b.get("y", 0)))
-        for anchor in signature_label_boxes[:4]:
-            ax = int(float(anchor.get("x", 0)))
-            ay = int(float(anchor.get("y", 0)))
-            aw = max(20, int(float(anchor.get("w", 40))))
-            ah = max(12, int(float(anchor.get("h", 16))))
-            t = str(anchor.get("text") or "").upper()
-            if "SIGNATURE" in t or "SIGN HERE" in t:
-                _add(max(0, ax - int(aw * 0.3)), ay + ah + 2, max(sig_w, aw * 3), sig_h)
-                _add(max(0, ax - int(aw * 0.2)), max(0, ay - sig_h - 4), max(sig_w, aw * 3), sig_h_tall)
-            else:
-                _add(max(0, ax - int(aw * 0.4)), ay + ah + 2, sig_w, sig_h)
-                _add(max(0, ax - int(aw * 0.3)), max(0, ay - sig_h - 6), sig_w, sig_h_tall)
 
     # 1) Just below the last certification sentence (most common on good-moral forms).
     if body_boxes:
         body_boxes.sort(key=lambda b: float(b.get("y", 0)), reverse=True)
         last = body_boxes[0]
         last_bottom = int(float(last.get("y", 0)) + float(last.get("h", 0)))
-        y_below_text = last_bottom + max(2, int(sig_h * 0.08))
-        for x_frac in (0.04, 0.18, 0.34, 0.48):
-            _add(int(img_w * x_frac), y_below_text, sig_w, sig_h)
-            _add(int(img_w * x_frac), max(0, y_below_text - int(sig_h * 0.18)), sig_w, sig_h_tall)
+        y_below_text = last_bottom + max(4, int(sig_h * 0.15))
+        _add(int(img_w * 0.08), y_below_text, sig_w, sig_h)
+        _add(int(img_w * 0.32), y_below_text, sig_w, sig_h)
 
     # 2) Above printed principal / registrar name in the lower block.
     if authority_boxes:
@@ -726,21 +522,13 @@ def _signature_candidate_regions(
         ax = int(float(anchor.get("x", 0)))
         ay = int(float(anchor.get("y", 0)))
         aw = max(20, int(float(anchor.get("w", 40))))
-        y_above_name = max(0, ay - sig_h - max(8, int(sig_h * 0.28)))
-        pad_x = max(int(aw * 0.45), int(sig_w * 0.12))
-        _add(max(0, ax - pad_x), y_above_name, sig_w, sig_h_tall)
-        for x_frac in (0.04, 0.22, 0.40):
-            _add(int(img_w * x_frac), y_above_name, sig_w, sig_h)
+        y_above_name = max(0, ay - sig_h - max(6, int(sig_h * 0.2)))
+        _add(max(0, ax - int(aw * 0.2)), y_above_name, sig_w, sig_h)
+        _add(int(img_w * 0.30), y_above_name, sig_w, sig_h)
 
-    # 3) Lower-page band fallbacks (left / center / right) for skewed scans and alternate layouts.
-    landscape = _is_landscape_layout(img_w, img_h)
-    y_fracs = (0.42, 0.48, 0.54, 0.60, 0.66, 0.72, 0.78, 0.84) if landscape else (
-        0.48, 0.54, 0.60, 0.66, 0.72, 0.78, 0.84
-    )
-    x_fracs = (0.03, 0.18, 0.34, 0.50, 0.62, 0.74) if landscape else (0.03, 0.20, 0.38, 0.52, 0.65)
-    for y_frac in y_fracs:
-        for x_frac in x_fracs:
-            _add(int(img_w * x_frac), int(img_h * y_frac), sig_w, sig_h)
+    # 3) Lower-middle band fallback (avoid empty bottom margin).
+    _add(int(img_w * 0.10), int(img_h * 0.58), sig_w, sig_h)
+    _add(int(img_w * 0.28), int(img_h * 0.62), sig_w, sig_h)
 
     return candidates
 
@@ -752,130 +540,32 @@ def _score_signature_roi(gray_roi, roi_w: int, roi_h: int) -> tuple[float, bool,
 
     gray = cv2.GaussianBlur(gray_roi, (3, 3), 0)
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    roi_area = max(float(roi_w * roi_h), 1.0)
-    ink_pixels = float(np.count_nonzero(binary))
-    ink_ratio = ink_pixels / roi_area
-    # Larger scan boxes dilute ink_ratio — scale thresholds down for bigger ROIs.
-    area_ref = 45000.0
-    area_factor = min(1.0, (area_ref / roi_area) ** 0.35)
-    ink_soft = 0.004 * area_factor
-    ink_strong = 0.012 * area_factor
-    ink_detect = max(0.0015, 0.0028 * area_factor)
-    min_ink_pixels = max(28.0, roi_area * ink_detect)
+    ink_ratio = float(np.count_nonzero(binary)) / float(binary.size)
     edges = cv2.Canny(gray, 40, 120)
     edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
     variance = float(np.var(gray))
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    max_stroke_area = max(900, (roi_w * roi_h) * 0.42)
     stroke_components = sum(
         1
         for c in contours
-        if 8 <= cv2.contourArea(c) <= max_stroke_area
+        if 12 <= cv2.contourArea(c) <= max(800, (roi_w * roi_h) * 0.35)
     )
     score = 0.0
-    if ink_ratio >= ink_soft or ink_pixels >= min_ink_pixels:
+    if ink_ratio >= 0.004:
         score += 0.28
-    if ink_ratio >= ink_strong or ink_pixels >= min_ink_pixels * 2.2:
+    if ink_ratio >= 0.012:
         score += 0.18
-    if edge_ratio >= 0.018:
+    if edge_ratio >= 0.02:
         score += 0.2
-    if variance >= 160:
+    if variance >= 180:
         score += 0.14
     if stroke_components >= 2:
         score += 0.2
     elif stroke_components >= 1:
         score += 0.1
     confidence = max(0.0, min(1.0, score))
-    detected = (
-        (confidence >= 0.34 and stroke_components >= 1 and (ink_ratio >= ink_detect or ink_pixels >= min_ink_pixels))
-        or (confidence >= 0.48 and stroke_components >= 2)
-        or (stroke_components >= 3 and ink_pixels >= min_ink_pixels * 1.4)
-        or (stroke_components >= 2 and ink_pixels >= min_ink_pixels * 2.0 and edge_ratio >= 0.014)
-    )
+    detected = confidence >= 0.45 and ink_ratio >= 0.003 and stroke_components >= 1
     return confidence, detected, ink_ratio, stroke_components
-
-
-def _score_signature_roi_slices(gray_roi, roi_w: int, roi_h: int) -> tuple[float, bool, float, int]:
-    """Score full ROI plus horizontal slices — helps when signature sits in part of a large box."""
-    best = (0.0, False, 0.0, 0)
-    slices = [gray_roi]
-    if roi_h >= 48:
-        third = max(16, roi_h // 3)
-        slices.extend(
-            [
-                gray_roi[0:third, :],
-                gray_roi[third : 2 * third, :],
-                gray_roi[2 * third :, :],
-            ]
-        )
-    for sl in slices:
-        if sl.size == 0:
-            continue
-        sh, sw = sl.shape[:2]
-        conf, det, ink, strokes = _score_signature_roi(sl, sw, sh)
-        if conf > best[0] or (det and not best[1]):
-            best = (conf, det, ink, strokes)
-    return best
-
-
-def _signature_cluster_scan(img_bgr, img_w: int, img_h: int) -> dict | None:
-    """
-    Fallback: find handwriting-like ink blobs in the lower page (signatures above printed names).
-    Scans left/center/right columns — handles varied report-card and certificate layouts.
-    """
-    try:
-        import cv2
-        import numpy as np
-    except ImportError:
-        return None
-
-    landscape = _is_landscape_layout(img_w, img_h)
-    y_start = 0.35 if landscape else 0.40
-    best_score = 0.0
-    best_bb: dict | None = None
-    best_note = ""
-
-    for col_idx, (x0f, x1f) in enumerate(((0.0, 0.38), (0.28, 0.72), (0.58, 1.0))):
-        x0 = int(img_w * x0f)
-        x1 = int(img_w * x1f)
-        y0 = int(img_h * y_start)
-        roi = img_bgr[y0:, x0:x1]
-        if roi.size == 0:
-            continue
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        roi_area = float(roi.shape[0] * roi.shape[1])
-        for c in contours:
-            area = float(cv2.contourArea(c))
-            if area < 90 or area > roi_area * 0.24:
-                continue
-            x, y, w, h = cv2.boundingRect(c)
-            if w < 14 or h < 8:
-                continue
-            aspect = w / max(float(h), 1.0)
-            if aspect < 1.05 or aspect > 14.0:
-                continue
-            score = min(1.0, area / 2200.0) * (1.12 if aspect >= 1.8 else 0.82)
-            if score > best_score:
-                best_score = score
-                col_name = ("left", "center", "right")[col_idx]
-                best_note = f"Handwriting cluster in {col_name} area ({int(score * 100)}%)"
-                best_bb = {
-                    "x": float(x0 + x),
-                    "y": float(y0 + y),
-                    "w": float(w),
-                    "h": float(h),
-                }
-    if best_bb is None or best_score < 0.22:
-        return None
-    return {
-        "detected": True,
-        "confidence": round(min(1.0, best_score + 0.32), 2),
-        "bbox": best_bb,
-        "note": best_note or f"Handwriting cluster detected ({int(best_score * 100)}% confidence)",
-    }
 
 
 def _scan_handwritten_signature(
@@ -883,8 +573,6 @@ def _scan_handwritten_signature(
     boxes: list[dict] | None,
     img_w: int,
     img_h: int,
-    *,
-    img_bgr=None,
 ) -> dict:
     """
     Visual signature scan — looks for ink strokes in the authority/signature area.
@@ -903,15 +591,9 @@ def _scan_handwritten_signature(
         return fallback
 
     try:
-        if img_bgr is not None:
-            img = img_bgr
-        else:
-            img, img_w, img_h = _cv2_read_bgr(filepath)
+        img = cv2.imread(filepath)
         if img is None:
             return fallback
-        if img_w <= 0 or img_h <= 0:
-            h, w = img.shape[:2]
-            img_w, img_h = w, h
 
         best = {
             "detected": False,
@@ -926,7 +608,7 @@ def _scan_handwritten_signature(
             if roi.size == 0:
                 continue
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            confidence, detected, ink_ratio, stroke_components = _score_signature_roi_slices(gray, w, h)
+            confidence, detected, ink_ratio, stroke_components = _score_signature_roi(gray, w, h)
             if confidence > best["confidence"] or (detected and not best["detected"]):
                 best = {
                     "detected": detected,
@@ -941,18 +623,6 @@ def _scan_handwritten_signature(
                     "stroke_components": stroke_components,
                 }
 
-        if not best["detected"]:
-            cluster = _signature_cluster_scan(img, img_w, img_h)
-            if cluster:
-                best = {
-                    "detected": True,
-                    "confidence": float(cluster.get("confidence") or 0.0),
-                    "bbox": cluster.get("bbox"),
-                    "note": str(cluster.get("note") or "Handwriting cluster detected"),
-                    "ink_ratio": 0.0,
-                    "stroke_components": 1,
-                }
-
         if best["bbox"] is None:
             return fallback
         return {
@@ -965,28 +635,17 @@ def _scan_handwritten_signature(
         return fallback
 
 
-def _append_signature_field_check(
+def _append_good_moral_signature_field_check(
     payload: dict,
     filepath: str,
     boxes: list[dict] | None,
     img_w: int | None,
     img_h: int | None,
-    *,
-    img_bgr=None,
 ) -> None:
     """Add visual signature scan result to field_checks for registrar cross-check UI."""
-    if img_bgr is not None and img_w and img_h:
-        cv_w, cv_h = int(img_w), int(img_h)
-    else:
-        img, cv_w, cv_h = _cv2_read_bgr(filepath)
-        img_bgr = img
-        if cv_w > 0 and cv_h > 0:
-            img_w, img_h = cv_w, cv_h
     if not img_w or not img_h:
         return
-    sig = _scan_handwritten_signature(
-        filepath, boxes, int(img_w), int(img_h), img_bgr=img_bgr
-    )
+    sig = _scan_handwritten_signature(filepath, boxes, int(img_w), int(img_h))
     detected = bool(sig.get("detected"))
     confidence = float(sig.get("confidence") or 0.0)
     row: dict = {
@@ -1017,27 +676,6 @@ def _append_signature_field_check(
 
 _SEAL_ASSETS_DIR = os.path.join(APP_DIR, "assets", "seals")
 _seal_templates_bootstrapped = False
-
-
-def _cv2_read_bgr(filepath: str):
-    """Load image for OpenCV with EXIF orientation applied (matches PIL/Tesseract)."""
-    try:
-        import cv2
-        import numpy as np
-        from PIL import Image, ImageOps
-
-        pil = ImageOps.exif_transpose(Image.open(filepath))
-        rgb = np.array(pil.convert("RGB"))
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        return bgr, int(pil.size[0]), int(pil.size[1])
-    except Exception:
-        import cv2
-
-        img = cv2.imread(filepath)
-        if img is None:
-            return None, 0, 0
-        h, w = img.shape[:2]
-        return img, w, h
 
 
 def _bootstrap_seal_templates() -> None:
@@ -1196,13 +834,11 @@ def _ocr_birth_cert_header_text(filepath: str) -> str:
         im = Image.open(filepath)
         w, h = im.size
         crop = im.crop((0, 0, w, max(1, int(h * 0.26))))
-
-        def _header_psm(psm: int) -> str:
+        chunks: list[str] = []
+        for psm in (6, 11):
             t, _, _ = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
-            return (t or "").strip()
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            chunks = [c for c in pool.map(_header_psm, (6, 11)) if c]
+            if (t or "").strip():
+                chunks.append(t.strip())
         return "\n".join(chunks)
     except Exception:
         return ""
@@ -1775,7 +1411,7 @@ def _multiscale_template_match_detail(
 
     best = 0.0
     best_bb: dict | None = None
-    for scale in (0.18, 0.22, 0.28, 0.35, 0.5, 0.65, 0.8, 1.0, 1.2, 1.45, 1.75):
+    for scale in (0.28, 0.35, 0.5, 0.65, 0.8, 1.0, 1.2, 1.45):
         tw = max(8, int(template_gray.shape[1] * scale))
         th = max(8, int(template_gray.shape[0] * scale))
         tpl = cv2.resize(template_gray, (tw, th))
@@ -1834,7 +1470,7 @@ def _header_circle_emblem_score(roi_bgr) -> float:
         dp=1.2,
         minDist=max(min_r * 2, 24),
         param1=80,
-        param2=28,
+        param2=34,
         minRadius=min_r,
         maxRadius=max_r,
     )
@@ -1875,264 +1511,18 @@ def _ocr_seal_keyword_boost(ocr_text: str, doc_type: str) -> tuple[float, list[s
             "REPUBLIC OF THE PHILIPPINES",
             "SCHOOLS DIVISION",
             "DIVISION OF",
-            "SENIOR HIGH",
-            "ACADEMY",
-            "HIGH SCHOOL",
-            "ELEMENTARY",
-            "NATIONAL HIGH",
-            "INTEGRATED SCHOOL",
-            "TECHNICAL",
-            "VOCATIONAL",
-            "COLLEGE",
-            "UNIVERSITY",
         )
         hits = [k for k in keys if k in u]
         if hits:
             score = min(1.0, 0.38 + 0.07 * len(hits))
             signals.append(f"DepEd / school header text detected ({hits[0]}).")
-    elif dt in ("sf9", "report_card", "form137", "sf10", "form157"):
-        keys = (
-            "DEPARTMENT OF EDUCATION",
-            "REPUBLIC OF THE PHILIPPINES",
-            "SCHOOL",
-            "DIVISION",
-            "REPORT CARD",
-            "LEARNER",
-            "SENIOR HIGH",
-            "ACADEMY",
-            "FORM 137",
-            "SF10",
-            "PERMANENT RECORD",
-            "CLASS RECORD",
-            "GRADING",
-            "ELEMENTARY",
-            "NATIONAL HIGH",
-            "INTEGRATED",
-        )
-        hits = [k for k in keys if k in u]
-        if hits:
-            score = min(1.0, 0.36 + 0.06 * len(hits))
-            signals.append(f"School header text detected ({hits[0]}).")
     return score, signals
 
 
-def _header_layout_regions(w: int, h: int) -> list[tuple[str, float, float, float, float]]:
-    """Fractional (x0, y0, x1, y1) search bands — portrait and landscape school documents."""
-    if _is_landscape_layout(w, h):
-        return [
-            ("top band", 0.0, 0.0, 1.0, 0.36),
-            ("top center", 0.12, 0.0, 0.88, 0.34),
-            ("left header", 0.0, 0.0, 0.42, 0.55),
-            ("right header", 0.58, 0.0, 1.0, 0.55),
-            ("top-left", 0.0, 0.0, 0.48, 0.42),
-            ("top-right", 0.52, 0.0, 1.0, 0.42),
-        ]
-    return [
-        ("header full", 0.0, 0.0, 1.0, 0.42),
-        ("header center", 0.06, 0.0, 0.94, 0.38),
-        ("header left", 0.0, 0.0, 0.45, 0.36),
-        ("header right", 0.55, 0.0, 1.0, 0.36),
-        ("header mid", 0.22, 0.0, 0.78, 0.34),
-    ]
-
-
-def _colored_emblem_blob_score(roi_bgr) -> tuple[float, dict | None]:
-    """Template-free round/colorful emblem detection for varied school seals and logos."""
-    try:
-        import cv2
-        import numpy as np
-    except ImportError:
-        return 0.0, None
-    if roi_bgr is None or roi_bgr.size == 0:
-        return 0.0, None
-    h, w = roi_bgr.shape[:2]
-    hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
-    color_mask = (hsv[:, :, 1] > 32) & (hsv[:, :, 2] > 38)
-    colored_ratio = float(np.mean(color_mask))
-    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    combined = np.zeros_like(gray)
-    combined[binary > 0] = 255
-    combined[color_mask] = 255
-    contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    roi_area = float(h * w)
-    best = 0.0
-    best_bb: dict | None = None
-    for c in contours:
-        area = float(cv2.contourArea(c))
-        if area < roi_area * 0.0015 or area > roi_area * 0.38:
-            continue
-        peri = cv2.arcLength(c, True)
-        if peri <= 0:
-            continue
-        circularity = 4.0 * np.pi * area / (peri * peri)
-        if circularity < 0.28:
-            continue
-        x, y, bw, bh = cv2.boundingRect(c)
-        aspect = bw / max(float(bh), 1.0)
-        if aspect < 0.35 or aspect > 2.6:
-            continue
-        sub = color_mask[y : y + bh, x : x + bw]
-        color_inside = float(np.mean(sub)) if sub.size else 0.0
-        score = min(
-            1.0,
-            circularity * 0.42 + color_inside * 0.55 + min(1.0, area / 7000.0) * 0.28,
-        )
-        if score > best:
-            best = score
-            best_bb = {"x": float(x), "y": float(y), "w": float(bw), "h": float(bh)}
-    header_boost = min(0.42, colored_ratio * 3.8)
-    return max(best, header_boost), best_bb
-
-
-def _grid_header_emblem_scan(img_bgr, w: int, h: int) -> tuple[float, list[str], dict | None]:
-    """Grid-scan document header for emblem-like regions without relying on fixed templates."""
-    try:
-        import cv2
-    except ImportError:
-        return 0.0, [], None
-    header_frac = 0.44 if not _is_landscape_layout(w, h) else 0.40
-    header = img_bgr[0 : int(h * header_frac), :]
-    if header.size == 0:
-        return 0.0, [], None
-    hh, hw = header.shape[:2]
-    best = 0.0
-    best_bb: dict | None = None
-    signals: list[str] = []
-    for row in range(3):
-        for col in range(4):
-            y0 = int(hh * row / 3)
-            y1 = int(hh * (row + 1) / 3)
-            x0 = int(hw * col / 4)
-            x1 = int(hw * (col + 1) / 4)
-            cell = header[y0:y1, x0:x1]
-            if cell.size == 0:
-                continue
-            score, bb = _colored_emblem_blob_score(cell)
-            circle = _header_circle_emblem_score(cell)
-            combined = max(score, circle * 0.72)
-            if combined > best:
-                best = combined
-                if bb:
-                    best_bb = {
-                        "x": float(x0 + bb["x"]),
-                        "y": float(bb["y"]),
-                        "w": float(bb["w"]),
-                        "h": float(bb["h"]),
-                    }
-    whole_score, whole_bb = _colored_emblem_blob_score(header)
-    circle_whole = _header_circle_emblem_score(header)
-    best = max(best, whole_score, circle_whole * 0.75)
-    if whole_bb and whole_score >= best * 0.92:
-        best_bb = whole_bb
-    if best >= 0.20:
-        signals.append(f"Generic header emblem detected ({int(round(best * 100))}%).")
-    return best, signals, best_bb
-
-
-def _scan_school_header_seal(
-    img,
-    w: int,
-    h: int,
-    *,
-    ocr_text: str,
-    doc_type: str,
-) -> dict:
+def _scan_seal_or_logo(filepath: str, doc_type: str, *, ocr_text: str = "") -> dict:
     """
-    School seal/logo scan for DepEd forms, good moral, SF9, Form 137, etc.
-    Combines template matching, generic emblem heuristics, and OCR header hints.
-    """
-    import cv2
-
-    deped = _load_seal_template("deped_logo.png")
-    deped_ncr = _load_seal_template("deped_ncr_logo.png")
-    signals: list[str] = []
-    best = 0.0
-    best_orb = 0.0
-    best_label = ""
-    seal_bb: dict | None = None
-
-    for region_name, x0, y0, x1, y1 in _header_layout_regions(w, h):
-        rx = int(w * x0)
-        ry = int(h * y0)
-        roi = img[ry : int(h * y1), rx : int(w * x1)]
-        if roi.size == 0:
-            continue
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        for tpl_name, tpl in (("DepEd seal", deped), ("DepEd NCR seal", deped_ncr)):
-            if tpl is None:
-                continue
-            score, bb = _multiscale_template_match_detail(gray, tpl, offset_x=rx, offset_y=ry)
-            orb = _orb_template_match_score(roi, tpl)
-            combined = max(score, orb * 0.9)
-            if combined > best:
-                best = combined
-                best_orb = orb
-                best_label = f"{tpl_name} in {region_name}"
-                seal_bb = bb
-
-    top_band = img[0 : int(h * 0.42), int(w * 0.01) : int(w * 0.99)]
-    try:
-        import numpy as np
-
-        sat = float(np.mean(cv2.cvtColor(top_band, cv2.COLOR_BGR2HSV)[:, :, 1] > 38))
-    except Exception:
-        sat = 0.0
-    circle = _header_circle_emblem_score(top_band)
-    generic_score, generic_signals, generic_bb = _grid_header_emblem_scan(img, w, h)
-    text_boost, text_signals = _ocr_seal_keyword_boost(ocr_text, doc_type)
-    confidence = max(
-        best,
-        best_orb * 0.85,
-        min(1.0, sat * 3.6),
-        circle * 0.55,
-        generic_score * 0.92,
-        text_boost,
-    )
-    detected = (
-        best >= 0.20
-        or best_orb >= 0.16
-        or sat >= 0.024
-        or circle >= 0.16
-        or generic_score >= 0.22
-        or text_boost >= 0.32
-    )
-    if best_label and best >= 0.18:
-        signals.append(f"{best_label}: template match {int(round(best * 100))}%.")
-    if best_orb >= 0.16:
-        signals.append(f"School emblem feature match {int(round(best_orb * 100))}%.")
-    if sat >= 0.024:
-        signals.append(f"Colored emblem in header ({sat * 100:.1f}% saturated area).")
-    if circle >= 0.16:
-        signals.append("Round seal/emblem shape detected in header.")
-    signals.extend(generic_signals)
-    signals.extend(text_signals)
-    if generic_bb and generic_score >= 0.22 and seal_bb is None:
-        seal_bb = generic_bb
-    if not detected:
-        signals.append("No school seal or logo detected in the document header.")
-    return {
-        "detected": bool(detected),
-        "confidence": round(float(confidence), 2),
-        "label": "School seal/logo (visual)",
-        "signals": signals[:7],
-        "scan_method": "visual",
-        "bbox": seal_bb,
-    }
-
-
-def _scan_seal_or_logo(
-    filepath: str,
-    doc_type: str,
-    *,
-    ocr_text: str = "",
-    img_bgr=None,
-    img_w: int | None = None,
-    img_h: int | None = None,
-) -> dict:
-    """
-    Visual seal/logo scan for PSA birth certificates and school documents.
-    Uses templates when available, plus generic emblem heuristics for varied layouts.
+    Visual seal/logo scan for PSA birth certificates and good moral certificates.
+    Uses template matching plus color heuristics (PSA blue round seal, DepEd header emblem).
     """
     fallback = {
         "detected": False,
@@ -2144,7 +1534,7 @@ def _scan_seal_or_logo(
     dt = (doc_type or "").strip().lower()
     if dt in ("goodmoral",):
         dt = "good_moral"
-    if dt not in _SEAL_SCAN_DOC_TYPES:
+    if dt not in ("birth_certificate", "birthcert", "good_moral"):
         return fallback
 
     try:
@@ -2154,85 +1544,113 @@ def _scan_seal_or_logo(
         return fallback
 
     try:
-        if img_bgr is not None and img_w and img_h:
-            img, w, h = img_bgr, int(img_w), int(img_h)
-        else:
-            img, w, h = _cv2_read_bgr(filepath)
-        if img is None or w <= 0 or h <= 0:
+        img = cv2.imread(filepath)
+        if img is None:
             fallback["signals"] = ["Could not read image for seal/logo scan."]
             return fallback
+
+        h, w = img.shape[:2]
+        signals: list[str] = []
 
         if dt in ("birth_certificate", "birthcert"):
             label = "PSA seal/logo (visual)"
             tpl = _load_seal_template("psa_logo.png")
-            # Wider PSA search — photocopies and phone scans shift seal position.
-            search_regions = [
-                img[0 : int(h * 0.34), 0 : int(w * 0.45)],
-                img[0 : int(h * 0.30), int(w * 0.02) : int(w * 0.48)],
-                img[int(h * 0.02) : int(h * 0.32), int(w * 0.35) : min(w, int(w * 0.72))],
-            ]
-            blue = max(_blue_pixel_ratio(r) for r in search_regions if r.size > 0) if search_regions else 0.0
+            search = img[0 : int(h * 0.26), 0 : int(w * 0.34)]
+            tl = img[0 : int(h * 0.24), 0 : int(w * 0.30)]
+            blue = _blue_pixel_ratio(tl)
             match = 0.0
             orb = 0.0
-            circle = max(_header_circle_emblem_score(r) for r in search_regions if r.size > 0) if search_regions else 0.0
+            circle = _header_circle_emblem_score(tl)
             seal_bb: dict | None = None
             if tpl is not None:
-                for region in search_regions:
-                    if region.size == 0:
-                        continue
-                    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
-                    m, bb = _multiscale_template_match_detail(gray, tpl)
-                    o = _orb_template_match_score(region, tpl)
-                    if m > match:
-                        match = m
-                        seal_bb = bb
-                    orb = max(orb, o)
-            generic_score, generic_signals, generic_bb = _grid_header_emblem_scan(img, w, h)
+                gray = cv2.cvtColor(search, cv2.COLOR_BGR2GRAY)
+                match, seal_bb = _multiscale_template_match_detail(gray, tpl)
+                orb = _orb_template_match_score(search, tpl)
             text_boost, text_signals = _ocr_seal_keyword_boost(ocr_text, dt)
-            confidence = max(
-                min(1.0, blue * 3.5),
-                match,
-                orb * 0.85,
-                circle * 0.55,
-                generic_score * 0.75,
-                text_boost,
-            )
+            confidence = max(min(1.0, blue * 3.5), match, orb * 0.85, circle * 0.55, text_boost)
             detected = (
-                blue >= 0.055
-                or match >= 0.26
-                or orb >= 0.20
-                or circle >= 0.16
-                or generic_score >= 0.24
-                or text_boost >= 0.34
+                blue >= 0.07
+                or match >= 0.34
+                or orb >= 0.28
+                or circle >= 0.22
+                or text_boost >= 0.42
             )
-            signals: list[str] = []
-            if blue >= 0.06:
-                signals.append(f"Blue PSA-style seal detected in header ({blue * 100:.0f}% of search area).")
-            if match >= 0.28:
+            if blue >= 0.07:
+                signals.append(f"Blue PSA-style seal detected in header ({blue * 100:.0f}% of top-left area).")
+            if match >= 0.30:
                 signals.append(f"PSA logo template match {int(round(match * 100))}%.")
-            if orb >= 0.22:
+            if orb >= 0.24:
                 signals.append(f"PSA emblem feature match {int(round(orb * 100))}%.")
-            if circle >= 0.18:
+            if circle >= 0.22:
                 signals.append("Round seal shape detected in PSA header area.")
-            signals.extend(generic_signals)
             signals.extend(text_signals)
             if not detected:
                 signals.append("No PSA round seal or logo detected in the document header.")
-            if seal_bb is None and generic_bb is not None:
-                seal_bb = generic_bb
         else:
-            school = _scan_school_header_seal(img, w, h, ocr_text=ocr_text, doc_type=dt)
-            label = str(school.get("label") or "School seal/logo (visual)")
-            detected = bool(school.get("detected"))
-            confidence = float(school.get("confidence") or 0.0)
-            signals = list(school.get("signals") or [])
-            seal_bb = school.get("bbox")
+            label = "Official seal/logo (DepEd or school emblem)"
+            deped = _load_seal_template("deped_logo.png")
+            deped_ncr = _load_seal_template("deped_ncr_logo.png")
+            regions = [
+                ("header center", 0.06, 0.0, 0.94, 0.32),
+                ("header left", 0.0, 0.0, 0.38, 0.30),
+                ("header right", 0.62, 0.0, 1.0, 0.30),
+            ]
+            best = 0.0
+            best_orb = 0.0
+            best_label = ""
+            seal_bb = None
+            for region_name, x0, y0, x1, y1 in regions:
+                rx = int(w * x0)
+                ry = int(h * y0)
+                roi = img[ry : int(h * y1), rx : int(w * x1)]
+                if roi.size == 0:
+                    continue
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                for tpl_name, tpl in (("DepEd seal", deped), ("DepEd NCR seal", deped_ncr)):
+                    if tpl is None:
+                        continue
+                    score, bb = _multiscale_template_match_detail(gray, tpl, offset_x=rx, offset_y=ry)
+                    orb = _orb_template_match_score(roi, tpl)
+                    combined = max(score, orb * 0.9)
+                    if combined > best:
+                        best = combined
+                        best_orb = orb
+                        best_label = f"{tpl_name} in {region_name}"
+                        seal_bb = bb
+            top_band = img[0 : int(h * 0.34), int(w * 0.04) : int(w * 0.96)]
+            try:
+                import numpy as np
+
+                sat = float(np.mean(cv2.cvtColor(top_band, cv2.COLOR_BGR2HSV)[:, :, 1] > 45))
+            except Exception:
+                sat = 0.0
+            circle = _header_circle_emblem_score(top_band)
+            text_boost, text_signals = _ocr_seal_keyword_boost(ocr_text, dt)
+            confidence = max(best, best_orb * 0.85, min(1.0, sat * 4.0), circle * 0.5, text_boost)
+            detected = (
+                best >= 0.30
+                or best_orb >= 0.26
+                or sat >= 0.035
+                or circle >= 0.22
+                or text_boost >= 0.38
+            )
+            if best_label and best >= 0.28:
+                signals.append(f"{best_label}: template match {int(round(best * 100))}%.")
+            if best_orb >= 0.24:
+                signals.append(f"DepEd emblem feature match {int(round(best_orb * 100))}%.")
+            if sat >= 0.035:
+                signals.append(f"Colored emblem detected in certificate header ({sat * 100:.1f}% saturated area).")
+            if circle >= 0.22:
+                signals.append("Round seal/emblem shape detected in certificate header.")
+            signals.extend(text_signals)
+            if not detected:
+                signals.append("No DepEd or school seal/logo detected in the certificate header.")
 
         result = {
             "detected": bool(detected),
             "confidence": round(float(confidence), 2),
             "label": label,
-            "signals": signals[:7],
+            "signals": signals[:6],
             "scan_method": "visual",
         }
         if seal_bb:
@@ -2249,19 +1667,9 @@ def _append_seal_logo_doc_check(
     doc_type: str,
     *,
     ocr_text: str = "",
-    img_bgr=None,
-    img_w: int | None = None,
-    img_h: int | None = None,
 ) -> None:
     """Add seal/logo visual check to doc_checks and refresh match confidence."""
-    scan = _scan_seal_or_logo(
-        filepath,
-        doc_type,
-        ocr_text=ocr_text,
-        img_bgr=img_bgr,
-        img_w=img_w,
-        img_h=img_h,
-    )
+    scan = _scan_seal_or_logo(filepath, doc_type, ocr_text=ocr_text)
     label = str(scan.get("label") or "Seal/logo (visual)")
     detected = bool(scan.get("detected"))
     confidence = float(scan.get("confidence") or 0.0)
@@ -2671,29 +2079,6 @@ def add_cors_headers(response):
     return _corsify(response)
 
 
-def _ai_deploy_rev() -> str:
-    """Git short rev written by scripts/deploy_ai_hotfix.sh on the droplet."""
-    rev_file = os.path.join(APP_DIR, "BUILD_REV")
-    try:
-        if os.path.isfile(rev_file):
-            rev = open(rev_file, encoding="utf-8").read().strip()
-            if rev:
-                return rev
-    except OSError:
-        pass
-    try:
-        import subprocess
-
-        return subprocess.check_output(
-            ["git", "-C", REPO_ROOT, "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=3,
-        ).strip()
-    except Exception:
-        return "dev"
-
-
 @app.route("/health", methods=["GET"])
 def health():
     payload = {
@@ -2703,14 +2088,6 @@ def health():
         "tesseract_available": _tesseract_available,
         "easyocr_available": _easyocr_available,
         "ocr_fallback_enabled": not _env_flag("DISABLE_OCR_FALLBACK"),
-        "ai_verify_build": AI_VERIFY_BUILD,
-        "git_rev": _ai_deploy_rev(),
-        "capabilities": [
-            "exif_bgr",
-            "seal_layout_agnostic",
-            "signature_multi_layout",
-            "generic_header_emblem",
-        ],
     }
     if _tesseract_available and _tesseract_exe:
         payload["tesseract"] = _tesseract_exe
@@ -2854,37 +2231,6 @@ def _ocr_tesseract(filepath: str) -> tuple[str, float, list[dict]]:
     return _ocr_tesseract_image(image, psm=None, enhanced=False)
 
 
-def _text_from_tesseract_data(data: dict) -> str:
-    """Rebuild OCR text from a single image_to_data pass (avoids a second Tesseract invocation)."""
-    texts = data.get("text") or []
-    n_items = len(texts)
-    if n_items == 0:
-        return ""
-
-    lines_map: dict[tuple[int, int, int], list[str]] = {}
-    block_nums = data.get("block_num") or [0] * n_items
-    par_nums = data.get("par_num") or [0] * n_items
-    line_nums = data.get("line_num") or [0] * n_items
-    confs = data.get("conf") or [-1] * n_items
-
-    for i in range(n_items):
-        t = str(texts[i] or "").strip()
-        if not t:
-            continue
-        try:
-            if int(confs[i]) < 0:
-                continue
-        except (TypeError, ValueError):
-            continue
-        key = (int(block_nums[i]), int(par_nums[i]), int(line_nums[i]))
-        lines_map.setdefault(key, []).append(t)
-
-    if not lines_map:
-        return ""
-
-    return "\n".join(" ".join(lines_map[key]) for key in sorted(lines_map.keys())).strip()
-
-
 def _ocr_tesseract_image(
     image,
     *,
@@ -2906,8 +2252,8 @@ def _ocr_tesseract_image(
         config_parts.append(f"--psm {psm}")
     config = " ".join(config_parts)
 
+    text = pytesseract.image_to_string(img, config=config).strip()
     data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
-    text = _text_from_tesseract_data(data)
     confs = []
     boxes: list[dict] = []
     for c in data.get("conf", []):
@@ -3049,44 +2395,23 @@ def _ocr_read_document(
         best_engine, best_label, best_text, best_conf, best_boxes = best
 
         _priority_doc = _ocr_priority_doc(doc_type)
-        dt_key = _normalize_doc_type_key(doc_type)
-        # Multi-pass OCR only when the first read is weak, or for Form 137 / PSA (dense forms).
-        # Good moral + SF9 usually finish in one Tesseract pass — forcing PSM sweeps caused 502 timeouts.
-        needs_enhanced = _ocr_needs_fallback(best_text, best_conf, doc_type)
-        if not needs_enhanced and dt_key in ("birth_certificate", "birthcert", "form137", "sf10", "form157"):
-            needs_enhanced = True
-        deep_ocr_doc = dt_key in ("birth_certificate", "birthcert", "form137", "sf10", "form157")
+        needs_enhanced = _ocr_needs_fallback(best_text, best_conf, doc_type) or _priority_doc
 
         if needs_enhanced:
+            from PIL import Image
+
             level = 2
             if _tesseract_available:
                 try:
-                    psm_jobs = (
-                        (6, "tesseract_enhanced_psm6"),
-                        (11, "tesseract_enhanced_psm11"),
-                        (4, "tesseract_enhanced_psm4"),
-                    )
-
-                    def _run_enhanced_psm(job: tuple[int, str]) -> tuple[int, str, str, float, list[dict]]:
-                        psm, tag = job
-                        from PIL import Image
-
-                        im = Image.open(ocr_path)
-                        t2, c2, b2 = _ocr_tesseract_image(im, psm=psm, enhanced=True)
-                        return psm, tag, t2, c2, b2
-
-                    with ThreadPoolExecutor(max_workers=min(3, len(psm_jobs))) as pool:
-                        enhanced_results = list(pool.map(_run_enhanced_psm, psm_jobs))
-
-                    for _psm, tag, t2, c2, b2 in sorted(enhanced_results, key=lambda row: row[0]):
+                    base = Image.open(ocr_path)
+                    for psm, tag in ((6, "tesseract_enhanced_psm6"), (11, "tesseract_enhanced_psm11"), (4, "tesseract_enhanced_psm4")):
+                        t2, c2, b2 = _ocr_tesseract_image(base, psm=psm, enhanced=True)
                         _run(level, "tesseract", tag, t2, c2, b2)
                         level += 1
                         cand = max(candidates, key=lambda row: _ocr_candidate_score(row[2], row[3], doc_type))
-                        if _ocr_candidate_score(cand[2], cand[3], doc_type) > _ocr_candidate_score(
-                            best_text, best_conf, doc_type
-                        ):
+                        if _ocr_candidate_score(cand[2], cand[3], doc_type) > _ocr_candidate_score(best_text, best_conf, doc_type):
                             best_engine, best_label, best_text, best_conf, best_boxes = cand
-                        if not deep_ocr_doc and not _ocr_needs_fallback(best_text, best_conf, doc_type):
+                        if not _priority_doc and not _ocr_needs_fallback(best_text, best_conf, doc_type):
                             break
                 except Exception as exc:
                     print(f"[IntelliDocs AI] Enhanced Tesseract fallback failed: {exc}", flush=True)
@@ -3113,14 +2438,9 @@ def _ocr_read_document(
                         print(f"[IntelliDocs AI] OCR fallback ({tag}) failed: {exc}", flush=True)
 
         if _normalize_doc_type_key(doc_type) in ("birth_certificate", "birthcert"):
-            header_probe = re.sub(r"\s+", " ", (best_text or "").upper())
-            needs_header_pass = not (
-                _psa_has_authority_header(header_probe) and _psa_has_republic_header(header_probe)
-            )
-            if needs_header_pass:
-                header_extra = _ocr_birth_cert_header_text(ocr_path)
-                if (header_extra or "").strip():
-                    best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
+            header_extra = _ocr_birth_cert_header_text(ocr_path)
+            if (header_extra or "").strip():
+                best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
 
         best_boxes = _ocr_scale_boxes_to_original(best_boxes, ocr_scale)
 
@@ -3145,7 +2465,7 @@ def _ocr_read_document(
                 pass
 
 
-def _tamper_check(filepath: str, image_cache: "_VerifyImageCache | None" = None) -> tuple[float, list[str]]:
+def _tamper_check(filepath: str) -> tuple[float, list[str]]:
     """
     Lightweight tamper signals.
     Returns (tamper_score_01, signals). 1.0 = looks clean, 0.0 = highly suspicious.
@@ -3179,21 +2499,35 @@ def _tamper_check(filepath: str, image_cache: "_VerifyImageCache | None" = None)
 
     # --- ELA (JPEG only) ---
     try:
+        from PIL import Image, ImageChops
         import numpy as np
 
         ext = os.path.splitext(filepath)[1].lower()
         if ext in [".jpg", ".jpeg"]:
-            if image_cache is not None:
-                _, var = image_cache.get_ela_diff()
-            else:
-                _, var = _compute_ela_diff(filepath)
-            if var is not None:
+            original = Image.open(filepath).convert("RGB")
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                # Resave at a fixed quality to highlight compression differences.
+                original.save(tmp_path, "JPEG", quality=90)
+                resaved = Image.open(tmp_path).convert("RGB")
+                diff = ImageChops.difference(original, resaved)
+                arr = np.asarray(diff, dtype=np.uint8)
+                # Variance is a rough proxy for localized artifacts.
+                var = float(np.var(arr))
+
+                # Heuristic thresholds (empirical; adjust as you collect samples).
                 if var > 120.0:
                     signals.append("ELA: strong local compression artifacts detected")
                     score -= 0.55
                 elif var > 70.0:
                     signals.append("ELA: moderate compression artifacts detected")
                     score -= 0.30
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
     except Exception:
         # ELA is best-effort; ignore failures.
         pass
@@ -3489,187 +2823,6 @@ def _compute_tamper_map(filepath: str) -> "object|None":
         return np.clip(combined, 0, 255).astype(np.uint8)
     except Exception:
         return None
-
-
-class _VerifyImageCache:
-    """Per-verify cache: one image load and one ELA/tamper-map build per document."""
-
-    __slots__ = (
-        "filepath",
-        "_lock",
-        "_rgb",
-        "_bgr",
-        "_bgr_w",
-        "_bgr_h",
-        "_ela_diff",
-        "_ela_var",
-        "_ela_done",
-        "_noise",
-        "_noise_done",
-        "_tamper_map",
-        "_field_diff",
-    )
-
-    def __init__(self, filepath: str) -> None:
-        self.filepath = filepath
-        self._lock = threading.Lock()
-        self._rgb = None
-        self._bgr = None
-        self._bgr_w = 0
-        self._bgr_h = 0
-        self._ela_diff = None
-        self._ela_var = None
-        self._ela_done = False
-        self._noise = None
-        self._noise_done = False
-        self._tamper_map = None
-        self._field_diff = None
-
-    def get_bgr(self):
-        """EXIF-corrected BGR image — shared by seal/signature scans (one decode per verify)."""
-        with self._lock:
-            if self._bgr is not None:
-                return self._bgr, self._bgr_w, self._bgr_h
-        bgr, w, h = _cv2_read_bgr(self.filepath)
-        with self._lock:
-            if self._bgr is None:
-                self._bgr = bgr
-                self._bgr_w = int(w)
-                self._bgr_h = int(h)
-            return self._bgr, self._bgr_w, self._bgr_h
-
-    def _load_rgb(self):
-        with self._lock:
-            if self._rgb is not None:
-                return self._rgb
-            from PIL import Image
-
-            self._rgb = Image.open(self.filepath).convert("RGB")
-            return self._rgb
-
-    def get_ela_diff(self) -> tuple["object|None", float | None]:
-        with self._lock:
-            if self._ela_done:
-                return self._ela_diff, self._ela_var
-
-        ext = os.path.splitext(self.filepath)[1].lower()
-        if ext not in (".jpg", ".jpeg"):
-            with self._lock:
-                self._ela_diff, self._ela_var = None, None
-                self._ela_done = True
-                return self._ela_diff, self._ela_var
-
-        ela_diff = None
-        ela_var = None
-        try:
-            from PIL import Image, ImageChops
-            import numpy as np
-
-            original = self._load_rgb()
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                tmp_path = tmp.name
-            try:
-                original.save(tmp_path, "JPEG", quality=90)
-                resaved = Image.open(tmp_path).convert("RGB")
-                diff = ImageChops.difference(original, resaved)
-                arr = np.asarray(diff, dtype=np.uint8)
-                ela_diff = arr
-                ela_var = float(np.var(arr))
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-        except Exception:
-            ela_diff, ela_var = None, None
-
-        with self._lock:
-            if not self._ela_done:
-                self._ela_diff = ela_diff
-                self._ela_var = ela_var
-                self._ela_done = True
-            return self._ela_diff, self._ela_var
-
-    def get_noise_residual(self) -> "object|None":
-        with self._lock:
-            if self._noise_done:
-                return self._noise
-
-        noise = None
-        try:
-            import cv2
-
-            img = cv2.imread(self.filepath, cv2.IMREAD_GRAYSCALE)
-            if img is not None and img.size > 0:
-                blur = cv2.medianBlur(img, 5)
-                noise = cv2.absdiff(img, blur).astype(np.uint8)
-        except Exception:
-            noise = None
-
-        with self._lock:
-            if not self._noise_done:
-                self._noise = noise
-                self._noise_done = True
-            return self._noise
-
-    def get_field_tamper_diff(self) -> "object|None":
-        with self._lock:
-            if self._field_diff is not None:
-                return self._field_diff
-
-        ela, _ = self.get_ela_diff()
-        field_diff = ela if ela is not None else self.get_noise_residual()
-
-        with self._lock:
-            if self._field_diff is None:
-                self._field_diff = field_diff
-            return self._field_diff
-
-    def get_tamper_map(self) -> "object|None":
-        with self._lock:
-            if self._tamper_map is not None:
-                return self._tamper_map
-
-        tamper_map = None
-        try:
-            from PIL import Image, ImageChops
-            import io
-            import numpy as np
-
-            original = self._load_rgb()
-            buf = io.BytesIO()
-            original.save(buf, format="JPEG", quality=90)
-            buf.seek(0)
-            resaved = Image.open(buf).convert("RGB")
-            ela = ImageChops.difference(original, resaved)
-            ela_gray = np.asarray(ela.convert("L"), dtype=np.float32)
-
-            combined = ela_gray
-            try:
-                import cv2
-
-                g = np.asarray(original.convert("L"), dtype=np.uint8)
-                blur = cv2.medianBlur(g, 5)
-                resid = cv2.absdiff(g, blur).astype(np.float32)
-
-                def _norm(a: "np.ndarray") -> "np.ndarray":
-                    mx = float(a.max()) if a.size else 0.0
-                    if mx <= 1e-6:
-                        return a
-                    return a * (255.0 / mx)
-
-                combined = np.maximum(_norm(ela_gray), _norm(resid))
-            except Exception:
-                pass
-
-            tamper_map = np.clip(combined, 0, 255).astype(np.uint8)
-        except Exception:
-            tamper_map = None
-
-        with self._lock:
-            if self._tamper_map is None:
-                self._tamper_map = tamper_map
-            return self._tamper_map
 
 
 def _grid_hotspot_tamper(
@@ -7163,62 +6316,62 @@ def screen_quality():
     file.save(filepath)
 
     try:
-        accept = _document_acceptability_check(filepath, doc_type)
-        readability = accept.get("readability") or {}
-        quality_only = {k: accept[k] for k in accept if k != "readability"}
-
-        if not accept.get("pass"):
-            failed_level = 2 if readability and not readability.get("pass") else 1
-            fail_level = _level_pack(
-                level=failed_level,
-                title="Document readability" if failed_level == 2 else "Image quality",
-                passed=False,
-                score=int(accept.get("score") or 0),
-                summary=str(accept.get("message") or ""),
-                issues=list(accept.get("issues") or []),
-            )
-            sec = {
-                "levels": [fail_level],
-                "overall_pass": False,
-                "highest_level_passed": 0,
-            }
-            body = {
-                "pass": False,
-                "level": failed_level,
-                "quality": quality_only,
-                "security_levels": sec,
-                "message": accept.get("message"),
-            }
-            if readability:
-                body["readability"] = readability
-            return jsonify(body)
-
+        quality = _image_quality_check(filepath, doc_type)
         quality_level = _level_pack(
             level=1,
             title="Image quality",
-            passed=True,
-            score=int(accept.get("score") or 100),
-            summary=str(accept.get("message") or "Image quality OK."),
-            issues=[],
+            passed=bool(quality.get("pass")),
+            score=int(quality.get("score") or 0),
+            summary=str(quality.get("message") or ""),
+            issues=list(quality.get("issues") or []),
         )
+        if not quality.get("pass"):
+            sec = {
+                "levels": [quality_level],
+                "overall_pass": False,
+                "highest_level_passed": 0,
+            }
+            return jsonify(
+                {
+                    "pass": False,
+                    "level": 1,
+                    "quality": quality,
+                    "security_levels": sec,
+                    "message": quality.get("message"),
+                }
+            )
+
+        readability = _upload_document_readability_check(filepath, doc_type)
         readability_level = _level_pack(
             level=2,
             title="Document readability",
-            passed=True,
-            score=100,
-            summary=str((readability or {}).get("message") or "Document text is readable."),
-            issues=[],
+            passed=bool(readability.get("pass")),
+            score=100 if readability.get("pass") else max(0, min(100, int((readability.get("word_count") or 0) * 4))),
+            summary=str(readability.get("message") or ""),
+            issues=list(readability.get("issues") or []),
         )
         sec = {
             "levels": [quality_level, readability_level],
-            "overall_pass": True,
-            "highest_level_passed": 2,
+            "overall_pass": bool(readability.get("pass")),
+            "highest_level_passed": 2 if readability.get("pass") else 1,
         }
+        if not readability.get("pass"):
+            return jsonify(
+                {
+                    "pass": False,
+                    "level": 2,
+                    "quality": quality,
+                    "readability": readability,
+                    "security_levels": sec,
+                    "message": readability.get("message"),
+                }
+            )
+
         return jsonify(
             {
                 "pass": True,
                 "level": 2,
-                "quality": quality_only,
+                "quality": quality,
                 "readability": readability,
                 "security_levels": sec,
                 "message": "Image quality and document readability OK.",
@@ -7260,6 +6413,10 @@ def verify_doc():
     file.save(filepath)
     
     try:
+        # Level 1 (blur / brightness) is enforced at student upload in PHP for JPG/PNG.
+        # Do not re-run or penalize verification score for image quality here.
+        quality = _upload_quality_stub()
+
         # Image dimensions (used by UI to scale tamper cell overlays)
         try:
             from PIL import Image
@@ -7308,26 +6465,13 @@ def verify_doc():
             payload["image_height"] = img_h
 
         is_photo_verify = effective_doc_type in PHOTO_DOC_TYPES
-        img_cache = _VerifyImageCache(filepath)
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_tamper = pool.submit(_tamper_check, filepath, img_cache)
-            fut_syn = pool.submit(
-                _synthetic_check,
-                filepath,
-                ocr_confidence=avg_conf,
-                word_count=word_count,
-            )
-            tamper_score, tamper_signals = fut_tamper.result()
-            syn_score, syn_signals = fut_syn.result()
-
-        field_diff_arr = img_cache.get_field_tamper_diff()
-        tamper_map_cached = img_cache.get_tamper_map()
-
+        tamper_score, tamper_signals = _tamper_check(filepath)
         payload["tamper_applicable"] = True
         payload["tamper_score"] = tamper_score
         payload["tamper_signals"] = tamper_signals
 
+        # Synthetic / AI-generated suspicion signals (heuristics; NOT definitive).
+        syn_score, syn_signals = _synthetic_check(filepath, ocr_confidence=avg_conf, word_count=word_count)
         payload["synthetic_applicable"] = True
         payload["synthetic_score"] = syn_score
         payload["synthetic_signals"] = syn_signals
@@ -7348,7 +6492,9 @@ def verify_doc():
 
         # SF9/report card: add cell-level tamper hints (JPEG ELA + numeric boxes).
         if effective_doc_type in ("sf9", "report_card"):
-            diff_arr = field_diff_arr
+            diff_arr, _ = _compute_ela_diff(filepath)
+            if diff_arr is None:
+                diff_arr = _compute_noise_residual(filepath)
             cells = _sf9_cell_tamper(diff_arr, boxes)
             payload["tamper_cells"] = cells
             fields = _sf9_field_tamper(diff_arr, boxes, img_w, img_h)
@@ -7371,7 +6517,9 @@ def verify_doc():
 
         # Other doc types: field-only tamper hints (names, IDs, etc.)
         if effective_doc_type in ("sf10", "form137", "form157"):
-            diff_arr = field_diff_arr
+            diff_arr, _ = _compute_ela_diff(filepath)
+            if diff_arr is None:
+                diff_arr = _compute_noise_residual(filepath)
             fm = {
                 "LRN": ["LRN", "IRN", "URN"],
                 "NAME": ["NAME"],
@@ -7390,7 +6538,9 @@ def verify_doc():
                 ]
 
         if effective_doc_type in ("birth_certificate", "birthcert"):
-            diff_arr = field_diff_arr
+            diff_arr, _ = _compute_ela_diff(filepath)
+            if diff_arr is None:
+                diff_arr = _compute_noise_residual(filepath)
             fm = {
                 "NAME": ["NAME"],
                 "DATE OF BIRTH": ["DATE OF BIRTH", "BIRTH", "BIRTHDATE"],
@@ -7409,32 +6559,13 @@ def verify_doc():
                     "Birth cert: possible field tampering signals detected (review highlighted fields)"
                 ]
 
-        sig_dt = (effective_doc_type or "").strip().lower()
-        if sig_dt in ("goodmoral",):
-            sig_dt = "good_moral"
-        need_sig = sig_dt in _SIGNATURE_SCAN_DOC_TYPES and img_w and img_h
-        need_seal = effective_doc_type in (
-            "birth_certificate",
-            "birthcert",
-            "good_moral",
-            "goodmoral",
-            "sf9",
-            "report_card",
-            "form137",
-            "sf10",
-            "form157",
-        )
-        bgr_img = bgr_w = bgr_h = None
-        if need_sig or need_seal:
-            bgr_img, bgr_w, bgr_h = img_cache.get_bgr()
-
-        if need_sig and bgr_img is not None:
-            _append_signature_field_check(
-                payload, filepath, boxes, img_w, img_h, img_bgr=bgr_img
-            )
+        if effective_doc_type in ("good_moral", "goodmoral") and img_w and img_h:
+            _append_good_moral_signature_field_check(payload, filepath, boxes, img_w, img_h)
 
         if effective_doc_type in ("good_moral", "goodmoral"):
-            diff_arr = field_diff_arr
+            diff_arr, _ = _compute_ela_diff(filepath)
+            if diff_arr is None:
+                diff_arr = _compute_noise_residual(filepath)
             fm = {
                 "NAME": ["NAME"],
                 "SCHOOL": ["SCHOOL"],
@@ -7451,29 +6582,22 @@ def verify_doc():
                     "Good moral: possible field tampering signals detected (review highlighted fields)"
                 ]
 
-        # Whole-image grid hotspot is CPU-heavy — run on PSA / SF10 only (not good moral / SF9).
-        if effective_doc_type in (
-            "birth_certificate",
-            "birthcert",
-            "form137",
-            "sf10",
-            "form157",
-        ):
-            try:
-                tmap = tamper_map_cached
-                region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
-                if region_hits:
-                    payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
-                    n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
-                    payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                        f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
-                        + (f" ({n_high} high-risk)" if n_high else "")
-                    ]
-                    payload["issues"] = (payload.get("issues") or []) + [
-                        "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
-                    ]
-            except Exception:
-                pass
+        # OCR-INDEPENDENT whole-image hotspot scan (catches edits even when OCR misses the labels).
+        try:
+            tmap = _compute_tamper_map(filepath)
+            region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
+            if region_hits:
+                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
+                n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
+                payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
+                    f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
+                    + (f" ({n_high} high-risk)" if n_high else "")
+                ]
+                payload["issues"] = (payload.get("issues") or []) + [
+                    "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
+                ]
+        except Exception:
+            pass
 
         # Merge localized tamper hotspots into headline tamper_score (global-only check often stayed at 100%).
         cells_all = list(payload.get("tamper_cells") or [])
@@ -7496,15 +6620,9 @@ def verify_doc():
                 tamper_score = _clamp01(tamper_score - 0.14)
                 payload["tamper_score"] = tamper_score
 
-        if need_seal:
+        if effective_doc_type in ("birth_certificate", "birthcert", "good_moral", "goodmoral"):
             _append_seal_logo_doc_check(
-                payload,
-                filepath,
-                effective_doc_type,
-                ocr_text=text or "",
-                img_bgr=bgr_img,
-                img_w=bgr_w or img_w,
-                img_h=bgr_h or img_h,
+                payload, filepath, effective_doc_type, ocr_text=text or ""
             )
             if effective_doc_type in ("birth_certificate", "birthcert"):
                 _upgrade_birth_cert_header_doc_checks(payload, text or "", boxes, img_h)
@@ -7526,17 +6644,11 @@ def verify_doc():
             payload["status"] = "failed"
             payload["issues"] = (payload.get("issues") or []) + ["High tamper risk: possible image manipulation"]
 
-        accept = _document_acceptability_check(filepath, effective_doc_type)
         if is_photo_verify:
             quality = _image_quality_check(filepath, effective_doc_type)
             quality_enforced_at_upload = False
-        elif accept.get("pass"):
-            quality = _upload_quality_stub()
-            quality_enforced_at_upload = True
         else:
-            quality = {k: accept[k] for k in accept if k != "readability"}
-            quality_enforced_at_upload = False
-            payload["issues"] = (payload.get("issues") or []) + list(quality.get("issues") or [])
+            quality_enforced_at_upload = True
 
         payload["quality"] = quality
         payload["security_levels"] = _build_security_levels(

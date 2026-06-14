@@ -210,7 +210,6 @@ if ($expectedStrand !== '' && !$skipGradeStrandForMoral) {
     $postFields['expected_strand'] = $expectedStrand;
 }
 
-// OCR + seal/signature scans can exceed 60s on a small droplet — align with nginx/PHP (600s).
 @set_time_limit(620);
 @ini_set('max_execution_time', '620');
 
@@ -221,9 +220,6 @@ if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
     $error = $aiRes['error'] ?? 'Failed to reach AI service';
     if ($decoded && isset($decoded['error']) && is_string($decoded['error']) && $decoded['error'] !== '') {
         $error = $decoded['error'];
-    }
-    if ($decoded && empty($decoded['error']) && isset($decoded['hint']) && is_string($decoded['hint'])) {
-        $error = $decoded['hint'];
     }
     http_response_code(502);
     echo json_encode([

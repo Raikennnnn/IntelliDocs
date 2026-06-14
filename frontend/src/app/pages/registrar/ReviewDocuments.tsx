@@ -35,7 +35,7 @@ import {
   Loader2,
   Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRef } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
@@ -830,13 +830,11 @@ function documentAiSummaryLine(opts: {
 }): string {
   const { ai, isPhoto, concernPct, aiState, clearedOnFile } = opts;
   if (aiState === "running") return "AI is checking this file…";
-  if (aiState === "error") {
-    return "Latest AI run failed (server timeout). Saved scores stay below if available — try Run AI again for one file at a time, or verify manually in View.";
-  }
+  if (aiState === "error") return "AI check did not finish — open View and verify manually.";
   if (clearedOnFile && concernPct === null) {
-    return "Previously verified on file. Click Run AI only if you need a fresh score.";
+    return "Previously verified on file. Re-run AI only if you need a fresh score.";
   }
-  if (concernPct === null) return "Not scored yet — click Run AI above when you are ready to check this file.";
+  if (concernPct === null) return "Not scored yet. Click Re-run AI above after uploads finish.";
 
   if (concernPct > CONCERN_STRICT_THRESHOLD || ai?.status === "failed") {
     return "High concern — open View and verify before approving.";
@@ -886,7 +884,8 @@ export function ReviewDocuments() {
   const [aiDocStateById, setAiDocStateById] = useState<
     Record<string, { state: "pending" | "running" | "done" | "error"; error?: string }>
   >({});
-  const [aiRunningDocId, setAiRunningDocId] = useState<string | null>(null);
+  // Bumped by the "Re-run AI" button to trigger the verification effect again.
+  const [aiRerunNonce, setAiRerunNonce] = useState(0);
   // Tracks an in-flight approve/reject so we can disable the buttons against double-submits.
   const [decisionSubmitting, setDecisionSubmitting] = useState<null | "approve" | "reject">(null);
   // Open confirmation dialog for the approve / reject decision. The big
@@ -969,70 +968,6 @@ export function ReviewDocuments() {
     }
     return q("expected_name", name) + identity;
   };
-
-  /** Verify one document at a time — avoids 502 when the droplet runs all files at once. */
-  const runAiVerifyForDocument = useCallback(
-    async (doc: any) => {
-      if (!application || !doc?.id) return;
-      if (guessDocKind(doc?.mimeType, doc?.fileName || doc?.name) !== "image") return;
-      if (aiRunningDocId) {
-        toast.message("AI is already running on another file — wait for it to finish.");
-        return;
-      }
-
-      const id = String(doc.id);
-      const docType = mapDocType(doc);
-      setAiRunningDocId(id);
-      setAiRunning(true);
-      setAiServiceError(null);
-      setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
-
-      try {
-        const aiRes = await apiFetch(
-          `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
-            `&doc_type=${encodeURIComponent(docType)}` +
-            buildExpectedVerifyQuery(docType, application),
-        );
-        const parsed = await parseApiJson<
-          | { success: true; result: AiVerifyResponse }
-          | { success: false; error?: string; detail?: unknown }
-        >(aiRes);
-        if (!parsed.ok) {
-          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: parsed.error } }));
-          toast.error(parsed.error);
-          return;
-        }
-        const body = parsed.data;
-        if (!aiRes.ok || !body || (body as { success?: boolean }).success !== true) {
-          const msg = (body as { error?: string })?.error || `AI verify failed (${parsed.status})`;
-          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
-          toast.error(msg);
-          return;
-        }
-        const data = (body as { result?: AiVerifyResponse }).result as AiVerifyResponse;
-        if (!data || typeof (data as { confidence?: number }).confidence !== "number") {
-          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: "AI returned an invalid response" } }));
-          toast.error("AI returned an invalid response");
-          return;
-        }
-        const effectiveDocType = resolveEffectiveDocType(doc, data);
-        setAiResultsByDocId((prev) => ({
-          ...prev,
-          [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
-        }));
-        setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
-        toast.success(`${doc.requirementLabel || "Document"} scored and saved.`);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "Unexpected error running AI";
-        setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
-        toast.error(msg);
-      } finally {
-        setAiRunningDocId(null);
-        setAiRunning(false);
-      }
-    },
-    [application, aiRunningDocId, buildExpectedVerifyQuery, mapDocType, resolveEffectiveDocType],
-  );
 
   const documentConcernPercent = (r: AiVerifyResponse | undefined): number | null =>
     documentAverageConcernFromAi(r);
@@ -1156,13 +1091,6 @@ export function ReviewDocuments() {
       }
       if (Object.keys(seeded).length > 0) {
         setAiResultsByDocId((prev) => ({ ...seeded, ...prev }));
-        const doneStates: Record<string, { state: "done" }> = {};
-        for (const doc of Array.isArray(app?.documents) ? app.documents : []) {
-          if (doc?.id && aiVerifyFromDocument(doc)) {
-            doneStates[String(doc.id)] = { state: "done" };
-          }
-        }
-        setAiDocStateById((prev) => ({ ...doneStates, ...prev }));
       }
 
       if (app?.isAlreadyEnrolled && app?.status !== "Rejected") {
@@ -1679,6 +1607,94 @@ export function ReviewDocuments() {
     };
   }, [isDocumentDialogOpen, previewObjectUrl, previewDisplayKind]);
 
+  // Automatically run AI verification for image documents when the application loads.
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!application?.documents || !Array.isArray(application.documents) || application.documents.length === 0) return;
+      const docs = application.documents as any[];
+      const toVerify = docs.filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image");
+      if (toVerify.length === 0) return;
+
+      setAiRunning(true);
+      try {
+        setAiServiceError(null);
+
+        for (const doc of toVerify) {
+          if (cancelled) return;
+          const id = String(doc.id);
+          const docType = mapDocType(doc);
+          const cached = aiResultsByDocId[id];
+          if (cached && !isAiVerifyPayloadStale(docType, application, cached)) continue;
+
+          try {
+            if (!cancelled) {
+              setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
+            }
+            const aiRes = await apiFetch(
+              `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
+                `&doc_type=${encodeURIComponent(docType)}` +
+                buildExpectedVerifyQuery(docType, application),
+            );
+            const parsed = await parseApiJson<
+              | { success: true; result: AiVerifyResponse }
+              | { success: false; error?: string; detail?: unknown }
+            >(aiRes);
+            if (!parsed.ok) {
+              if (!cancelled) {
+                setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: parsed.error } }));
+              }
+              continue;
+            }
+            const body = parsed.data;
+            if (!aiRes.ok || !body || (body as { success?: boolean }).success !== true) {
+              const msg =
+                (body as { error?: string })?.error ||
+                `AI verify failed (${parsed.status})`;
+              if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
+              continue;
+            }
+            const data = (body as { result?: AiVerifyResponse }).result as AiVerifyResponse;
+            if (!data || typeof (data as any).confidence !== "number") {
+              if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: "AI returned an invalid response" } }));
+              continue;
+            }
+            const effectiveDocType = resolveEffectiveDocType(doc, data);
+            if (!cancelled) {
+              setAiResultsByDocId((prev) => ({
+                ...prev,
+                [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
+              }));
+              setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
+            }
+          } catch (e) {
+            let msg = "Unexpected error running AI";
+            if (e && typeof e === "object") {
+              const anyE = e as { message?: string; toString?: () => string };
+              if (typeof anyE?.message === "string" && anyE.message.trim()) {
+                msg = anyE.message.trim();
+              } else if (typeof anyE?.toString === "function") {
+                const s = String(anyE.toString());
+                if (s.trim()) msg = s.trim();
+              }
+            }
+            if (!cancelled) setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
+            continue;
+          }
+        }
+      } finally {
+        if (!cancelled) setAiRunning(false);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally depend on applicationId + application.documents snapshot only.
+    // aiRerunNonce is bumped by the "Re-run AI" button to force a re-run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applicationId, application?.documents, aiRerunNonce]);
+
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-gray-600 py-12">
@@ -2088,30 +2104,38 @@ export function ReviewDocuments() {
                     </span>
                   ) : (
                     <span>
-                      Click <strong className="font-medium text-gray-800">Run AI</strong> on{" "}
-                      <strong className="font-medium text-gray-800">one file at a time</strong> (start with
-                      2×2 photo or good moral — save Form 137 / SF10 for last). Scores are saved automatically.
+                      Each file is scored on <strong className="font-medium text-gray-800">mismatch (MM)</strong>{" "}
+                      and <strong className="font-medium text-gray-800">tamper (T)</strong>. Image quality is
+                      checked at upload.
                     </span>
                   )}
                 </div>
-                        </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => {
+                    setAiResultsByDocId({});
+                    setAiDocStateById({});
+                    setAiServiceError(null);
+                    setAiRerunNonce((n) => n + 1);
+                  }}
+                  disabled={aiRunning}
+                >
+                  Re-run AI
+                </Button>
+              </div>
               <ConcernScoringHelp />
               {(application.documents ?? []).map((doc: any, index: number) => (
                 (() => {
                   const key = String(doc?.id ?? "");
                   const docType = mapDocType(doc);
                   const isPhoto = docType === "photo_2x2";
-                  const rawAi = aiResultsByDocId[key] ?? aiVerifyFromDocument(doc);
+                  const rawAi = aiResultsByDocId[key];
                   const ai = aiResultForDisplay(docType, rawAi) ?? rawAi;
                   const aiPct = documentConcernPercent(ai);
-                  const aiStateRaw = aiDocStateById[key]?.state;
-                  // Saved DB scores stay visible if a re-run fails (502) — don't flash "AI error" over good data.
-                  const aiState =
-                    aiStateRaw === "running"
-                      ? "running"
-                      : rawAi && aiStateRaw === "error"
-                        ? "done"
-                        : aiStateRaw;
+                  const aiState = aiDocStateById[key]?.state;
                   const resubmitRequired =
                     String(doc?.registrarDocDecision || "").toLowerCase() === "rejected" ||
                     String(doc?.status || "").toLowerCase() === "flagged" ||
@@ -2143,7 +2167,7 @@ export function ReviewDocuments() {
                     <div className="flex min-w-0 flex-1 items-start gap-3">
                       <FileText className="mt-0.5 h-5 w-5 shrink-0 text-gray-400" aria-hidden />
                       <div className="min-w-0 flex-1 space-y-2">
-                          <div>
+                        <div>
                           <p className="text-xs font-semibold uppercase tracking-wide text-[#8B1538]">
                             {(doc.requirementLabel || "Document").replace(/\s+/g, " ").trim()}
                           </p>
@@ -2153,7 +2177,7 @@ export function ReviewDocuments() {
                           >
                             {doc.fileName || doc.name}
                           </p>
-                          </div>
+                        </div>
                         <div className="flex flex-wrap items-center gap-2">
                           {resubmitRequired ? (
                             <Badge className="bg-red-600 text-white">Resubmission required</Badge>
@@ -2177,7 +2201,7 @@ export function ReviewDocuments() {
                           ) : (
                             <Badge variant="outline" className="border-gray-300">Scored</Badge>
                           )}
-                          </div>
+                        </div>
                         {aiPct !== null && !isPhoto ? (
                           <DocumentConcernChips
                             concernPct={aiPct}
@@ -2223,40 +2247,23 @@ export function ReviewDocuments() {
                         </span>
                       ) : null}
                       <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
-                        {guessDocKind(doc?.mimeType, doc?.fileName || doc?.name) === "image" ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="flex-1 sm:flex-none"
-                            disabled={Boolean(aiRunningDocId)}
-                            onClick={() => runAiVerifyForDocument(doc)}
-                          >
-                            {aiStateRaw === "running" ? (
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            ) : (
-                              <Sparkles className="mr-2 h-4 w-4" />
-                            )}
-                            {aiStateRaw === "running" ? "Running…" : "Run AI"}
-                          </Button>
-                        ) : null}
                         <Button variant="outline" size="sm" className="flex-1 sm:flex-none" onClick={() => handleViewDocument(doc)}>
                           <Eye className="mr-2 h-4 w-4" />
                           View
                         </Button>
-                      <Button
+                        <Button
                           type="button"
-                        variant="outline"
-                        size="sm"
+                          variant="outline"
+                          size="sm"
                           className="flex-1 sm:flex-none"
                           onClick={() => downloadDocument(doc)}
                         >
                           <Download className="mr-2 h-4 w-4" />
-                        Download
-                      </Button>
+                          Download
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                </div>
                 </div>
                   );
                 })()
@@ -2287,13 +2294,13 @@ export function ReviewDocuments() {
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#8B1538]/10">
                       <Sparkles className="h-5 w-5 text-[#8B1538]" aria-hidden />
                     </div>
-            <div>
+                    <div>
                       <h3 className="text-lg font-semibold text-gray-900">AI review summary</h3>
                       <p className="mt-0.5 text-sm text-gray-600">
                         Per file: average of <strong className="font-medium">MM</strong> +{" "}
                         <strong className="font-medium">T</strong>. Overall = weighted mean (0% = clean).
                       </p>
-              </div>
+                    </div>
                   </div>
                   {aggregateConcern !== null ? (
                     <div className="text-right">
@@ -3001,7 +3008,7 @@ export function ReviewDocuments() {
                               </summary>
                               <div className="mt-2 space-y-3 text-sm text-gray-700">
                                 {tamperSignals.length > 0 && (
-                      <div>
+                                  <div>
                                     <p className="font-medium text-gray-800">Signals</p>
                                     <ul className="mt-1 list-inside list-disc space-y-1">
                                       {tamperSignals.map((s, idx) => (
@@ -3028,7 +3035,7 @@ export function ReviewDocuments() {
                                         Showing 8 of {tamperCells.length}.
                                       </p>
                                     )}
-                      </div>
+                  </div>
                                 )}
                                 {tamperFields.length > 0 && (
                                   <div>
@@ -3048,7 +3055,7 @@ export function ReviewDocuments() {
                                         Showing 8 of {tamperFields.length}.
                                       </p>
                                     )}
-                    </div>
+                </div>
                                 )}
                                 <p className="text-xs text-gray-500">
                                   Tip: highlighted boxes are drawn on the preview image on the right.
@@ -3092,10 +3099,10 @@ export function ReviewDocuments() {
                                 <ul className="mt-2 list-inside list-disc space-y-1">
                                   {syntheticSignals.slice(0, 5).map((s, idx) => (
                                     <li key={idx}>{s}</li>
-                          ))}
-                        </ul>
+                                  ))}
+                                </ul>
                               ) : null}
-                      </div>
+                            </div>
                           </section>
                         ) : null}
 
@@ -3375,7 +3382,7 @@ export function ReviewDocuments() {
                     <p className="text-xs text-gray-500 mt-2">
                       Verified: {selectedDocument.uploadedDate}
                     </p>
-                  </div>
+                </div>
 
               {/* Document Preview — fetched with apiFetch so X-User-Id is sent (img src alone cannot) */}
               <div className="flex min-h-[280px] min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-gray-50 p-4 lg:min-h-0">
@@ -3490,7 +3497,7 @@ export function ReviewDocuments() {
                               >
                                 {String(m.field)} mismatch
                               </span>
-              </div>
+                            </div>
                           );
                         })}
                       </div>
@@ -3525,8 +3532,8 @@ export function ReviewDocuments() {
                           </Button>
                         </div>
                       }
-                  />
-                </div>
+                    />
+                    </div>
                   );
                 })()}
                 <p className="mt-2 shrink-0 text-xs text-gray-500">

@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_ROOT="${APP_ROOT:-/var/www/intellidocs}"
 BRANCH="${BRANCH:-IntelliDocs-V4}"
-EXPECTED_BUILD="${EXPECTED_AI_VERIFY_BUILD:-20250603-verify-fast-v4}"
+EXPECTED_BUILD="${EXPECTED_AI_VERIFY_BUILD:-}"
 FAIL=0
 
 warn() { echo "WARNING: $*"; FAIL=1; }
@@ -31,11 +31,9 @@ else
 fi
 
 MARKERS=(
-  "_SEAL_SCAN_DOC_TYPES"
-  "_scan_school_header_seal"
-  "def get_bgr"
-  "_header_layout_regions"
-  "AI_VERIFY_BUILD"
+  "def verify_doc"
+  "_ocr_read_document"
+  "_tamper_check"
 )
 for m in "${MARKERS[@]}"; do
   if [ -f "$APP_ROOT/ai/app.py" ] && grep -q "$m" "$APP_ROOT/ai/app.py"; then
@@ -68,15 +66,12 @@ if [ -z "$HEALTH" ]; then
 else
   echo "Health JSON: $HEALTH"
   echo "$HEALTH" | grep -q '"ok"[[:space:]]*:[[:space:]]*true' && ok "OCR engine ready" || warn "OCR not ready"
-  if echo "$HEALTH" | grep -q "\"ai_verify_build\"[[:space:]]*:[[:space:]]*\"${EXPECTED_BUILD}\""; then
-    ok "Running AI verify build ${EXPECTED_BUILD}"
-  else
-    warn "ai_verify_build is not ${EXPECTED_BUILD} — restart intellidocs-ai after deploy"
-  fi
-  if echo "$HEALTH" | grep -q "seal_layout_agnostic"; then
-    ok "Seal/signature v2 capabilities reported"
-  else
-    warn "Health response missing seal_layout_agnostic capability"
+  if [ -n "$EXPECTED_BUILD" ]; then
+    if echo "$HEALTH" | grep -q "\"ai_verify_build\"[[:space:]]*:[[:space:]]*\"${EXPECTED_BUILD}\""; then
+      ok "Running AI verify build ${EXPECTED_BUILD}"
+    else
+      warn "ai_verify_build is not ${EXPECTED_BUILD} — restart intellidocs-ai after deploy"
+    fi
   fi
 fi
 
