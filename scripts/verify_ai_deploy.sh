@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_ROOT="${APP_ROOT:-/var/www/intellidocs}"
 BRANCH="${BRANCH:-IntelliDocs-V4}"
-EXPECTED_BUILD="${EXPECTED_AI_VERIFY_BUILD:-20250603-seal-signature-v2}"
+EXPECTED_BUILD="${EXPECTED_AI_VERIFY_BUILD:-20250603-verify-fast-v3}"
 FAIL=0
 
 warn() { echo "WARNING: $*"; FAIL=1; }

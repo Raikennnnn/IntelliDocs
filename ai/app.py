@@ -12,7 +12,7 @@ app = Flask(__name__)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(APP_DIR)
 # Bumped when verify/seal/signature behavior changes — visible on GET /health.
-AI_VERIFY_BUILD = "20250603-seal-signature-v2"
+AI_VERIFY_BUILD = "20250603-verify-fast-v3"
 app.config['UPLOAD_FOLDER'] = os.path.join(APP_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
@@ -3049,7 +3049,13 @@ def _ocr_read_document(
         best_engine, best_label, best_text, best_conf, best_boxes = best
 
         _priority_doc = _ocr_priority_doc(doc_type)
-        needs_enhanced = _ocr_needs_fallback(best_text, best_conf, doc_type) or _priority_doc
+        dt_key = _normalize_doc_type_key(doc_type)
+        # Multi-pass OCR only when the first read is weak, or for Form 137 / PSA (dense forms).
+        # Good moral + SF9 usually finish in one Tesseract pass — forcing PSM sweeps caused 502 timeouts.
+        needs_enhanced = _ocr_needs_fallback(best_text, best_conf, doc_type)
+        if not needs_enhanced and dt_key in ("birth_certificate", "birthcert", "form137", "sf10", "form157"):
+            needs_enhanced = True
+        deep_ocr_doc = dt_key in ("birth_certificate", "birthcert", "form137", "sf10", "form157")
 
         if needs_enhanced:
             level = 2
@@ -3080,7 +3086,7 @@ def _ocr_read_document(
                             best_text, best_conf, doc_type
                         ):
                             best_engine, best_label, best_text, best_conf, best_boxes = cand
-                        if not _priority_doc and not _ocr_needs_fallback(best_text, best_conf, doc_type):
+                        if not deep_ocr_doc and not _ocr_needs_fallback(best_text, best_conf, doc_type):
                             break
                 except Exception as exc:
                     print(f"[IntelliDocs AI] Enhanced Tesseract fallback failed: {exc}", flush=True)

@@ -1624,8 +1624,9 @@ export function ReviewDocuments() {
           if (cancelled) return;
           const id = String(doc.id);
           const docType = mapDocType(doc);
-          const cached = aiResultsByDocId[id];
-          if (cached && !isAiVerifyPayloadStale(docType, application, cached)) continue;
+          const stored = aiVerifyFromDocument(doc) ?? aiResultsByDocId[id];
+          // Page load: only verify documents never scored before (prevents 5× OCR → nginx 502).
+          if (aiRerunNonce === 0 && stored) continue;
 
           try {
             if (!cancelled) {
@@ -2125,7 +2126,7 @@ export function ReviewDocuments() {
                 >
                   Re-run AI
                 </Button>
-              </div>
+                        </div>
               <ConcernScoringHelp />
               {(application.documents ?? []).map((doc: any, index: number) => (
                 (() => {
@@ -2167,7 +2168,7 @@ export function ReviewDocuments() {
                     <div className="flex min-w-0 flex-1 items-start gap-3">
                       <FileText className="mt-0.5 h-5 w-5 shrink-0 text-gray-400" aria-hidden />
                       <div className="min-w-0 flex-1 space-y-2">
-                        <div>
+                          <div>
                           <p className="text-xs font-semibold uppercase tracking-wide text-[#8B1538]">
                             {(doc.requirementLabel || "Document").replace(/\s+/g, " ").trim()}
                           </p>
@@ -2177,7 +2178,7 @@ export function ReviewDocuments() {
                           >
                             {doc.fileName || doc.name}
                           </p>
-                        </div>
+                          </div>
                         <div className="flex flex-wrap items-center gap-2">
                           {resubmitRequired ? (
                             <Badge className="bg-red-600 text-white">Resubmission required</Badge>
@@ -2201,7 +2202,7 @@ export function ReviewDocuments() {
                           ) : (
                             <Badge variant="outline" className="border-gray-300">Scored</Badge>
                           )}
-                        </div>
+                          </div>
                         {aiPct !== null && !isPhoto ? (
                           <DocumentConcernChips
                             concernPct={aiPct}
@@ -2251,19 +2252,19 @@ export function ReviewDocuments() {
                           <Eye className="mr-2 h-4 w-4" />
                           View
                         </Button>
-                        <Button
+                      <Button
                           type="button"
-                          variant="outline"
-                          size="sm"
+                        variant="outline"
+                        size="sm"
                           className="flex-1 sm:flex-none"
                           onClick={() => downloadDocument(doc)}
                         >
                           <Download className="mr-2 h-4 w-4" />
-                          Download
-                        </Button>
-                      </div>
+                        Download
+                      </Button>
                     </div>
                   </div>
+                </div>
                 </div>
                   );
                 })()
@@ -2294,13 +2295,13 @@ export function ReviewDocuments() {
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#8B1538]/10">
                       <Sparkles className="h-5 w-5 text-[#8B1538]" aria-hidden />
                     </div>
-                    <div>
+            <div>
                       <h3 className="text-lg font-semibold text-gray-900">AI review summary</h3>
                       <p className="mt-0.5 text-sm text-gray-600">
                         Per file: average of <strong className="font-medium">MM</strong> +{" "}
                         <strong className="font-medium">T</strong>. Overall = weighted mean (0% = clean).
                       </p>
-                    </div>
+              </div>
                   </div>
                   {aggregateConcern !== null ? (
                     <div className="text-right">
@@ -3008,7 +3009,7 @@ export function ReviewDocuments() {
                               </summary>
                               <div className="mt-2 space-y-3 text-sm text-gray-700">
                                 {tamperSignals.length > 0 && (
-                                  <div>
+                      <div>
                                     <p className="font-medium text-gray-800">Signals</p>
                                     <ul className="mt-1 list-inside list-disc space-y-1">
                                       {tamperSignals.map((s, idx) => (
@@ -3035,7 +3036,7 @@ export function ReviewDocuments() {
                                         Showing 8 of {tamperCells.length}.
                                       </p>
                                     )}
-                  </div>
+                      </div>
                                 )}
                                 {tamperFields.length > 0 && (
                                   <div>
@@ -3055,7 +3056,7 @@ export function ReviewDocuments() {
                                         Showing 8 of {tamperFields.length}.
                                       </p>
                                     )}
-                </div>
+                    </div>
                                 )}
                                 <p className="text-xs text-gray-500">
                                   Tip: highlighted boxes are drawn on the preview image on the right.
@@ -3099,10 +3100,10 @@ export function ReviewDocuments() {
                                 <ul className="mt-2 list-inside list-disc space-y-1">
                                   {syntheticSignals.slice(0, 5).map((s, idx) => (
                                     <li key={idx}>{s}</li>
-                                  ))}
-                                </ul>
+                          ))}
+                        </ul>
                               ) : null}
-                            </div>
+                      </div>
                           </section>
                         ) : null}
 
@@ -3382,7 +3383,7 @@ export function ReviewDocuments() {
                     <p className="text-xs text-gray-500 mt-2">
                       Verified: {selectedDocument.uploadedDate}
                     </p>
-                </div>
+                  </div>
 
               {/* Document Preview — fetched with apiFetch so X-User-Id is sent (img src alone cannot) */}
               <div className="flex min-h-[280px] min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-gray-50 p-4 lg:min-h-0">
@@ -3497,7 +3498,7 @@ export function ReviewDocuments() {
                               >
                                 {String(m.field)} mismatch
                               </span>
-                            </div>
+              </div>
                           );
                         })}
                       </div>
@@ -3532,8 +3533,8 @@ export function ReviewDocuments() {
                           </Button>
                         </div>
                       }
-                    />
-                    </div>
+                  />
+                </div>
                   );
                 })()}
                 <p className="mt-2 shrink-0 text-xs text-gray-500">
