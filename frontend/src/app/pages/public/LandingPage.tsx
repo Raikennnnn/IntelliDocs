@@ -34,38 +34,35 @@ export function LandingPage() {
   }, []);
 
   return (
-    <div className="min-h-screen overflow-x-hidden bg-white">
+    <div className="min-h-screen bg-white">
       <LandingNavbar />
 
-      {/* Hero: fills the rest of the first screen (viewport minus 64px nav) */}
+      {/* Hero — full viewport below nav */}
       <section className="relative min-h-[calc(100dvh-4rem)] overflow-hidden">
-        {/* Background Image */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          <img 
-            alt="Hero Background" 
-            className="absolute h-full min-h-full w-full object-cover" 
-            src={homePageHero} 
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <img
+            alt="Hero Background"
+            className="absolute h-full min-h-full w-full object-cover"
+            src={homePageHero}
           />
         </div>
 
-        {/* Light burgundy wash — same deep-red family as the login page (rgba(72,0,21)), much softer for the homepage */}
-        <div className="absolute inset-0 bg-[rgba(72,0,21,0.22)]" aria-hidden />
+        <div className="absolute inset-0 bg-black/40" aria-hidden />
 
-        {/* Hero Content — original top offset preserved */}
-        <div className="relative z-[1] mx-auto h-full max-w-[1280px] px-4 sm:px-6 lg:px-8 [&_h1]:drop-shadow-[0_2px_28px_rgba(0,0,0,0.28)] [&_p]:drop-shadow-[0_1px_14px_rgba(0,0,0,0.25)]">
-          <div className="max-w-[768px] pt-16 sm:pt-24 lg:pt-[90px]">
-            <p className="mb-3 text-base font-semibold leading-7 text-white sm:mb-4 sm:text-xl">
+        <div className="relative mx-auto flex h-full min-h-[calc(100dvh-4rem)] max-w-[1280px] items-center px-8">
+          <div className="max-w-[768px] py-12">
+            <p className="mb-4 text-[20px] font-semibold leading-[28px] text-white">
               WELCOME TO
             </p>
-            <h1 className="mb-4 max-w-[672px] text-3xl font-bold leading-tight text-white sm:mb-6 sm:text-4xl md:text-5xl lg:text-[60px] lg:leading-[75px]">
+            <h1 className="mb-6 max-w-[672px] text-[60px] font-bold leading-[75px] text-white">
               Nuestra Señora De Guia Academy Marikina
             </h1>
-            <p className="mb-8 text-lg font-semibold leading-8 text-white sm:mb-12 sm:text-2xl">
+            <p className="mb-12 text-[24px] font-semibold leading-[32px] text-white">
               Senior High School
             </p>
 
             {/* CTA Buttons */}
-            <div className="flex flex-col gap-4 sm:flex-row sm:gap-4">
+            <div className="flex gap-4">
               <div>
                 <Link to="/admissions">
                   <div className="bg-[#8b1538] h-[48px] rounded-[8px] px-6 flex items-center justify-center hover:bg-[#8b1538]/90 transition-colors">
@@ -92,7 +89,7 @@ export function LandingPage() {
 
       {/* Announcements & Events */}
       <section className="bg-gray-50 py-16">
-        <div className="max-w-[1280px] mx-auto px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           <div className="mb-10">
             <Link
               to="/events"
@@ -116,7 +113,7 @@ export function LandingPage() {
 
       {/* Academic Strands Section */}
       <section className="bg-white py-16">
-        <div className="max-w-[1280px] mx-auto px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           {/* Section Header */}
           <div className="text-center mb-12">
             <h2 className="font-bold text-[36px] text-[#8b1538] leading-[40px] mb-4">
@@ -239,7 +236,7 @@ export function LandingPage() {
 
       {/* CTA Section */}
       <section className="bg-[#8b1538] py-16">
-        <div className="max-w-[1280px] mx-auto px-8 text-center">
+        <div className="mx-auto max-w-[1280px] px-8 text-center">
           <h2 className="font-bold text-[36px] text-white leading-[40px] mb-4">
             Ready to Begin Your Journey?
           </h2>

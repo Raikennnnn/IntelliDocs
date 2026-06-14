@@ -470,7 +470,7 @@ export function Reports() {
                 </div>
               ) : null}
 
-              <div className="border rounded-lg overflow-hidden">
+              <div className="border rounded-lg overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-gray-50">
@@ -517,7 +517,7 @@ export function Reports() {
               <CardDescription>Table sizes and backup status for intellidocs_db</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="border rounded-lg overflow-hidden">
+              <div className="border rounded-lg overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-gray-50">
@@ -593,7 +593,7 @@ export function Reports() {
               <CardDescription>Login activity from activity_logs ({meta.dateRangeLabel})</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="border rounded-lg overflow-hidden">
+              <div className="border rounded-lg overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-gray-50">
@@ -654,7 +654,7 @@ export function Reports() {
               <CardDescription>Recent administrative actions from activity_logs ({meta.dateRangeLabel})</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="border rounded-lg overflow-hidden">
+              <div className="border rounded-lg overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-gray-50">

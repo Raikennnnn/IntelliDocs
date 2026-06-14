@@ -563,7 +563,7 @@ export function UserManagement() {
         </CardHeader>
         <CardContent>
           {/* Role Filter Buttons */}
-          <div className="flex gap-2 mb-4 pb-4 border-b">
+          <div className="flex flex-wrap gap-2 mb-4 pb-4 border-b">
             <Button
               variant={roleFilter === "All" ? "default" : "outline"}
               size="sm"
@@ -603,7 +603,7 @@ export function UserManagement() {
               No users found
             </div>
           ) : (
-            <div className="border rounded-lg overflow-hidden">
+            <div className="border rounded-lg overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow className="bg-gray-100 hover:bg-gray-100">

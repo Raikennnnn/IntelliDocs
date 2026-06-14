@@ -721,7 +721,8 @@ export function StudentRecords() {
             </Badge>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
+          <div className="w-full min-w-0 overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -989,6 +990,7 @@ export function StudentRecords() {
               )}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
 

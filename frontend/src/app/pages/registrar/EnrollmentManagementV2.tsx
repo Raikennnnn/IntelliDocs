@@ -458,7 +458,8 @@ export function EnrollmentManagement() {
             </Badge>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
+          <div className="w-full min-w-0 overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -509,6 +510,7 @@ export function EnrollmentManagement() {
               )}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
 
@@ -827,6 +829,7 @@ export function EnrollmentManagement() {
         </CardHeader>
         <CardContent className="pt-6">
           {enrolledStudents.length > 0 ? (
+            <div className="w-full min-w-0 overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -894,6 +897,7 @@ export function EnrollmentManagement() {
                 })}
               </TableBody>
             </Table>
+            </div>
           ) : (
             <div className="py-12 text-center">
               <Users className="w-12 h-12 mx-auto text-gray-400 mb-3" />

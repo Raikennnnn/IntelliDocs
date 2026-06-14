@@ -446,7 +446,7 @@ export function SchoolYearManagement() {
           </div>
 
           {/* School Years Table */}
-          <div className="border rounded-lg overflow-hidden">
+          <div className="border rounded-lg overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow className="bg-gray-50">

@@ -18,7 +18,7 @@ export function LegalDocumentPage() {
       <LandingNavbar />
 
       <section className="bg-[#8B1538] text-white py-12">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
           <Link
             to="/registration"
             className="inline-flex items-center gap-2 text-white/90 hover:text-white text-sm font-medium mb-6"
@@ -33,7 +33,7 @@ export function LegalDocumentPage() {
       </section>
 
       <main className="flex-1 py-10">
-        <article className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 bg-white rounded-xl border border-gray-200 shadow-sm p-8 sm:p-10 space-y-8">
+        <article className="mx-auto max-w-3xl space-y-8 rounded-xl border border-gray-200 bg-white p-8 shadow-sm sm:p-10">
           {document.sections.map((section) => (
             <section key={section.title}>
               <h2 className="text-lg font-bold text-[#101828] mb-3">{section.title}</h2>

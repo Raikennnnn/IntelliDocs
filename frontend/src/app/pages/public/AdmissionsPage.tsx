@@ -229,7 +229,7 @@ export function AdmissionsPage() {
 
       {/* Hero Section */}
       <section className="bg-[#8B1538] text-white py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           <h1 className="text-4xl sm:text-5xl font-bold mb-4">Admissions</h1>
           <p className="text-xl text-gray-200 max-w-3xl">
             We welcome aspiring students who are committed to academic growth and personal development. 
@@ -241,7 +241,7 @@ export function AdmissionsPage() {
 
       {/* Offered Programs */}
       <section className="py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           <div className="text-center mb-12">
             <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
               Offered Programs
@@ -254,7 +254,7 @@ export function AdmissionsPage() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-6xl mx-auto">
+          <div className="mx-auto grid max-w-6xl grid-cols-1 gap-8 lg:grid-cols-2">
             {/* Academic Track Card */}
             <Card className="shadow-xl border border-gray-200">
               <CardContent className="p-8">
@@ -324,7 +324,7 @@ export function AdmissionsPage() {
 
       {/* Admission Requirements */}
       <section className="py-16 bg-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           <div className="text-center mb-12">
             <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
               Admission Requirements
@@ -334,7 +334,7 @@ export function AdmissionsPage() {
             </p>
           </div>
 
-          <Card className="max-w-5xl mx-auto shadow-lg">
+          <Card className="mx-auto max-w-5xl shadow-lg">
             <CardContent className="p-6 sm:p-8">
               <p className="text-sm text-gray-500 mb-6 text-center sm:text-left">
                 Tap a requirement to see a sample layout. Tap the sample image to enlarge it.
@@ -424,7 +424,7 @@ export function AdmissionsPage() {
 
       {/* Enrollment Process */}
       <section className="py-16 bg-gray-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           <div className="text-center mb-12">
             <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
               Enrollment Process
@@ -437,7 +437,7 @@ export function AdmissionsPage() {
             </p>
           </div>
 
-          <div className="max-w-4xl mx-auto">
+          <div className="mx-auto max-w-4xl">
             <div className="space-y-6">
               {enrollmentSteps.map((item, index) => (
                 <Link
@@ -470,7 +470,7 @@ export function AdmissionsPage() {
 
       {/* Call to Action */}
       <section className="py-16 bg-[#8B1538] text-white">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <div className="mx-auto max-w-4xl px-4 text-center sm:px-6 lg:px-8">
           <Users className="w-16 h-16 mx-auto mb-6" />
           <h2 className="text-3xl sm:text-4xl font-bold mb-4">
             Ready to Begin Your Academic Journey?

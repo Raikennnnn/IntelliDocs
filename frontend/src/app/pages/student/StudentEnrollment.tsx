@@ -2073,7 +2073,7 @@ export function StudentEnrollment() {
       )}
       {/* Step Indicator */}
       <div className="border-b bg-white px-4 py-4 sm:px-6 sm:py-8">
-        <div className="mx-auto max-w-5xl">
+        <div className="w-full">
           {/* Mobile: compact progress */}
           <div className="md:hidden">
             <div className="mb-2 flex items-center justify-between text-sm">
@@ -2147,7 +2147,7 @@ export function StudentEnrollment() {
       <div className="min-h-0 bg-gray-50 p-4 sm:p-6">
         {/* Step 1: Personal Information */}
         {currentStep === 1 && (
-          <div className="max-w-5xl mx-auto space-y-6">
+          <div className="w-full space-y-6">
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Personal Information</h2>
@@ -2511,7 +2511,7 @@ export function StudentEnrollment() {
 
         {/* Step 2: Family Information */}
         {currentStep === 2 && (
-          <div className="max-w-5xl mx-auto space-y-6">
+          <div className="w-full space-y-6">
             <p className="text-sm text-gray-600 -mt-2 mb-2">
               Single-parent or guardian-led households: fill only the sections that apply. You must enter at least one
               parent or guardian name (and match your emergency contact choice below).
@@ -2740,7 +2740,7 @@ export function StudentEnrollment() {
 
         {/* Step 3: Enrollment History */}
         {currentStep === 3 && (
-          <div className="max-w-5xl mx-auto">
+          <div className="w-full">
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
                 <h2 className="text-2xl font-semibold mb-6">Enrollment History</h2>
@@ -2826,7 +2826,7 @@ export function StudentEnrollment() {
 
         {/* Step 4: Requirements Upload */}
         {currentStep === 4 && (
-          <div className="max-w-5xl mx-auto">
+          <div className="w-full">
             <Card>
               <CardHeader>
                 <CardTitle>Upload Required Documents</CardTitle>
@@ -3106,7 +3106,7 @@ export function StudentEnrollment() {
 
         {/* Step 5: Payment & Promo */}
         {currentStep === 5 && (
-          <div className="max-w-5xl mx-auto space-y-6">
+          <div className="w-full space-y-6">
             {/* Bring a Friend Promo */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
@@ -3207,7 +3207,7 @@ export function StudentEnrollment() {
 
         {/* Step 6: Review & Submit */}
         {currentStep === 6 && (
-          <div className="max-w-5xl mx-auto">
+          <div className="w-full">
             <Card>
               <CardHeader>
                 <CardTitle>Review & Submit</CardTitle>
@@ -3334,7 +3334,7 @@ export function StudentEnrollment() {
 
       {/* Navigation Buttons */}
       <div className="bg-white border-t p-6">
-        <div className="max-w-5xl mx-auto flex justify-between">
+        <div className="flex w-full justify-between">
           <Button
             variant="outline"
             onClick={handleBack}

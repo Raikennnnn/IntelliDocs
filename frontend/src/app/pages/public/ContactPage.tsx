@@ -11,7 +11,7 @@ export function ContactPage() {
 
       {/* Hero Section */}
       <section className="bg-[#8B1538] text-white py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           <h1 className="text-4xl sm:text-5xl font-bold mb-4">Contact Us</h1>
           <p className="text-xl text-gray-200">
             Get in touch with us for inquiries, enrollment, and support
@@ -21,9 +21,9 @@ export function ContactPage() {
 
       {/* Contact Information */}
       <section className="py-16">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           {/* Single Box Layout */}
-          <Card className="shadow-xl border-[0.909px] border-[rgba(0,0,0,0.1)] max-w-5xl mx-auto">
+          <Card className="mx-auto max-w-5xl shadow-xl border-[0.909px] border-[rgba(0,0,0,0.1)]">
             <CardContent className="p-12">
               <div className="grid md:grid-cols-2 gap-8">
                 {/* School Address */}
@@ -89,7 +89,7 @@ export function ContactPage() {
 
       {/* Additional Information */}
       <section className="py-16 bg-[#8B1538] text-white">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+        <div className="mx-auto max-w-4xl px-4 text-center sm:px-6 lg:px-8">
           <h2 className="text-3xl font-bold mb-4">Have Questions?</h2>
           <p className="text-lg text-gray-200 mb-6">
             Our staff is here to help you with any inquiries about enrollment, programs, or 

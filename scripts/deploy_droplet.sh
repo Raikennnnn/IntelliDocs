@@ -60,7 +60,8 @@ step "Apply database migrations (optional)"
 DB_NAME="${DB_NAME:-intellidocs_db}"
 DB_USER="${DB_USER:-intellidocs}"
 if command -v mysql >/dev/null 2>&1 && [ -n "${MYSQL_PWD:-}" ]; then
-  for f in database_setup.sql database_migration_*.sql; do
+  # NEVER run database_setup.sql here — it DROP DATABASE and wipes production data.
+  for f in database_migration_*.sql; do
     [ -f "$f" ] || continue
     echo "  -> $f"
     mysql -u "$DB_USER" "$DB_NAME" < "$f" || true

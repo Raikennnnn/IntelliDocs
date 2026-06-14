@@ -308,8 +308,8 @@ export function AdminDashboard() {
             </div>
           </div>
 
-          <div className="border rounded-lg overflow-hidden bg-white">
-            <div className="max-h-[420px] overflow-auto">
+          <div className="overflow-x-auto rounded-lg border bg-white">
+            <div className="max-h-[420px] overflow-y-auto">
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-gray-50 border-b">
                   <tr className="text-left">

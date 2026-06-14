@@ -1440,7 +1440,7 @@ export function Students() {
         }}
       >
         <DialogContent
-          className="!max-w-5xl !w-[95vw] !max-h-[92vh] flex flex-col !p-0 !gap-0 bg-gray-50 mx-auto"
+          className="!max-w-6xl !w-[95vw] !max-h-[92vh] flex flex-col !p-0 !gap-0 bg-gray-50 mx-auto"
         >
           <DialogHeader className="px-6 pt-6 pb-3 bg-white border-b border-gray-200 shrink-0">
             <DialogTitle className="text-center text-lg tracking-wide uppercase">
@@ -1816,7 +1816,7 @@ export function Students() {
                         ) : null}
 
                         {/* Records-style checklist table */}
-                        <div className="rounded-lg border border-gray-200 overflow-hidden bg-white">
+                        <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
                           <Table>
                             <TableHeader>
                               <TableRow className="bg-gray-50 hover:bg-gray-50">
@@ -2174,7 +2174,7 @@ export function Students() {
         }}
       >
         <DialogContent
-          className={`!max-w-5xl !w-[95vw] !max-h-[92vh] flex flex-col !p-0 !gap-0 sm:!max-w-5xl${
+          className={`!max-w-6xl !w-[95vw] !max-h-[92vh] flex flex-col !p-0 !gap-0 sm:!max-w-6xl${
             viewerLightboxOpen
               ? " [&>button.absolute]:pointer-events-none [&>button.absolute]:invisible"
               : ""

@@ -36,7 +36,7 @@ export function StrandInfoPage() {
     <div className="min-h-screen bg-gray-50">
       <LandingNavbar />
       <section className="border-b border-gray-200 bg-white py-10 sm:py-12">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto max-w-[1280px] px-8">
           <Link
             to="/admissions"
             className="mb-6 inline-flex items-center gap-2 text-sm font-medium text-[#8B1538] hover:underline"

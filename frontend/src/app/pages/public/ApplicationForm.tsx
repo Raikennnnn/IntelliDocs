@@ -195,7 +195,7 @@ export function ApplicationForm() {
     <div className="min-h-screen bg-gray-50">
       <LandingNavbar />
       
-      <div className="max-w-5xl mx-auto px-4 py-8">
+      <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-[#8B1538] mb-2">Admission Application</h1>
           <p className="text-gray-600">Complete all sections to submit your application</p>

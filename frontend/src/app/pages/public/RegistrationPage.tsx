@@ -1,8 +1,8 @@
-import registrationImage from '../../../assets/registerpage.png'
+import registrationImage from '../../../assets/registerpage.png';
 import { apiFetch } from '../../lib/api';
 import { validatePassword } from '../../lib/passwordPolicy';
-import { useState } from "react";
-import { useNavigate, Link } from "react-router";
+import { useState, type ClipboardEvent, type FormEvent } from 'react';
+import { useNavigate, Link } from 'react-router';
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
@@ -23,6 +23,7 @@ export function RegistrationPage() {
   });
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [isLoading, setIsLoading] = useState(false);
+  const [resendingOtp, setResendingOtp] = useState(false);
   const [otpDelivery, setOtpDelivery] = useState<'sent' | 'failed' | null>(null);
   const [termsPrivacyAccepted, setTermsPrivacyAccepted] = useState(false);
   const [dpaAccepted, setDpaAccepted] = useState(false);
@@ -32,20 +33,27 @@ export function RegistrationPage() {
   };
 
   const handleOtpChange = (index: number, value: string) => {
-    if (value.length <= 1 && /^\d*$/.test(value)) {
-      const newOtp = [...otp];
-      newOtp[index] = value;
-      setOtp(newOtp);
-
-      // Auto-focus next input
+    const digitsOnly = value.replace(/\D/g, '');
+    if (digitsOnly.length > 1) {
+      const next = [...otp];
+      for (let i = 0; i < digitsOnly.length && index + i < 6; i++) {
+        next[index + i] = digitsOnly[i];
+      }
+      setOtp(next);
+      document.getElementById(`otp-${Math.min(index + digitsOnly.length, 5)}`)?.focus();
+      return;
+    }
+    if (/^\d?$/.test(value)) {
+      const next = [...otp];
+      next[index] = value;
+      setOtp(next);
       if (value && index < 5) {
-        const nextInput = document.getElementById(`otp-${index + 1}`);
-        nextInput?.focus();
+        document.getElementById(`otp-${index + 1}`)?.focus();
       }
     }
   };
 
-  const handleOtpPaste = (e: React.ClipboardEvent) => {
+  const handleOtpPaste = (e: ClipboardEvent) => {
     const raw = e.clipboardData.getData('text') || '';
     const digits = raw.replace(/\D/g, '').slice(0, 6);
     if (digits.length === 0) return;
@@ -58,7 +66,55 @@ export function RegistrationPage() {
     el?.focus();
   };
 
-  const handleRegister = async (e: React.FormEvent) => {
+  const handleResendOtp = async () => {
+    if (resendingOtp || isLoading) return;
+    setResendingOtp(true);
+    try {
+      const response = await apiFetch('/api/auth', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'resend_otp',
+          email: formData.email.trim().toLowerCase(),
+        }),
+      });
+      const text = await response.text();
+      let data: {
+        success?: boolean;
+        error?: string;
+        message?: string;
+        otp_delivery?: string;
+        mail_error?: string;
+        code?: string;
+      } = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('Server returned an invalid response');
+      }
+      if (response.ok && data.success) {
+        setOtp(['', '', '', '', '', '']);
+        setOtpDelivery(data.otp_delivery === 'sent' ? 'sent' : 'failed');
+        if (data.otp_delivery === 'sent') {
+          toast.success(data.message || 'OTP resent to your email');
+        } else {
+          toast.warning(data.message || 'OTP could not be sent');
+          if (data.mail_error) {
+            toast.error(data.mail_error, { duration: 8000 });
+          }
+        }
+      } else if (data.code === 'otp_resend_limit') {
+        toast.error(data.error || 'Maximum 3 OTP requests per hour reached.');
+      } else {
+        toast.error(data.error || `Resend failed (${response.status})`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Network error');
+    } finally {
+      setResendingOtp(false);
+    }
+  };
+
+  const handleRegister = async (e: FormEvent) => {
     e.preventDefault();
 
     // Validation
@@ -108,9 +164,16 @@ export function RegistrationPage() {
       });
 
       const responseText = await response.text();
-      let data: { success?: boolean; error?: string; message?: string; otp_delivery?: string; mail_error?: string } = {};
+      let data: {
+        success?: boolean;
+        error?: string;
+        message?: string;
+        otp_delivery?: string;
+        mail_error?: string;
+        code?: string;
+      } = {};
       try {
-        data = JSON.parse(responseText) as { success?: boolean; error?: string };
+        data = JSON.parse(responseText);
       } catch {
         throw new Error('Server returned an invalid response. Check backend API setup.');
       }
@@ -126,6 +189,8 @@ export function RegistrationPage() {
           }
         }
         setStep('otp');
+      } else if (data.code === 'otp_resend_limit') {
+        toast.error(data.error || 'Maximum 3 OTP requests per hour reached. Try again later.');
       } else {
         toast.error(data.error || `Registration failed (${response.status})`);
       }
@@ -137,7 +202,7 @@ export function RegistrationPage() {
     }
   };
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
+  const handleVerifyOtp = async (e: FormEvent) => {
     e.preventDefault();
 
     const enteredOtp = otp.join('');
@@ -157,15 +222,30 @@ export function RegistrationPage() {
         }),
       });
       const text = await response.text();
-      let data: { success?: boolean; error?: string; message?: string } = {};
+      let data: {
+        success?: boolean;
+        error?: string;
+        message?: string;
+        code?: string;
+        attempts_remaining?: number;
+        retry_after_minutes?: number;
+      } = {};
       try {
-        data = JSON.parse(text) as { success?: boolean; error?: string; message?: string };
+        data = JSON.parse(text);
       } catch {
         throw new Error('Server returned an invalid response');
       }
       if (response.ok && data.success) {
         toast.success(data.message || 'Account created. Please sign in.');
         navigate('/login');
+      } else if (data.code === 'otp_locked') {
+        toast.error(data.error || 'Too many incorrect attempts. Try again in 15 minutes.');
+      } else if (data.code === 'invalid_otp') {
+        const attemptsHint =
+          typeof data.attempts_remaining === 'number'
+            ? ` ${data.attempts_remaining} attempt(s) remaining.`
+            : '';
+        toast.error((data.error || 'Invalid or expired OTP.') + attemptsHint);
       } else {
         toast.error(data.error || `OTP verification failed (${response.status})`);
       }
@@ -177,18 +257,16 @@ export function RegistrationPage() {
   };
 
   return (
-    <div className="flex min-h-screen min-h-[100dvh] flex-col">
-      {/* School Header Bar */}
-      <div className="flex-shrink-0 bg-[#8B1538] px-4 py-3 sm:px-6">
-        {/* TODO: Replace with official NSGDA logo image */}
+    <div className="flex h-screen flex-col overflow-hidden bg-white">
+      <div className="shrink-0 bg-[#8B1538] px-6 py-3">
         <div className="flex items-center gap-3">
-          <img 
-            src={schoolLogo} 
-            alt="Nuestra Señora De Guia Academy" 
-            className="w-10 h-10 object-contain bg-white rounded-full p-1"
+          <img
+            src={schoolLogo}
+            alt="Nuestra Señora De Guia Academy"
+            className="h-10 w-10 shrink-0 rounded-full bg-white object-contain p-1"
           />
           <div>
-            <p className="font-bold text-white text-base leading-tight">
+            <p className="text-base font-bold leading-tight text-white">
               Nuestra Señora De Guia
             </p>
             <p className="text-xs text-white/90">Academy of Marikina</p>
@@ -196,40 +274,39 @@ export function RegistrationPage() {
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-      {/* Left Side - Form */}
-      <div className="flex w-full flex-1 items-start justify-center overflow-y-auto bg-white p-4 sm:items-center sm:p-8 lg:w-1/2">
-        <div className="w-full max-w-md">
-          {/* Back Button */}
-          <button
-            onClick={() => step === 'otp' ? setStep('register') : navigate('/admissions')}
-            className="flex items-center gap-2 text-gray-600 hover:text-[#8B1538] mb-8 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-            <span className="text-sm font-medium">Back</span>
-          </button>
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex w-full items-center justify-center overflow-y-auto bg-white p-8 lg:w-1/2">
+          <div className="w-full max-w-md">
+            {/* Back Button */}
+            <button
+              type="button"
+              onClick={() => step === 'otp' ? setStep('register') : navigate('/admissions')}
+              className="mb-8 flex items-center gap-2 text-gray-600 transition-colors hover:text-[#8B1538]"
+            >
+              <ArrowLeft className="size-5 shrink-0" />
+              <span className="text-sm font-medium">Back</span>
+            </button>
 
-          {step === 'register' ? (
-            <>
-              {/* Header */}
-              <div className="mb-8">
-                <h1 className="text-3xl font-bold text-gray-900 mb-2">
-                  Create your account
-                </h1>
-                <p className="text-gray-600">
-                  Fill up all the fields as per your valid details.
-                </p>
-              </div>
+            {step === 'register' ? (
+              <>
+                {/* Header */}
+                <div className="mb-8">
+                  <h1 className="mb-2 text-3xl font-bold text-gray-900">
+                    Create your account
+                  </h1>
+                  <p className="text-base text-gray-600">
+                    Fill up all the fields as per your valid details.
+                  </p>
+                </div>
 
-              {/* Registration Form */}
-              <form onSubmit={handleRegister} className="space-y-5" autoComplete="off">
-                <div>
-                  <Label htmlFor="email" className="text-gray-700 mb-2 block">
+                {/* Registration Form */}
+                <form onSubmit={handleRegister} className="space-y-5" autoComplete="off">
+                <div className="min-w-0">
+                  <Label htmlFor="email" className="mb-2 block text-gray-700">
                     Enter your email <span className="text-[#8B1538]">*</span>
                   </Label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <div className="relative min-w-0">
+                    <Mail className="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-gray-400" />
                     <Input
                       id="email"
                       type="email"
@@ -238,18 +315,18 @@ export function RegistrationPage() {
                       value={formData.email}
                       onChange={(e) => handleInputChange('email', e.target.value)}
                       placeholder="yourname@example.com"
-                      className="pl-10 h-12"
+                      className="h-12 pl-10"
                       required
                     />
                   </div>
                 </div>
 
-                <div>
-                  <Label htmlFor="password" className="text-gray-700 mb-2 block">
+                <div className="min-w-0">
+                  <Label htmlFor="password" className="mb-2 block text-gray-700">
                     Create a password <span className="text-[#8B1538]">*</span>
                   </Label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <div className="relative min-w-0">
+                    <Lock className="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-gray-400" />
                     <Input
                       id="password"
                       type={showPassword ? 'text' : 'password'}
@@ -258,29 +335,30 @@ export function RegistrationPage() {
                       value={formData.password}
                       onChange={(e) => handleInputChange('password', e.target.value)}
                       placeholder="Letters and numbers, 8+ characters"
-                      className="pl-10 pr-10 h-12"
+                      className="h-12 pl-10 pr-10"
                       required
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
                     >
-                      {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                      {showPassword ? <EyeOff className="size-5" /> : <Eye className="size-5" />}
                     </button>
                   </div>
-                  <p className="mt-1.5 text-xs text-gray-500">
+                  <p className="mt-1.5 text-xs leading-relaxed text-gray-500">
                     Use at least 8 characters with letters and numbers. Single repeated characters are
                     not allowed.
                   </p>
                 </div>
 
-                <div>
-                  <Label htmlFor="confirmPassword" className="text-gray-700 mb-2 block">
+                <div className="min-w-0">
+                  <Label htmlFor="confirmPassword" className="mb-2 block text-gray-700">
                     Confirm password <span className="text-[#8B1538]">*</span>
                   </Label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <div className="relative min-w-0">
+                    <Lock className="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-gray-400" />
                     <Input
                       id="confirmPassword"
                       type={showPassword ? 'text' : 'password'}
@@ -289,25 +367,25 @@ export function RegistrationPage() {
                       value={formData.confirmPassword}
                       onChange={(e) => handleInputChange('confirmPassword', e.target.value)}
                       placeholder="Re-enter your password"
-                      className="pl-10 pr-10 h-12"
+                      className="h-12 pl-10 pr-10"
                       required
                     />
                   </div>
                 </div>
 
                 {/* Terms, Privacy, and DPA */}
-                <div className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
+                <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:space-y-4 sm:p-4">
                   <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
                     Required agreements
                   </p>
-                  <div className="flex items-start gap-3">
+                  <div className="flex items-start gap-2.5 sm:gap-3">
                     <Checkbox
                       id="terms-privacy"
                       checked={termsPrivacyAccepted}
                       onCheckedChange={(checked) => setTermsPrivacyAccepted(checked === true)}
-                      className="mt-0.5 size-5 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:bg-[#8B1538] data-[state=checked]:border-[#8B1538] data-[state=checked]:text-white"
+                      className="mt-0.5 size-5 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white"
                     />
-                    <div className="text-sm text-gray-700 leading-snug">
+                    <div className="min-w-0 flex-1 text-sm leading-snug text-gray-700 break-words">
                       <label htmlFor="terms-privacy" className="cursor-pointer font-normal">
                         I have read and agree to the
                       </label>{' '}
@@ -315,7 +393,7 @@ export function RegistrationPage() {
                         to="/legal/terms"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[#8B1538] hover:underline font-semibold"
+                        className="font-semibold text-[#8B1538] hover:underline"
                       >
                         NSDGA Terms of Use
                       </Link>{' '}
@@ -324,21 +402,21 @@ export function RegistrationPage() {
                         to="/legal/privacy"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[#8B1538] hover:underline font-semibold"
+                        className="font-semibold text-[#8B1538] hover:underline"
                       >
                         Privacy Policy
                       </Link>
                       <span className="text-gray-600">.</span>
                     </div>
                   </div>
-                  <div className="flex items-start gap-3">
+                  <div className="flex items-start gap-2.5 sm:gap-3">
                     <Checkbox
                       id="dpa"
                       checked={dpaAccepted}
                       onCheckedChange={(checked) => setDpaAccepted(checked === true)}
-                      className="mt-0.5 size-5 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:bg-[#8B1538] data-[state=checked]:border-[#8B1538] data-[state=checked]:text-white"
+                      className="mt-0.5 size-5 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white"
                     />
-                    <div className="text-sm text-gray-700 leading-snug">
+                    <div className="min-w-0 flex-1 text-sm leading-snug text-gray-700 break-words">
                       <label htmlFor="dpa" className="cursor-pointer font-normal">
                         I consent to the processing of my personal data as described in the
                       </label>{' '}
@@ -346,7 +424,7 @@ export function RegistrationPage() {
                         to="/legal/dpa"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-[#8B1538] hover:underline font-semibold"
+                        className="font-semibold text-[#8B1538] hover:underline"
                       >
                         Data Processing Agreement (DPA)
                       </Link>
@@ -354,7 +432,7 @@ export function RegistrationPage() {
                     </div>
                   </div>
                   {(!termsPrivacyAccepted || !dpaAccepted) && (
-                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
                       Check both boxes above to continue with registration.
                     </p>
                   )}
@@ -363,14 +441,14 @@ export function RegistrationPage() {
                 <Button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full h-12 text-base font-semibold text-white bg-[#8B1538] hover:bg-[#6d102c] disabled:bg-[#8B1538]/40 disabled:opacity-100"
+                  className="h-12 w-full bg-[#8B1538] text-base font-semibold text-white hover:bg-[#8B1538]/90 disabled:bg-[#8B1538]/40"
                 >
                   {isLoading ? 'Processing...' : 'Continue'}
                 </Button>
 
-                <p className="text-center text-sm text-gray-600">
+                <p className="text-center text-sm leading-relaxed text-gray-600">
                   Have an account?{' '}
-                  <Link to="/login" className="text-[#8B1538] font-semibold hover:underline">
+                  <Link to="/login" className="font-semibold text-[#8B1538] hover:underline">
                     Sign in
                   </Link>
                 </p>
@@ -380,18 +458,18 @@ export function RegistrationPage() {
             <>
               {/* OTP Verification */}
               <div className="mb-8">
-                <h1 className="text-3xl font-bold text-gray-900 mb-2">
+                <h1 className="mb-2 text-3xl font-bold text-gray-900">
                   Verify your email
                 </h1>
-                <p className="text-gray-600">
+                <p className="text-base text-gray-600">
                   Enter the 6-digit code from your email inbox.
                 </p>
               </div>
 
               <form onSubmit={handleVerifyOtp} className="space-y-6" autoComplete="off">
                 <div>
-                  <Label className="text-gray-700 mb-3 block">Enter OTP Code</Label>
-                  <div className="flex flex-wrap justify-center gap-2 sm:justify-between sm:gap-3" onPaste={handleOtpPaste}>
+                  <Label className="mb-3 block text-gray-700">Enter OTP Code</Label>
+                  <div className="flex justify-between gap-3" onPaste={handleOtpPaste}>
                     {otp.map((digit, index) => (
                       <Input
                         key={index}
@@ -403,23 +481,27 @@ export function RegistrationPage() {
                         onChange={(e) => handleOtpChange(index, e.target.value)}
                         onPaste={handleOtpPaste}
                         autoComplete="one-time-code"
-                        className="h-11 w-11 min-w-[2.5rem] max-w-14 flex-1 text-center text-lg font-semibold sm:h-14 sm:w-14 sm:flex-none sm:text-2xl"
+                        className="h-14 w-14 text-center text-2xl font-semibold"
                       />
                     ))}
                   </div>
                 </div>
 
+                <p className="text-center text-xs leading-relaxed text-gray-500">
+                  Max 5 incorrect attempts, then 15-minute lockout. Up to 3 code requests per hour.
+                </p>
+
                 {otpDelivery === 'sent' ? (
-                  <div className="bg-green-50 border border-[#2D5016]/30 rounded-lg p-4">
+                  <div className="rounded-lg border border-[#2D5016]/30 bg-green-50 p-3 sm:p-4">
                     <div className="flex items-start gap-3">
-                      <CheckCircle className="w-5 h-5 text-[#2D5016] mt-0.5 shrink-0" />
-                      <p className="text-sm text-gray-800">
-                        Check your email for the 6-digit code. It expires in 10 minutes.
+                      <CheckCircle className="mt-0.5 size-5 shrink-0 text-[#2D5016]" />
+                      <p className="min-w-0 flex-1 text-sm leading-relaxed text-gray-800">
+                        Check your email for the 6-digit code. It expires in 5 minutes.
                       </p>
                     </div>
                   </div>
                 ) : (
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900">
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm leading-relaxed text-amber-900 sm:p-4">
                     We could not send the verification email. Try <strong>Resend OTP</strong> below.
                   </div>
                 )}
@@ -427,7 +509,7 @@ export function RegistrationPage() {
                 <Button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full bg-[#2D5016] hover:bg-[#2D5016]/90 text-white h-12 text-base font-semibold"
+                  className="h-12 w-full bg-[#2D5016] text-base font-semibold text-white hover:bg-[#2D5016]/90"
                 >
                   {isLoading ? 'Verifying...' : 'Verify & Complete Registration'}
                 </Button>
@@ -435,59 +517,26 @@ export function RegistrationPage() {
                 <div className="text-center">
                   <button
                     type="button"
-                    onClick={async () => {
-                      try {
-                        const response = await apiFetch('/api/auth', {
-                          method: 'POST',
-                          body: JSON.stringify({
-                            action: 'resend_otp',
-                            email: formData.email,
-                          }),
-                        });
-                        const text = await response.text();
-                        let data: { success?: boolean; error?: string; message?: string; otp_delivery?: string; mail_error?: string } = {};
-                        try {
-                          data = JSON.parse(text) as { success?: boolean; error?: string; message?: string; otp_delivery?: string; mail_error?: string };
-                        } catch {
-                          throw new Error('Server returned an invalid response');
-                        }
-                        if (response.ok && data.success) {
-                          setOtpDelivery(data.otp_delivery === 'sent' ? 'sent' : 'failed');
-                          if (data.otp_delivery === 'sent') {
-                            toast.success(data.message || 'OTP resent to your email');
-                          } else {
-                            toast.warning(data.message || 'OTP could not be sent');
-                            if (data.mail_error) {
-                              toast.error(data.mail_error, { duration: 8000 });
-                            }
-                          }
-                        } else {
-                          toast.error(data.error || `Resend failed (${response.status})`);
-                        }
-                      } catch (error) {
-                        toast.error(error instanceof Error ? error.message : 'Network error');
-                      }
-                    }}
-                    className="text-[#8B1538] font-semibold hover:underline text-sm"
+                    disabled={resendingOtp || isLoading}
+                    onClick={() => void handleResendOtp()}
+                    className="text-sm font-semibold text-[#8B1538] hover:underline disabled:no-underline disabled:opacity-50"
                   >
-                    Resend OTP
+                    {resendingOtp ? 'Sending new code…' : 'Resend OTP'}
                   </button>
                 </div>
               </form>
             </>
-          )}
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* Right Side - Image/Hero */}
-      <div className="hidden lg:block lg:w-1/2 relative bg-gray-100">
-        {/* TODO: Replace with legitimate registration-themed image */}
-        <img
-          src={registrationImage}
-          alt="Registration"
-          className="w-full h-full object-contain object-center"
-        />
-      </div>
+        <div className="relative hidden bg-gray-100 lg:block lg:w-1/2">
+          <img
+            src={registrationImage}
+            alt="NSDGA students and vocational programs"
+            className="h-full w-full object-contain object-center"
+          />
+        </div>
       </div>
     </div>
   );

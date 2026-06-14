@@ -4,7 +4,7 @@ import schoolLogo from '../../assets/logo.png';
 export function Footer() {
   return (
     <footer className="bg-[#101828] py-4">
-      <div className="max-w-[1280px] mx-auto px-8">
+      <div className="mx-auto max-w-[1280px] px-8">
         <div className="grid md:grid-cols-3 gap-6 mb-4">
           {/* School Info */}
           <div>
@@ -49,7 +49,7 @@ export function Footer() {
               <Link to="/login" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
                 Student Portal
               </Link>
-              <Link to="/register" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
+              <Link to="/registration" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
                 Enroll Now
               </Link>
             </div>

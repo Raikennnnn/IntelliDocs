@@ -155,39 +155,36 @@ export function ChangePassword() {
   };
 
   return (
-    <div className="relative w-full min-h-screen overflow-hidden bg-white">
-      {/* Background image — same treatment as the Login screen for visual
-          continuity since this screen is the first thing a new student sees. */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+    <div className="relative h-[100dvh] w-full overflow-hidden bg-white">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <img
           alt=""
-          className="absolute h-full left-0 top-0 w-full object-cover scale-110"
+          className="absolute left-0 top-0 h-full w-full scale-110 object-cover"
           src={homePageImage}
         />
       </div>
       <div className="absolute inset-0 bg-[rgba(72,0,21,0.32)]" />
 
-      {/* Top bar */}
-      <div className="absolute top-0 left-0 w-full bg-[#8B1538] h-[63px] shadow-md z-10 flex items-center px-8">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10">
-            <img alt="School Logo" className="w-full h-full object-contain" src={schoolLogo} />
+      <div className="absolute left-0 top-0 z-10 flex h-[63px] w-full items-center bg-[#8B1538] px-4 shadow-md sm:px-8">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+          <div className="size-10 shrink-0">
+            <img alt="School Logo" className="h-full w-full object-contain" src={schoolLogo} />
           </div>
-          <div>
-            <p className="font-bold text-lg text-white leading-tight">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-bold leading-tight text-white sm:text-lg">
               Nuestra Señora De Guia
             </p>
-            <p className="font-semibold text-xs text-white">Academy of Marikina</p>
+            <p className="truncate text-xs font-semibold text-white">Academy of Marikina</p>
           </div>
         </div>
       </div>
 
-      <div className="relative z-10 flex items-center justify-center min-h-screen px-4 py-24">
-        <div className="bg-white/85 backdrop-blur-sm border border-gray-300 rounded-lg shadow-lg w-full max-w-[527px] p-8">
+      <div className="relative z-10 flex h-full items-center justify-center px-4 py-20">
+        <div className="w-full max-w-[527px] rounded-lg border border-gray-300 bg-white/85 p-5 shadow-lg backdrop-blur-sm sm:p-8">
           <div className="space-y-6">
             <div>
-              <h2 className="font-bold text-2xl text-[#101828] mb-2">Set a New Password</h2>
-              <p className="font-normal text-sm text-black">
+              <h2 className="mb-2 text-2xl font-bold text-[#101828]">Set a New Password</h2>
+              <p className="text-base text-black">
                 {user?.school_username ? (
                   <>
                     Welcome,{' '}

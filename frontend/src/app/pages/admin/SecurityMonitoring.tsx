@@ -177,7 +177,8 @@ export function SecurityMonitoring() {
           <CardTitle>Activity Logs</CardTitle>
           <CardDescription>{loading ? 'Loading…' : `${logs.length} events shown`}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
+          <div className="w-full min-w-0 overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -218,6 +219,7 @@ export function SecurityMonitoring() {
               ))}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
 

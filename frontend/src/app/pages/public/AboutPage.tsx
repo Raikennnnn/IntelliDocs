@@ -10,23 +10,19 @@ export function AboutPage() {
 
       {/* Main Content Container */}
       <div className="bg-[#f9fafb]">
-        {/* Hero Section with Background Image */}
-        <section className="relative min-h-[420px] overflow-hidden sm:min-h-[520px] lg:h-[600px]">
-          {/* Background Image */}
-          <div className="absolute inset-0 overflow-hidden pointer-events-none">
-            {/* TODO: Replace with legitimate hero background photo (e.g., school building) */}
-            <img 
-              alt="About Hero Background" 
-              className="absolute h-full w-full object-cover" 
-              src={aboutPageHero} 
+        {/* Hero — full viewport below nav */}
+        <section className="relative min-h-[calc(100dvh-4rem)] overflow-hidden">
+          <div className="pointer-events-none absolute inset-0 overflow-hidden">
+            <img
+              alt="About Hero Background"
+              className="absolute h-full min-h-full w-full object-cover"
+              src={aboutPageHero}
             />
           </div>
 
-          {/* Dark Overlay */}
-          <div className="absolute inset-0 bg-black/70" />
+          <div className="absolute inset-0 bg-black/70" aria-hidden />
 
-          {/* Hero Content */}
-          <div className="relative mx-auto flex h-full max-w-[1280px] items-center px-4 py-8 sm:px-6 lg:px-8">
+          <div className="relative mx-auto flex min-h-[calc(100dvh-4rem)] max-w-[1280px] items-center px-8 py-8">
             {/* Red Background Box with Content */}
             <div className="relative w-full p-4 sm:p-8 lg:p-12">
               {/* Background layer with opacity */}
@@ -61,7 +57,7 @@ export function AboutPage() {
         </section>
 
         {/* Mission and Vision Cards */}
-        <section className="mx-auto max-w-[1280px] px-4 py-12 sm:px-6 lg:px-8 lg:py-16">
+        <section className="mx-auto max-w-[1280px] px-8 py-16">
           <div className="grid md:grid-cols-2 gap-8">
             {/* Mission Card */}
             <div className="bg-white border border-[rgba(0,0,0,0.1)] rounded-[14px] shadow-[0px_10px_15px_0px_rgba(0,0,0,0.1),0px_4px_6px_0px_rgba(0,0,0,0.1)] p-8">

@@ -87,7 +87,8 @@ export function StudentAttendance() {
           <CardTitle>Attendance Per Subject</CardTitle>
           <CardDescription>Detailed attendance breakdown</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
+          <div className="w-full min-w-0 overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -118,6 +119,7 @@ export function StudentAttendance() {
               })}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
     </div>
