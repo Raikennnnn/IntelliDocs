@@ -52,12 +52,6 @@ try {
         exit;
     }
 
-    $staticUrl = announcementImageUrl((string)$id, $relativePath);
-    if ($staticUrl !== null) {
-        header('Location: ' . $staticUrl, true, 302);
-        exit;
-    }
-
     $ext = strtolower(pathinfo($resolved, PATHINFO_EXTENSION));
     $mime = match ($ext) {
         'jpg', 'jpeg' => 'image/jpeg',

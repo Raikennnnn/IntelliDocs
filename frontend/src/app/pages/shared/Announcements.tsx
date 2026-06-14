@@ -109,7 +109,7 @@ export function Announcements() {
 
   function openEdit(a: AnnouncementItem) {
     setEditId(a.id);
-    resetImageState(a.imageUrl ?? null);
+    resetImageState(publicAssetUrl(a.imageUrl ?? null));
     setForm({
       title: a.title || '',
       body: a.body || '',

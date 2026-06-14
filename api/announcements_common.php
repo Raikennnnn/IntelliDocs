@@ -40,15 +40,31 @@ function ensureAnnouncementsSchema(PDO $pdo): void
     }
 }
 
-/** Web path prefix for static files under public/ (XAMPP subfolder). */
+/**
+ * Web path prefix before /api/ or /uploads/ (empty = site root on droplet).
+ * Override with APP_PUBLIC_PATH=/IntelliDocs/public for XAMPP subfolder installs.
+ */
 function announcementPublicBasePath(): string
 {
+    $explicit = trim((string)(getenv('APP_PUBLIC_PATH') ?: ''));
+    if ($explicit !== '') {
+        return rtrim(str_replace('\\', '/', $explicit), '/');
+    }
+
+    $baseUrl = trim((string)(getenv('APP_BASE_URL') ?: ''));
+    if ($baseUrl !== '') {
+        $path = parse_url($baseUrl, PHP_URL_PATH);
+        if (!is_string($path) || $path === '' || $path === '/') {
+            return '';
+        }
+        return rtrim($path, '/');
+    }
+
     return '/IntelliDocs/public';
 }
 
 function announcementImageUrl(?string $id, ?string $imagePath): ?string
 {
-    unset($id);
     if ($imagePath === null || trim($imagePath) === '') {
         return null;
     }
@@ -56,7 +72,15 @@ function announcementImageUrl(?string $id, ?string $imagePath): ?string
     if ($relative === null) {
         return null;
     }
-    return announcementPublicBasePath() . '/' . $relative;
+
+    $announcementId = trim((string)($id ?? ''));
+    if ($announcementId !== '') {
+        $base = announcementPublicBasePath();
+        return ($base !== '' ? $base : '') . '/api/announcement-image?id=' . rawurlencode($announcementId);
+    }
+
+    $base = announcementPublicBasePath();
+    return ($base !== '' ? $base . '/' : '/') . ltrim($relative, '/');
 }
 
 function announcementNormalizeImageRelativePath(string $imagePath): ?string

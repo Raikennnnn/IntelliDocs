@@ -68,27 +68,33 @@ const AUTH_REDIRECT_CODES = new Set([
   'missing_token',
 ]);
 
-/** Resolve announcement / public upload URLs (works in Vite dev and XAMPP). */
+const XAMPP_PUBLIC_PREFIX = '/IntelliDocs/public';
+
+/** Resolve announcement / public upload URLs (Vite dev, XAMPP subfolder, droplet root). */
 export function publicAssetUrl(url: string | null | undefined): string | null {
   if (url == null || url === '') return null;
   if (/^https?:\/\//i.test(url)) return url;
 
-  const path = url.startsWith('/') ? url : `/${url}`;
-  const env = import.meta.env as { DEV?: boolean; VITE_PUBLIC_BASE?: string };
-  const configuredBase = (env.VITE_PUBLIC_BASE ?? '').replace(/\/$/, '');
+  let path = url.startsWith('/') ? url : `/${url}`;
+  const env = import.meta.env as {
+    DEV?: boolean;
+    PROD?: boolean;
+    VITE_PUBLIC_BASE?: string;
+    VITE_API_BASE?: string;
+  };
+  const configuredBase = (env.VITE_PUBLIC_BASE ?? env.VITE_API_BASE ?? '').replace(/\/$/, '');
 
-  if (path.startsWith('/IntelliDocs/public/')) {
+  // Legacy API responses may still include the XAMPP prefix; droplet builds use site root.
+  if (env.PROD && !configuredBase && path.startsWith(`${XAMPP_PUBLIC_PREFIX}/`)) {
+    path = path.slice(XAMPP_PUBLIC_PREFIX.length) || '/';
+  }
+
+  if (path.startsWith('/uploads/') || path.startsWith('/api/')) {
+    return configuredBase ? `${configuredBase}${path}` : path;
+  }
+
+  if (path.startsWith(`${XAMPP_PUBLIC_PREFIX}/`)) {
     return path;
-  }
-
-  if (path.startsWith('/uploads/')) {
-    const base = configuredBase || '/IntelliDocs/public';
-    return `${base}${path}`;
-  }
-
-  if (path.startsWith('/api/announcement-image')) {
-    const base = configuredBase || (env.DEV ? '' : '/IntelliDocs/public');
-    return base ? `${base}${path}` : path;
   }
 
   return path;
