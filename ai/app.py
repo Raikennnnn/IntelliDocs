@@ -4,6 +4,8 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -362,9 +364,13 @@ def _quick_ocr_for_upload_screen(filepath: str, doc_type: str) -> tuple[str, flo
             if _ocr_candidate_score(t2, c2, doc_type) > _ocr_candidate_score(text, conf, doc_type):
                 text, conf = t2, c2
             if dt in ("birth_certificate", "birthcert"):
-                extra = _ocr_birth_cert_header_text(filepath)
-                if extra and extra not in text:
-                    text = f"{text}\n{extra}".strip()
+                header_probe = re.sub(r"\s+", " ", (text or "").upper())
+                if not (
+                    _psa_has_authority_header(header_probe) and _psa_has_republic_header(header_probe)
+                ):
+                    extra = _ocr_birth_cert_header_text(filepath)
+                    if extra and extra not in text:
+                        text = f"{text}\n{extra}".strip()
         except Exception:
             pass
     return text, conf
@@ -834,11 +840,13 @@ def _ocr_birth_cert_header_text(filepath: str) -> str:
         im = Image.open(filepath)
         w, h = im.size
         crop = im.crop((0, 0, w, max(1, int(h * 0.26))))
-        chunks: list[str] = []
-        for psm in (6, 11):
+
+        def _header_psm(psm: int) -> str:
             t, _, _ = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
-            if (t or "").strip():
-                chunks.append(t.strip())
+            return (t or "").strip()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            chunks = [c for c in pool.map(_header_psm, (6, 11)) if c]
         return "\n".join(chunks)
     except Exception:
         return ""
@@ -2231,6 +2239,37 @@ def _ocr_tesseract(filepath: str) -> tuple[str, float, list[dict]]:
     return _ocr_tesseract_image(image, psm=None, enhanced=False)
 
 
+def _text_from_tesseract_data(data: dict) -> str:
+    """Rebuild OCR text from a single image_to_data pass (avoids a second Tesseract invocation)."""
+    texts = data.get("text") or []
+    n_items = len(texts)
+    if n_items == 0:
+        return ""
+
+    lines_map: dict[tuple[int, int, int], list[str]] = {}
+    block_nums = data.get("block_num") or [0] * n_items
+    par_nums = data.get("par_num") or [0] * n_items
+    line_nums = data.get("line_num") or [0] * n_items
+    confs = data.get("conf") or [-1] * n_items
+
+    for i in range(n_items):
+        t = str(texts[i] or "").strip()
+        if not t:
+            continue
+        try:
+            if int(confs[i]) < 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        key = (int(block_nums[i]), int(par_nums[i]), int(line_nums[i]))
+        lines_map.setdefault(key, []).append(t)
+
+    if not lines_map:
+        return ""
+
+    return "\n".join(" ".join(lines_map[key]) for key in sorted(lines_map.keys())).strip()
+
+
 def _ocr_tesseract_image(
     image,
     *,
@@ -2252,8 +2291,8 @@ def _ocr_tesseract_image(
         config_parts.append(f"--psm {psm}")
     config = " ".join(config_parts)
 
-    text = pytesseract.image_to_string(img, config=config).strip()
     data = pytesseract.image_to_data(img, config=config, output_type=pytesseract.Output.DICT)
+    text = _text_from_tesseract_data(data)
     confs = []
     boxes: list[dict] = []
     for c in data.get("conf", []):
@@ -2398,18 +2437,33 @@ def _ocr_read_document(
         needs_enhanced = _ocr_needs_fallback(best_text, best_conf, doc_type) or _priority_doc
 
         if needs_enhanced:
-            from PIL import Image
-
             level = 2
             if _tesseract_available:
                 try:
-                    base = Image.open(ocr_path)
-                    for psm, tag in ((6, "tesseract_enhanced_psm6"), (11, "tesseract_enhanced_psm11"), (4, "tesseract_enhanced_psm4")):
-                        t2, c2, b2 = _ocr_tesseract_image(base, psm=psm, enhanced=True)
+                    psm_jobs = (
+                        (6, "tesseract_enhanced_psm6"),
+                        (11, "tesseract_enhanced_psm11"),
+                        (4, "tesseract_enhanced_psm4"),
+                    )
+
+                    def _run_enhanced_psm(job: tuple[int, str]) -> tuple[int, str, str, float, list[dict]]:
+                        psm, tag = job
+                        from PIL import Image
+
+                        im = Image.open(ocr_path)
+                        t2, c2, b2 = _ocr_tesseract_image(im, psm=psm, enhanced=True)
+                        return psm, tag, t2, c2, b2
+
+                    with ThreadPoolExecutor(max_workers=min(3, len(psm_jobs))) as pool:
+                        enhanced_results = list(pool.map(_run_enhanced_psm, psm_jobs))
+
+                    for _psm, tag, t2, c2, b2 in sorted(enhanced_results, key=lambda row: row[0]):
                         _run(level, "tesseract", tag, t2, c2, b2)
                         level += 1
                         cand = max(candidates, key=lambda row: _ocr_candidate_score(row[2], row[3], doc_type))
-                        if _ocr_candidate_score(cand[2], cand[3], doc_type) > _ocr_candidate_score(best_text, best_conf, doc_type):
+                        if _ocr_candidate_score(cand[2], cand[3], doc_type) > _ocr_candidate_score(
+                            best_text, best_conf, doc_type
+                        ):
                             best_engine, best_label, best_text, best_conf, best_boxes = cand
                         if not _priority_doc and not _ocr_needs_fallback(best_text, best_conf, doc_type):
                             break
@@ -2438,9 +2492,14 @@ def _ocr_read_document(
                         print(f"[IntelliDocs AI] OCR fallback ({tag}) failed: {exc}", flush=True)
 
         if _normalize_doc_type_key(doc_type) in ("birth_certificate", "birthcert"):
-            header_extra = _ocr_birth_cert_header_text(ocr_path)
-            if (header_extra or "").strip():
-                best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
+            header_probe = re.sub(r"\s+", " ", (best_text or "").upper())
+            needs_header_pass = not (
+                _psa_has_authority_header(header_probe) and _psa_has_republic_header(header_probe)
+            )
+            if needs_header_pass:
+                header_extra = _ocr_birth_cert_header_text(ocr_path)
+                if (header_extra or "").strip():
+                    best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
 
         best_boxes = _ocr_scale_boxes_to_original(best_boxes, ocr_scale)
 
@@ -2465,7 +2524,7 @@ def _ocr_read_document(
                 pass
 
 
-def _tamper_check(filepath: str) -> tuple[float, list[str]]:
+def _tamper_check(filepath: str, image_cache: "_VerifyImageCache | None" = None) -> tuple[float, list[str]]:
     """
     Lightweight tamper signals.
     Returns (tamper_score_01, signals). 1.0 = looks clean, 0.0 = highly suspicious.
@@ -2499,35 +2558,21 @@ def _tamper_check(filepath: str) -> tuple[float, list[str]]:
 
     # --- ELA (JPEG only) ---
     try:
-        from PIL import Image, ImageChops
         import numpy as np
 
         ext = os.path.splitext(filepath)[1].lower()
         if ext in [".jpg", ".jpeg"]:
-            original = Image.open(filepath).convert("RGB")
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                tmp_path = tmp.name
-            try:
-                # Resave at a fixed quality to highlight compression differences.
-                original.save(tmp_path, "JPEG", quality=90)
-                resaved = Image.open(tmp_path).convert("RGB")
-                diff = ImageChops.difference(original, resaved)
-                arr = np.asarray(diff, dtype=np.uint8)
-                # Variance is a rough proxy for localized artifacts.
-                var = float(np.var(arr))
-
-                # Heuristic thresholds (empirical; adjust as you collect samples).
+            if image_cache is not None:
+                _, var = image_cache.get_ela_diff()
+            else:
+                _, var = _compute_ela_diff(filepath)
+            if var is not None:
                 if var > 120.0:
                     signals.append("ELA: strong local compression artifacts detected")
                     score -= 0.55
                 elif var > 70.0:
                     signals.append("ELA: moderate compression artifacts detected")
                     score -= 0.30
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
     except Exception:
         # ELA is best-effort; ignore failures.
         pass
@@ -2823,6 +2868,168 @@ def _compute_tamper_map(filepath: str) -> "object|None":
         return np.clip(combined, 0, 255).astype(np.uint8)
     except Exception:
         return None
+
+
+class _VerifyImageCache:
+    """Per-verify cache: one image load and one ELA/tamper-map build per document."""
+
+    __slots__ = (
+        "filepath",
+        "_lock",
+        "_rgb",
+        "_ela_diff",
+        "_ela_var",
+        "_ela_done",
+        "_noise",
+        "_noise_done",
+        "_tamper_map",
+        "_field_diff",
+    )
+
+    def __init__(self, filepath: str) -> None:
+        self.filepath = filepath
+        self._lock = threading.Lock()
+        self._rgb = None
+        self._ela_diff = None
+        self._ela_var = None
+        self._ela_done = False
+        self._noise = None
+        self._noise_done = False
+        self._tamper_map = None
+        self._field_diff = None
+
+    def _load_rgb(self):
+        with self._lock:
+            if self._rgb is not None:
+                return self._rgb
+            from PIL import Image
+
+            self._rgb = Image.open(self.filepath).convert("RGB")
+            return self._rgb
+
+    def get_ela_diff(self) -> tuple["object|None", float | None]:
+        with self._lock:
+            if self._ela_done:
+                return self._ela_diff, self._ela_var
+
+        ext = os.path.splitext(self.filepath)[1].lower()
+        if ext not in (".jpg", ".jpeg"):
+            with self._lock:
+                self._ela_diff, self._ela_var = None, None
+                self._ela_done = True
+                return self._ela_diff, self._ela_var
+
+        ela_diff = None
+        ela_var = None
+        try:
+            from PIL import Image, ImageChops
+            import numpy as np
+
+            original = self._load_rgb()
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                original.save(tmp_path, "JPEG", quality=90)
+                resaved = Image.open(tmp_path).convert("RGB")
+                diff = ImageChops.difference(original, resaved)
+                arr = np.asarray(diff, dtype=np.uint8)
+                ela_diff = arr
+                ela_var = float(np.var(arr))
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        except Exception:
+            ela_diff, ela_var = None, None
+
+        with self._lock:
+            if not self._ela_done:
+                self._ela_diff = ela_diff
+                self._ela_var = ela_var
+                self._ela_done = True
+            return self._ela_diff, self._ela_var
+
+    def get_noise_residual(self) -> "object|None":
+        with self._lock:
+            if self._noise_done:
+                return self._noise
+
+        noise = None
+        try:
+            import cv2
+
+            img = cv2.imread(self.filepath, cv2.IMREAD_GRAYSCALE)
+            if img is not None and img.size > 0:
+                blur = cv2.medianBlur(img, 5)
+                noise = cv2.absdiff(img, blur).astype(np.uint8)
+        except Exception:
+            noise = None
+
+        with self._lock:
+            if not self._noise_done:
+                self._noise = noise
+                self._noise_done = True
+            return self._noise
+
+    def get_field_tamper_diff(self) -> "object|None":
+        with self._lock:
+            if self._field_diff is not None:
+                return self._field_diff
+
+        ela, _ = self.get_ela_diff()
+        field_diff = ela if ela is not None else self.get_noise_residual()
+
+        with self._lock:
+            if self._field_diff is None:
+                self._field_diff = field_diff
+            return self._field_diff
+
+    def get_tamper_map(self) -> "object|None":
+        with self._lock:
+            if self._tamper_map is not None:
+                return self._tamper_map
+
+        tamper_map = None
+        try:
+            from PIL import Image, ImageChops
+            import io
+            import numpy as np
+
+            original = self._load_rgb()
+            buf = io.BytesIO()
+            original.save(buf, format="JPEG", quality=90)
+            buf.seek(0)
+            resaved = Image.open(buf).convert("RGB")
+            ela = ImageChops.difference(original, resaved)
+            ela_gray = np.asarray(ela.convert("L"), dtype=np.float32)
+
+            combined = ela_gray
+            try:
+                import cv2
+
+                g = np.asarray(original.convert("L"), dtype=np.uint8)
+                blur = cv2.medianBlur(g, 5)
+                resid = cv2.absdiff(g, blur).astype(np.float32)
+
+                def _norm(a: "np.ndarray") -> "np.ndarray":
+                    mx = float(a.max()) if a.size else 0.0
+                    if mx <= 1e-6:
+                        return a
+                    return a * (255.0 / mx)
+
+                combined = np.maximum(_norm(ela_gray), _norm(resid))
+            except Exception:
+                pass
+
+            tamper_map = np.clip(combined, 0, 255).astype(np.uint8)
+        except Exception:
+            tamper_map = None
+
+        with self._lock:
+            if self._tamper_map is None:
+                self._tamper_map = tamper_map
+            return self._tamper_map
 
 
 def _grid_hotspot_tamper(
@@ -6465,13 +6672,26 @@ def verify_doc():
             payload["image_height"] = img_h
 
         is_photo_verify = effective_doc_type in PHOTO_DOC_TYPES
-        tamper_score, tamper_signals = _tamper_check(filepath)
+        img_cache = _VerifyImageCache(filepath)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_tamper = pool.submit(_tamper_check, filepath, img_cache)
+            fut_syn = pool.submit(
+                _synthetic_check,
+                filepath,
+                ocr_confidence=avg_conf,
+                word_count=word_count,
+            )
+            tamper_score, tamper_signals = fut_tamper.result()
+            syn_score, syn_signals = fut_syn.result()
+
+        field_diff_arr = img_cache.get_field_tamper_diff()
+        tamper_map_cached = img_cache.get_tamper_map()
+
         payload["tamper_applicable"] = True
         payload["tamper_score"] = tamper_score
         payload["tamper_signals"] = tamper_signals
 
-        # Synthetic / AI-generated suspicion signals (heuristics; NOT definitive).
-        syn_score, syn_signals = _synthetic_check(filepath, ocr_confidence=avg_conf, word_count=word_count)
         payload["synthetic_applicable"] = True
         payload["synthetic_score"] = syn_score
         payload["synthetic_signals"] = syn_signals
@@ -6492,9 +6712,7 @@ def verify_doc():
 
         # SF9/report card: add cell-level tamper hints (JPEG ELA + numeric boxes).
         if effective_doc_type in ("sf9", "report_card"):
-            diff_arr, _ = _compute_ela_diff(filepath)
-            if diff_arr is None:
-                diff_arr = _compute_noise_residual(filepath)
+            diff_arr = field_diff_arr
             cells = _sf9_cell_tamper(diff_arr, boxes)
             payload["tamper_cells"] = cells
             fields = _sf9_field_tamper(diff_arr, boxes, img_w, img_h)
@@ -6517,9 +6735,7 @@ def verify_doc():
 
         # Other doc types: field-only tamper hints (names, IDs, etc.)
         if effective_doc_type in ("sf10", "form137", "form157"):
-            diff_arr, _ = _compute_ela_diff(filepath)
-            if diff_arr is None:
-                diff_arr = _compute_noise_residual(filepath)
+            diff_arr = field_diff_arr
             fm = {
                 "LRN": ["LRN", "IRN", "URN"],
                 "NAME": ["NAME"],
@@ -6538,9 +6754,7 @@ def verify_doc():
                 ]
 
         if effective_doc_type in ("birth_certificate", "birthcert"):
-            diff_arr, _ = _compute_ela_diff(filepath)
-            if diff_arr is None:
-                diff_arr = _compute_noise_residual(filepath)
+            diff_arr = field_diff_arr
             fm = {
                 "NAME": ["NAME"],
                 "DATE OF BIRTH": ["DATE OF BIRTH", "BIRTH", "BIRTHDATE"],
@@ -6563,9 +6777,7 @@ def verify_doc():
             _append_good_moral_signature_field_check(payload, filepath, boxes, img_w, img_h)
 
         if effective_doc_type in ("good_moral", "goodmoral"):
-            diff_arr, _ = _compute_ela_diff(filepath)
-            if diff_arr is None:
-                diff_arr = _compute_noise_residual(filepath)
+            diff_arr = field_diff_arr
             fm = {
                 "NAME": ["NAME"],
                 "SCHOOL": ["SCHOOL"],
@@ -6584,7 +6796,7 @@ def verify_doc():
 
         # OCR-INDEPENDENT whole-image hotspot scan (catches edits even when OCR misses the labels).
         try:
-            tmap = _compute_tamper_map(filepath)
+            tmap = tamper_map_cached
             region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
             if region_hits:
                 payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
