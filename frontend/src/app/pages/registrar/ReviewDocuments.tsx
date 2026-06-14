@@ -830,7 +830,9 @@ function documentAiSummaryLine(opts: {
 }): string {
   const { ai, isPhoto, concernPct, aiState, clearedOnFile } = opts;
   if (aiState === "running") return "AI is checking this file…";
-  if (aiState === "error") return "AI check did not finish — open View and verify manually.";
+  if (aiState === "error") {
+    return "Latest AI run failed (server timeout). Saved scores stay below if available — try Run AI again for one file at a time, or verify manually in View.";
+  }
   if (clearedOnFile && concernPct === null) {
     return "Previously verified on file. Click Run AI only if you need a fresh score.";
   }
@@ -2123,7 +2125,7 @@ export function ReviewDocuments() {
                   size="sm"
                   className="shrink-0"
                   onClick={() => {
-                    setAiResultsByDocId({});
+                    // Keep saved scores visible while re-running; each file updates when its verify finishes.
                     setAiDocStateById({});
                     setAiServiceError(null);
                     setAiRerunNonce((n) => n + 1);
@@ -2139,10 +2141,17 @@ export function ReviewDocuments() {
                   const key = String(doc?.id ?? "");
                   const docType = mapDocType(doc);
                   const isPhoto = docType === "photo_2x2";
-                  const rawAi = aiResultsByDocId[key];
+                  const rawAi = aiResultsByDocId[key] ?? aiVerifyFromDocument(doc);
                   const ai = aiResultForDisplay(docType, rawAi) ?? rawAi;
                   const aiPct = documentConcernPercent(ai);
-                  const aiState = aiDocStateById[key]?.state;
+                  const aiStateRaw = aiDocStateById[key]?.state;
+                  // Saved DB scores stay visible if a re-run fails (502) — don't flash "AI error" over good data.
+                  const aiState =
+                    aiStateRaw === "running"
+                      ? "running"
+                      : rawAi && aiStateRaw === "error"
+                        ? "done"
+                        : aiStateRaw;
                   const resubmitRequired =
                     String(doc?.registrarDocDecision || "").toLowerCase() === "rejected" ||
                     String(doc?.status || "").toLowerCase() === "flagged" ||
