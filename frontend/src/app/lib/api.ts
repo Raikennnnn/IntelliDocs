@@ -66,6 +66,7 @@ const AUTH_REDIRECT_CODES = new Set([
   'session_revoked',
   'invalid_token',
   'missing_token',
+  'account_inactive',
 ]);
 
 const XAMPP_PUBLIC_PREFIX = '/IntelliDocs/public';
@@ -130,7 +131,7 @@ export function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     credentials: 'include',
     headers,
   }).then(async (response) => {
-    if (response.status === 401) {
+    if (response.status === 401 || response.status === 403) {
       try {
         const cloned = response.clone();
         const data = await cloned.json().catch(() => null) as { code?: string } | null;

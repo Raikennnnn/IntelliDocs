@@ -242,6 +242,49 @@ if (!function_exists('revokeAllUserSessions')) {
     }
 }
 
+if (!function_exists('userAccountIsActive')) {
+    /** Returns false when users.status is explicitly inactive. */
+    function userAccountIsActive(PDO $pdo, int $userId): bool
+    {
+        if ($userId <= 0) {
+            return false;
+        }
+        static $statusColumnExists = null;
+        if ($statusColumnExists === null) {
+            try {
+                $stmt = $pdo->prepare(
+                    'SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = DATABASE() AND table_name = :t AND column_name = :c LIMIT 1'
+                );
+                $stmt->execute([':t' => 'users', ':c' => 'status']);
+                $statusColumnExists = (bool)$stmt->fetchColumn();
+            } catch (Throwable $e) {
+                $statusColumnExists = false;
+            }
+        }
+        if (!$statusColumnExists) {
+            return true;
+        }
+        $stmt = $pdo->prepare('SELECT LOWER(TRIM(COALESCE(status, \'\'))) FROM users WHERE id = :id LIMIT 1');
+        $stmt->execute([':id' => $userId]);
+        $status = strtolower(trim((string)($stmt->fetchColumn() ?: '')));
+
+        return $status === '' || $status === 'active';
+    }
+}
+
+if (!function_exists('rejectInactiveAccountSession')) {
+    function rejectInactiveAccountSession(PDO $pdo, int $userId, int $sessionId): void
+    {
+        try {
+            $pdo->prepare('UPDATE sessions SET revoked_at = NOW() WHERE id = :id')->execute([':id' => $sessionId]);
+            appLogEvent($pdo, 'session_revoked_inactive_account', 'auth', 'failed', $userId, 'session', (string)$sessionId, []);
+        } catch (Throwable $e) {
+        }
+        authRejectJson(403, 'account_inactive', 'Account is inactive. Please contact the administrator.');
+    }
+}
+
 if (!function_exists('resolveSessionRow')) {
     function resolveSessionRow(PDO $pdo, string $token): ?array
     {
@@ -335,6 +378,10 @@ if (!function_exists('validateSessionToken')) {
             }
         }
 
+        if (!userAccountIsActive($pdo, $userId)) {
+            rejectInactiveAccountSession($pdo, $userId, $sessionId);
+        }
+
         try {
             $pdo->prepare('UPDATE sessions SET last_activity_at = NOW() WHERE id = :id')->execute([':id' => $sessionId]);
         } catch (Throwable $e) {
@@ -373,6 +420,9 @@ if (!function_exists('resolveLegacyActor')) {
         $stmt->execute([':id' => $actorId]);
         if (!$stmt->fetchColumn()) {
             return null;
+        }
+        if (!userAccountIsActive($pdo, $actorId)) {
+            authRejectJson(403, 'account_inactive', 'Account is inactive. Please contact the administrator.');
         }
         runAuthenticatedSecurityGuards($pdo, $actorId, $endpointLabel);
         return [

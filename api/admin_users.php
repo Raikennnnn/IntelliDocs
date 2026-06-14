@@ -188,6 +188,17 @@ try {
             }
         }
 
+        $previousStatus = 'active';
+        if ($status === 'inactive') {
+            ensureUserStatusColumn($pdo);
+            $prevStmt = $pdo->prepare('SELECT LOWER(TRIM(COALESCE(status, \'\'))) FROM users WHERE id = :id LIMIT 1');
+            $prevStmt->execute([':id' => $targetUserId]);
+            $previousStatus = strtolower(trim((string)($prevStmt->fetchColumn() ?: 'active')));
+            if ($previousStatus === '') {
+                $previousStatus = 'active';
+            }
+        }
+
         $setParts = ['full_name = :full_name', 'email = :email'];
         $params = [
             ':full_name' => $fullName,
@@ -207,11 +218,19 @@ try {
 
         setUserRole($pdo, $targetUserId, $role);
 
+        $sessionsRevoked = false;
+        if ($status === 'inactive' && $previousStatus !== 'inactive') {
+            require_once __DIR__ . '/session_token.php';
+            revokeAllUserSessions($pdo, $targetUserId);
+            $sessionsRevoked = true;
+        }
+
         appLogEvent($pdo, 'admin_update_user', 'admin', 'success', $actorId, 'user', (string)$targetUserId, [
             'email' => $email,
             'name' => $fullName,
             'role' => $role,
             'status' => $status,
+            'sessions_revoked' => $sessionsRevoked,
         ]);
 
         echo json_encode(['success' => true, 'message' => 'User updated successfully']);
