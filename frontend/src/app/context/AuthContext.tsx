@@ -97,7 +97,7 @@ type AuthLoginResponse = {
 
 export type LoginResult =
   | { ok: true; user: User }
-  | { ok: false; user?: undefined; errorCode?: string }
+  | { ok: false; user?: undefined; errorCode?: string; errorMessage?: string }
   | {
       ok: false;
       requiresOtp: true;
@@ -187,10 +187,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { ok: true, user: nextUser };
       }
 
-      return { ok: false, errorCode: data.code || data.error };
+      return { ok: false, errorCode: data.code || data.error, errorMessage: data.message || data.error };
     } catch (error) {
       console.error('Login error:', error);
-      return { ok: false };
+      return { ok: false, errorCode: 'network_error' };
     }
   };
 

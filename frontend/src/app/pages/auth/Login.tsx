@@ -114,14 +114,26 @@ export function Login() {
         return;
       }
       if (!result.ok) {
-        if (result.errorCode === 'throttled' || result.errorCode === 'account_locked') {
+        const code = String(result.errorCode || '');
+        if (code === 'throttled' || code === 'account_locked') {
           setError('Too many failed attempts. Please try again in a few minutes.');
-        } else if (result.errorCode === 'email_not_verified') {
+        } else if (code === 'email_not_verified') {
           setError(
             'Please complete email verification first. Return to registration and enter the OTP code sent to your email.',
           );
+        } else if (code === 'otp_resend_limit') {
+          setError(
+            result.errorMessage ||
+              'Too many login codes sent this hour. Wait before trying again, or use Forgot password.',
+          );
+        } else if (code === 'network_error') {
+          setError('Login failed. Check your connection and that the site API is reachable.');
+        } else if (code === 'invalid_credentials') {
+          setError(
+            'Invalid email or password. Enrolled students: use the school username and password from the welcome email (not your old registration password). Otherwise use Forgot password.',
+          );
         } else {
-          setError('Invalid email or password');
+          setError(result.errorMessage || 'Invalid email or password');
         }
         return;
       }
