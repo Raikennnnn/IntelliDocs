@@ -265,6 +265,84 @@ def _resolve_doc_type_from_content(norm_text: str, requested: str) -> str:
     return req
 
 
+def _photocopy_scan_issues(gray, lap_var: float) -> list[str]:
+    """
+    Detect noisy photocopies, scan-of-scan artifacts, and washed-out duplicates.
+    These often pass Laplacian blur checks because speckle adds false sharpness.
+    """
+    import cv2
+    import numpy as np
+
+    issues: list[str] = []
+    blur = cv2.GaussianBlur(gray, (7, 7), 0)
+    residual = cv2.absdiff(gray, blur)
+    noise_mean = float(np.mean(residual))
+    noise_std = float(np.std(residual))
+    mean_brightness = float(np.mean(gray))
+
+    if noise_mean >= 5.5 and lap_var >= 600:
+        issues.append(
+            "This looks like a noisy photocopy or a scan of a scan. "
+            "Take a clear, straight photo of the original document in good lighting."
+        )
+    if mean_brightness >= 228 and noise_std >= 14:
+        issues.append(
+            "The image is washed out with heavy scan or photocopy noise. "
+            "Upload a clear photo of the original — not a faded duplicate copy."
+        )
+    if lap_var >= 1200 and noise_mean >= 4.5 and mean_brightness >= 215:
+        issues.append(
+            "Document text is not sharp enough to verify. Retake with the full page in frame, "
+            "even lighting, and no flash glare."
+        )
+    return issues
+
+
+def _ocr_gibberish_ratio(text: str) -> float:
+    """Share of OCR tokens that look like noise rather than real words."""
+    import re
+
+    words = re.findall(r"[A-Za-z]{3,}", (text or ""))
+    if not words:
+        return 1.0
+    bad = 0
+    for word in words:
+        letters = word.upper()
+        vowels = sum(1 for c in letters if c in "AEIOU")
+        if vowels == 0:
+            bad += 1
+            continue
+        if len(letters) >= 5 and vowels / len(letters) < 0.12:
+            bad += 1
+    return bad / len(words)
+
+
+def _document_acceptability_check(filepath: str, doc_type: str) -> dict:
+    """Combined Level 1 image + readability gate for uploads and verification."""
+    quality = _image_quality_check(filepath, doc_type)
+    dt = _normalize_doc_type_key(doc_type)
+    readability = None
+    if dt not in PHOTO_DOC_TYPES:
+        readability = _upload_document_readability_check(filepath, doc_type)
+    if not quality.get("pass"):
+        out = dict(quality)
+        out["readability"] = readability
+        return out
+    if readability and not readability.get("pass"):
+        issues = list(quality.get("issues") or []) + list(readability.get("issues") or [])
+        return {
+            "pass": False,
+            "score": min(int(quality.get("score") or 0), 35),
+            "blur_variance": quality.get("blur_variance", 0.0),
+            "message": str(readability.get("message") or (issues[0] if issues else "Document is not readable.")),
+            "issues": issues,
+            "readability": readability,
+        }
+    out = dict(quality)
+    out["readability"] = readability
+    return out
+
+
 def _image_quality_check(filepath: str, doc_type: str) -> dict:
     """
     Level 1 — image quality gate (blur, size, brightness).
@@ -306,6 +384,9 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             issues.append("Image is too dark. Use brighter lighting.")
         elif mean_brightness > 235:
             issues.append("Image is overexposed (too bright). Reduce glare and retake.")
+
+        if not is_photo:
+            issues.extend(_photocopy_scan_issues(gray, lap_var))
 
         score = _clamp01(lap_var / (min_lap * 2.2))
         passed = len(issues) == 0
@@ -424,18 +505,25 @@ def _upload_document_readability_check(filepath: str, doc_type: str) -> dict:
 
     keywords = _upload_doc_type_keywords(doc_type)
     hits = sum(1 for k in keywords if k in norm)
-    min_hits = 2
+    min_hits = 3 if dt in ("sf9", "report_card", "form137", "sf10", "form157", "good_moral", "goodmoral", "birth_certificate", "birthcert") else 2
     if hits < min_hits:
         issues.append(
-            "This file does not look like a readable copy of the required document. "
-            "Check that you selected the correct requirement and that all text is sharp and legible."
+            "This file does not look like a clear, readable copy of the required document. "
+            "Retake the photo with the full page straight, steady, and in good lighting."
         )
 
+    gibberish = _ocr_gibberish_ratio(text)
     try:
         conf_val = float(avg_conf)
     except (TypeError, ValueError):
         conf_val = 0.0
-    if conf_val < 0.22 and word_count < min_words + 4:
+    if gibberish >= 0.34 and conf_val < 0.55:
+        issues.append(
+            "Much of the text could not be read clearly. Avoid photocopies, shadows, glare, and camera shake."
+        )
+    if conf_val < 0.42 and hits < min_hits + 1:
+        issues.append("Text is too faint or blurry to read. Avoid shadows, glare, and camera shake.")
+    elif conf_val < 0.22 and word_count < min_words + 4:
         issues.append("Text is too faint or blurry to read. Avoid shadows, glare, and camera shake.")
 
     passed = len(issues) == 0
@@ -449,6 +537,14 @@ def _upload_document_readability_check(filepath: str, doc_type: str) -> dict:
 
 
 _ENROLLMENT_MM_EXCLUDE_FIELDS = frozenset({"signature"})
+
+# Visual signature scan tuning — wider/taller ROIs for varied certificate layouts.
+_SIGNATURE_MIN_HEIGHT_PX = 40
+_SIGNATURE_HEIGHT_FRAC = 0.17
+_SIGNATURE_WIDTH_FRAC = 0.58
+_SIGNATURE_SEARCH_TOP_FRAC = 0.38
+_SIGNATURE_BODY_TOP_FRAC = 0.18
+_SIGNATURE_BODY_BOTTOM_FRAC = 0.93
 
 
 def _clamp_signature_region(
@@ -488,15 +584,39 @@ def _signature_candidate_regions(
             seen.add(region)
             candidates.append(region)
 
-    lower_start = int(img_h * 0.45)
-    sig_h = max(28, int(img_h * 0.11))
-    sig_w = max(int(img_w * 0.38), int(img_w * 0.45))
+    lower_start = int(img_h * _SIGNATURE_SEARCH_TOP_FRAC)
+    sig_h = max(_SIGNATURE_MIN_HEIGHT_PX, int(img_h * _SIGNATURE_HEIGHT_FRAC))
+    sig_w = max(120, int(img_w * _SIGNATURE_WIDTH_FRAC))
+    sig_h_tall = min(img_h - 8, int(sig_h * 1.2))
 
-    authority_kw = ("PRINCIPAL", "REGISTRAR", "HEAD", "ADMINISTRATOR", "SCHOOL PRINCIPAL")
-    name_prefix = ("MR.", "MR ", "MRS.", "MS.", "DR.")
+    authority_kw = (
+        "PRINCIPAL",
+        "REGISTRAR",
+        "HEAD",
+        "ADMINISTRATOR",
+        "SCHOOL PRINCIPAL",
+        "DIRECTOR",
+        "OFFICER",
+        "RECOMMEND",
+        "ISSUED",
+    )
+    name_prefix = ("MR.", "MR ", "MRS.", "MS.", "DR.", "SR.", "FR.")
     authority_boxes: list[dict] = []
     body_boxes: list[dict] = []
-    body_kw = ("CERTIFY", "CERTIFIES", "MORAL", "CHARACTER", "GRADE", "STUDENT", "SCHOOL", "HEREBY")
+    body_kw = (
+        "CERTIFY",
+        "CERTIFIES",
+        "MORAL",
+        "CHARACTER",
+        "GRADE",
+        "STUDENT",
+        "SCHOOL",
+        "HEREBY",
+        "RECOMMEND",
+        "CONDUCT",
+        "BEHAVIOR",
+        "BEHAVIOUR",
+    )
 
     if boxes:
         for b in boxes:
@@ -509,7 +629,10 @@ def _signature_candidate_regions(
                 or any(t.startswith(p) for p in name_prefix)
             ):
                 authority_boxes.append(b)
-            if img_h * 0.30 < cy < img_h * 0.86 and any(k in t for k in body_kw):
+            if (
+                img_h * _SIGNATURE_BODY_TOP_FRAC < cy < img_h * _SIGNATURE_BODY_BOTTOM_FRAC
+                and any(k in t for k in body_kw)
+            ):
                 body_boxes.append(b)
 
     # 1) Just below the last certification sentence (most common on good-moral forms).
@@ -517,9 +640,10 @@ def _signature_candidate_regions(
         body_boxes.sort(key=lambda b: float(b.get("y", 0)), reverse=True)
         last = body_boxes[0]
         last_bottom = int(float(last.get("y", 0)) + float(last.get("h", 0)))
-        y_below_text = last_bottom + max(4, int(sig_h * 0.15))
-        _add(int(img_w * 0.08), y_below_text, sig_w, sig_h)
-        _add(int(img_w * 0.32), y_below_text, sig_w, sig_h)
+        y_below_text = last_bottom + max(2, int(sig_h * 0.08))
+        for x_frac in (0.04, 0.18, 0.34, 0.48):
+            _add(int(img_w * x_frac), y_below_text, sig_w, sig_h)
+            _add(int(img_w * x_frac), max(0, y_below_text - int(sig_h * 0.18)), sig_w, sig_h_tall)
 
     # 2) Above printed principal / registrar name in the lower block.
     if authority_boxes:
@@ -528,13 +652,16 @@ def _signature_candidate_regions(
         ax = int(float(anchor.get("x", 0)))
         ay = int(float(anchor.get("y", 0)))
         aw = max(20, int(float(anchor.get("w", 40))))
-        y_above_name = max(0, ay - sig_h - max(6, int(sig_h * 0.2)))
-        _add(max(0, ax - int(aw * 0.2)), y_above_name, sig_w, sig_h)
-        _add(int(img_w * 0.30), y_above_name, sig_w, sig_h)
+        y_above_name = max(0, ay - sig_h - max(8, int(sig_h * 0.28)))
+        pad_x = max(int(aw * 0.45), int(sig_w * 0.12))
+        _add(max(0, ax - pad_x), y_above_name, sig_w, sig_h_tall)
+        for x_frac in (0.04, 0.22, 0.40):
+            _add(int(img_w * x_frac), y_above_name, sig_w, sig_h)
 
-    # 3) Lower-middle band fallback (avoid empty bottom margin).
-    _add(int(img_w * 0.10), int(img_h * 0.58), sig_w, sig_h)
-    _add(int(img_w * 0.28), int(img_h * 0.62), sig_w, sig_h)
+    # 3) Lower-page band fallbacks (left / center / right) for skewed scans and alternate layouts.
+    for y_frac in (0.48, 0.54, 0.60, 0.66, 0.72, 0.78):
+        for x_frac in (0.03, 0.20, 0.38, 0.52):
+            _add(int(img_w * x_frac), int(img_h * y_frac), sig_w, sig_h)
 
     return candidates
 
@@ -546,31 +673,45 @@ def _score_signature_roi(gray_roi, roi_w: int, roi_h: int) -> tuple[float, bool,
 
     gray = cv2.GaussianBlur(gray_roi, (3, 3), 0)
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    ink_ratio = float(np.count_nonzero(binary)) / float(binary.size)
+    roi_area = max(float(roi_w * roi_h), 1.0)
+    ink_pixels = float(np.count_nonzero(binary))
+    ink_ratio = ink_pixels / roi_area
+    # Larger scan boxes dilute ink_ratio — scale thresholds down for bigger ROIs.
+    area_ref = 45000.0
+    area_factor = min(1.0, (area_ref / roi_area) ** 0.35)
+    ink_soft = 0.004 * area_factor
+    ink_strong = 0.012 * area_factor
+    ink_detect = max(0.0018, 0.003 * area_factor)
+    min_ink_pixels = max(35.0, roi_area * ink_detect)
     edges = cv2.Canny(gray, 40, 120)
     edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
     variance = float(np.var(gray))
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_stroke_area = max(900, (roi_w * roi_h) * 0.42)
     stroke_components = sum(
         1
         for c in contours
-        if 12 <= cv2.contourArea(c) <= max(800, (roi_w * roi_h) * 0.35)
+        if 8 <= cv2.contourArea(c) <= max_stroke_area
     )
     score = 0.0
-    if ink_ratio >= 0.004:
+    if ink_ratio >= ink_soft or ink_pixels >= min_ink_pixels:
         score += 0.28
-    if ink_ratio >= 0.012:
+    if ink_ratio >= ink_strong or ink_pixels >= min_ink_pixels * 2.2:
         score += 0.18
-    if edge_ratio >= 0.02:
+    if edge_ratio >= 0.018:
         score += 0.2
-    if variance >= 180:
+    if variance >= 160:
         score += 0.14
     if stroke_components >= 2:
         score += 0.2
     elif stroke_components >= 1:
         score += 0.1
     confidence = max(0.0, min(1.0, score))
-    detected = confidence >= 0.45 and ink_ratio >= 0.003 and stroke_components >= 1
+    detected = (
+        confidence >= 0.42
+        and (ink_ratio >= ink_detect or ink_pixels >= min_ink_pixels)
+        and stroke_components >= 1
+    )
     return confidence, detected, ink_ratio, stroke_components
 
 
@@ -6523,62 +6664,62 @@ def screen_quality():
     file.save(filepath)
 
     try:
-        quality = _image_quality_check(filepath, doc_type)
-        quality_level = _level_pack(
-            level=1,
-            title="Image quality",
-            passed=bool(quality.get("pass")),
-            score=int(quality.get("score") or 0),
-            summary=str(quality.get("message") or ""),
-            issues=list(quality.get("issues") or []),
-        )
-        if not quality.get("pass"):
+        accept = _document_acceptability_check(filepath, doc_type)
+        readability = accept.get("readability") or {}
+        quality_only = {k: accept[k] for k in accept if k != "readability"}
+
+        if not accept.get("pass"):
+            failed_level = 2 if readability and not readability.get("pass") else 1
+            fail_level = _level_pack(
+                level=failed_level,
+                title="Document readability" if failed_level == 2 else "Image quality",
+                passed=False,
+                score=int(accept.get("score") or 0),
+                summary=str(accept.get("message") or ""),
+                issues=list(accept.get("issues") or []),
+            )
             sec = {
-                "levels": [quality_level],
+                "levels": [fail_level],
                 "overall_pass": False,
                 "highest_level_passed": 0,
             }
-            return jsonify(
-                {
-                    "pass": False,
-                    "level": 1,
-                    "quality": quality,
-                    "security_levels": sec,
-                    "message": quality.get("message"),
-                }
-            )
+            body = {
+                "pass": False,
+                "level": failed_level,
+                "quality": quality_only,
+                "security_levels": sec,
+                "message": accept.get("message"),
+            }
+            if readability:
+                body["readability"] = readability
+            return jsonify(body)
 
-        readability = _upload_document_readability_check(filepath, doc_type)
+        quality_level = _level_pack(
+            level=1,
+            title="Image quality",
+            passed=True,
+            score=int(accept.get("score") or 100),
+            summary=str(accept.get("message") or "Image quality OK."),
+            issues=[],
+        )
         readability_level = _level_pack(
             level=2,
             title="Document readability",
-            passed=bool(readability.get("pass")),
-            score=100 if readability.get("pass") else max(0, min(100, int((readability.get("word_count") or 0) * 4))),
-            summary=str(readability.get("message") or ""),
-            issues=list(readability.get("issues") or []),
+            passed=True,
+            score=100,
+            summary=str((readability or {}).get("message") or "Document text is readable."),
+            issues=[],
         )
         sec = {
             "levels": [quality_level, readability_level],
-            "overall_pass": bool(readability.get("pass")),
-            "highest_level_passed": 2 if readability.get("pass") else 1,
+            "overall_pass": True,
+            "highest_level_passed": 2,
         }
-        if not readability.get("pass"):
-            return jsonify(
-                {
-                    "pass": False,
-                    "level": 2,
-                    "quality": quality,
-                    "readability": readability,
-                    "security_levels": sec,
-                    "message": readability.get("message"),
-                }
-            )
-
         return jsonify(
             {
                 "pass": True,
                 "level": 2,
-                "quality": quality,
+                "quality": quality_only,
                 "readability": readability,
                 "security_levels": sec,
                 "message": "Image quality and document readability OK.",
@@ -6620,10 +6761,6 @@ def verify_doc():
     file.save(filepath)
     
     try:
-        # Level 1 (blur / brightness) is enforced at student upload in PHP for JPG/PNG.
-        # Do not re-run or penalize verification score for image quality here.
-        quality = _upload_quality_stub()
-
         # Image dimensions (used by UI to scale tamper cell overlays)
         try:
             from PIL import Image
@@ -6856,11 +6993,17 @@ def verify_doc():
             payload["status"] = "failed"
             payload["issues"] = (payload.get("issues") or []) + ["High tamper risk: possible image manipulation"]
 
+        accept = _document_acceptability_check(filepath, effective_doc_type)
         if is_photo_verify:
             quality = _image_quality_check(filepath, effective_doc_type)
             quality_enforced_at_upload = False
-        else:
+        elif accept.get("pass"):
+            quality = _upload_quality_stub()
             quality_enforced_at_upload = True
+        else:
+            quality = {k: accept[k] for k in accept if k != "readability"}
+            quality_enforced_at_upload = False
+            payload["issues"] = (payload.get("issues") or []) + list(quality.get("issues") or [])
 
         payload["quality"] = quality
         payload["security_levels"] = _build_security_levels(
