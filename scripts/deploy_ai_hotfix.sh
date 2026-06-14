@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Fast AI-only update on the droplet (no frontend rebuild).
+# Use after pushing ai/app.py changes to GitHub.
+#
+# DigitalOcean console:
+#   bash /var/www/intellidocs/scripts/deploy_ai_hotfix.sh
+set -euo pipefail
+
+APP_ROOT="${APP_ROOT:-/var/www/intellidocs}"
+BRANCH="${BRANCH:-IntelliDocs-V4}"
+
+step() { printf '\n=== %s ===\n' "$1"; }
+
+step "Pull latest AI code ($BRANCH)"
+cd "$APP_ROOT"
+if [ ! -d .git ]; then
+  echo "ERROR: $APP_ROOT is not a git clone."
+  exit 1
+fi
+git fetch origin
+git checkout -B "$BRANCH" "origin/$BRANCH"
+git reset --hard "origin/$BRANCH"
+echo "Commit: $(git log -1 --oneline)"
+
+step "Install Python deps (if requirements changed)"
+cd "$APP_ROOT/ai"
+if [ ! -d .venv ]; then
+  python3 -m venv .venv
+fi
+.venv/bin/pip install -q --upgrade pip
+.venv/bin/pip install -q -r requirements.txt
+
+step "Restart AI service"
+systemctl daemon-reload
+systemctl restart intellidocs-ai
+sleep 2
+systemctl --no-pager --full status intellidocs-ai || true
+
+step "Health check"
+HEALTH="$(curl -fsS --max-time 15 http://127.0.0.1:8080/health || true)"
+echo "$HEALTH"
+if echo "$HEALTH" | grep -qE '"ok"[[:space:]]*:[[:space:]]*true'; then
+  echo "OK: AI service running with commit $(git -C "$APP_ROOT" rev-parse --short HEAD)"
+else
+  echo "WARNING: AI health check failed. Run: journalctl -u intellidocs-ai -n 40 --no-pager"
+  exit 1
+fi
+
+echo ""
+echo "AI hotfix deployed. Re-run AI verify on documents to apply photocopy/signature rules."

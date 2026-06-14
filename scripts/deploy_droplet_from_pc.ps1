@@ -59,7 +59,7 @@ try {
 
     if ($SkipDeploy) {
         Write-Host ""
-        Write-Host "SkipDeploy set — done after push." -ForegroundColor Green
+        Write-Host "SkipDeploy set - done after push." -ForegroundColor Green
         return
     }
 
