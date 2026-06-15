@@ -247,13 +247,15 @@ function weightedVerificationFromDocuments(
 function weightedVerificationFromAi(
   documents: unknown,
   aiResultsByDocId: Record<string, AiVerifyResponse>,
+  aiDocStateById: Record<string, { state: "pending" | "running" | "done" | "error" }> = {},
 ) {
   return weightedVerificationFromDocuments(documents, (doc) => {
+    const id = String((doc as { id?: unknown }).id ?? "");
+    if (aiDocStateById[id]?.state === "running") return null;
     const fromDoc = (doc as { aiConfidence?: unknown }).aiConfidence;
     if (typeof fromDoc === "number" && Number.isFinite(fromDoc)) {
       return fromDoc;
     }
-    const id = String((doc as { id?: unknown }).id ?? "");
     const r = aiResultsByDocId[id];
     return documentAverageConcernFromAi(r);
   });
@@ -1519,6 +1521,9 @@ export function ReviewDocuments() {
     ? (application.documents ?? []).map((d: any) => {
         const key = String(d?.id ?? "");
         const docType = mapDocType(d);
+        if (aiDocStateById[key]?.state === "running") {
+          return { ...d, aiConfidence: null };
+        }
         const r = aiResultForDisplay(docType, aiResultsByDocId[key]) ?? aiResultsByDocId[key];
         const pct = documentConcernPercent(r);
         return { ...d, aiConfidence: pct };
@@ -1526,7 +1531,7 @@ export function ReviewDocuments() {
     : [];
   const weightedVerification =
     documentsForAi.length > 0
-      ? weightedVerificationFromAi(documentsForAi, aiResultsByDocId)
+      ? weightedVerificationFromAi(documentsForAi, aiResultsByDocId, aiDocStateById)
       : null;
   const aggregateConcern = weightedVerification?.aggregateScore ?? null;
   const aiTier = aggregateConcern !== null ? getAiReviewTier(aggregateConcern) : null;
@@ -1754,6 +1759,13 @@ export function ReviewDocuments() {
       const id = String(doc.id);
       const docType = mapDocType(doc);
       try {
+        if (opts.rerun) {
+          setAiResultsByDocId((prev) => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+        }
         setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
         const rerunQs = opts.rerun ? "&rerun=1" : "";
         const aiRes = await apiFetch(
@@ -1832,6 +1844,17 @@ export function ReviewDocuments() {
     if (docs.length === 0) return;
     setAiServiceError(null);
     setAiRunning(true);
+    const rerunIds = docs.map((d) => String(d.id));
+    setAiResultsByDocId((prev) => {
+      const next = { ...prev };
+      for (const id of rerunIds) delete next[id];
+      return next;
+    });
+    setAiDocStateById((prev) => {
+      const next = { ...prev };
+      for (const id of rerunIds) next[id] = { state: "running" };
+      return next;
+    });
     let okCount = 0;
     try {
       for (const doc of docs) {
@@ -2326,10 +2349,11 @@ export function ReviewDocuments() {
                   const key = String(doc?.id ?? "");
                   const docType = mapDocType(doc);
                   const isPhoto = docType === "photo_2x2";
-                  const rawAi = aiResultsByDocId[key];
+                  const aiState = aiDocStateById[key]?.state;
+                  const aiChecking = aiState === "running";
+                  const rawAi = aiChecking ? undefined : aiResultsByDocId[key];
                   const ai = aiResultForDisplay(docType, rawAi) ?? rawAi;
                   const aiPct = documentConcernPercent(ai);
-                  const aiState = aiDocStateById[key]?.state;
                   const resubmitRequired =
                     String(doc?.registrarDocDecision || "").toLowerCase() === "rejected" ||
                     String(doc?.status || "").toLowerCase() === "flagged" ||
@@ -2380,9 +2404,9 @@ export function ReviewDocuments() {
                               <CheckCircle className="mr-1 h-3 w-3" />
                               {doc.registrarReviewed ? "You reviewed" : "Verified"}
                             </Badge>
-                          ) : documentAiStatus(doc) === "processing" && aiPct === null ? (
+                          ) : aiChecking ? (
                             <Badge className="bg-indigo-600 text-white">AI checking…</Badge>
-                          ) : aiState === "running" ? (
+                          ) : documentAiStatus(doc) === "processing" && aiPct === null ? (
                             <Badge className="bg-indigo-600 text-white">AI checking…</Badge>
                           ) : aiState === "error" ? (
                             <Badge className="bg-amber-600 text-white">AI error</Badge>
@@ -2398,21 +2422,25 @@ export function ReviewDocuments() {
                             <Badge variant="outline" className="border-gray-300">Scored</Badge>
                           )}
                         </div>
-                        {aiPct !== null && !isPhoto ? (
+                        {aiPct !== null && !isPhoto && !aiChecking ? (
                           <DocumentConcernChips
                             concernPct={aiPct}
                             mismatchPct={concernParts?.mismatchConcern ?? null}
                             tamperPct={concernParts?.tamperConcern ?? null}
                           />
                         ) : null}
-                        {aiPct !== null && concernParts ? (
+                        {aiPct !== null && concernParts && !aiChecking ? (
                           <DocumentConcernFormula
                             mismatchPct={concernParts.mismatchConcern}
                             tamperPct={concernParts.tamperConcern}
                             averagePct={concernParts.documentAverage}
                           />
                         ) : null}
-                        {ai?.security_levels ? (
+                        {aiChecking ? (
+                          <p className="text-sm leading-snug text-indigo-700">
+                            Recalculating scores — this may take a few minutes for SF10 and certificates.
+                          </p>
+                        ) : ai?.security_levels ? (
                           <SecurityLevelsPanel security={ai.security_levels} compact />
                         ) : (
                           <p className="text-sm leading-snug text-gray-600">
@@ -2431,7 +2459,7 @@ export function ReviewDocuments() {
                       </div>
                     </div>
                     <div className="flex w-full shrink-0 flex-row flex-wrap items-center justify-between gap-2 border-t border-gray-100 pt-3 sm:w-auto sm:flex-col sm:items-end sm:border-0 sm:pt-0">
-                      {aiPct !== null ? (
+                      {aiPct !== null && !aiChecking ? (
                         <span
                           className={cn(
                             "rounded-lg px-2.5 py-1 text-lg font-bold tabular-nums",
@@ -2441,6 +2469,8 @@ export function ReviewDocuments() {
                         >
                           {aiPct}%
                         </span>
+                      ) : aiChecking ? (
+                        <Loader2 className="h-6 w-6 animate-spin text-indigo-600" aria-label="AI checking" />
                       ) : null}
                       <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
                         <Button variant="outline" size="sm" className="flex-1 sm:flex-none" onClick={() => handleViewDocument(doc)}>
