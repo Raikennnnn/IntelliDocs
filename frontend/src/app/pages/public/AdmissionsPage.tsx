@@ -229,7 +229,7 @@ export function AdmissionsPage() {
 
       {/* Hero Section */}
       <section className="bg-[#8B1538] text-white py-16">
-        <div className="mx-auto max-w-[1280px] px-8">
+        <div className="section-container">
           <h1 className="text-4xl sm:text-5xl font-bold mb-4">Admissions</h1>
           <p className="text-xl text-gray-200 max-w-3xl">
             We welcome aspiring students who are committed to academic growth and personal development. 
@@ -241,7 +241,7 @@ export function AdmissionsPage() {
 
       {/* Offered Programs */}
       <section className="py-16">
-        <div className="mx-auto max-w-[1280px] px-8">
+        <div className="section-container">
           <div className="text-center mb-12">
             <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
               Offered Programs
@@ -324,7 +324,7 @@ export function AdmissionsPage() {
 
       {/* Admission Requirements */}
       <section className="py-16 bg-white">
-        <div className="mx-auto max-w-[1280px] px-8">
+        <div className="section-container">
           <div className="text-center mb-12">
             <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
               Admission Requirements
@@ -424,7 +424,7 @@ export function AdmissionsPage() {
 
       {/* Enrollment Process */}
       <section className="py-16 bg-gray-50">
-        <div className="mx-auto max-w-[1280px] px-8">
+        <div className="section-container">
           <div className="text-center mb-12">
             <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
               Enrollment Process

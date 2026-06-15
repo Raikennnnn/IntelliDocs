@@ -150,8 +150,8 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
         <DashboardNavLinks navigation={navigation} location={location} />
       </aside>
 
-      <main className="min-h-screen pt-14 sm:pt-16 lg:ml-64">
-        <div className="p-4 sm:p-6">{children}</div>
+      <main className="min-h-screen overflow-x-hidden pt-14 sm:pt-16 lg:ml-64">
+        <div className="page-shell p-4 sm:p-6">{children}</div>
       </main>
     </div>
   );

@@ -1,3 +1,4 @@
+import { PageHeader } from "../../components/PageHeader";
 import {
   Card,
   CardContent,
@@ -149,22 +150,22 @@ export function Notifications() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold text-gray-900">Notifications</h2>
-          <p className="text-gray-600">Stay updated with your enrollment progress</p>
-        </div>
-        {unreadCount > 0 && (
-          <button
-            type="button"
-            onClick={markAllAsRead}
-            className="text-sm text-[#8B1538] hover:underline font-medium"
-          >
-            Mark all as read
-          </button>
-        )}
-      </div>
+    <div className="space-y-4 sm:space-y-6">
+      <PageHeader
+        title="Notifications"
+        subtitle="Stay updated with your enrollment progress"
+        actions={
+          unreadCount > 0 ? (
+            <button
+              type="button"
+              onClick={markAllAsRead}
+              className="text-sm font-medium text-[#8B1538] hover:underline"
+            >
+              Mark all as read
+            </button>
+          ) : undefined
+        }
+      />
 
       {unreadCount > 0 && (
         <Card className="border-[#8B1538] bg-red-50">

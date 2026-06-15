@@ -4,7 +4,7 @@ import schoolLogo from '../../assets/logo.png';
 export function Footer() {
   return (
     <footer className="bg-[#101828] py-4">
-      <div className="mx-auto max-w-[1280px] px-8">
+      <div className="section-container">
         <div className="grid md:grid-cols-3 gap-6 mb-4">
           {/* School Info */}
           <div>

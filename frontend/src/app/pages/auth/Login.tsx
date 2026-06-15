@@ -210,26 +210,26 @@ export function Login() {
   };
 
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-white">
+    <div className="relative min-h-[100dvh] w-full overflow-x-hidden bg-white">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <img alt="" className="absolute left-0 top-0 h-full w-full scale-110 object-cover" src={homePageImage} />
       </div>
       <div className="absolute inset-0 bg-[rgba(72,0,21,0.32)]" />
 
-      <div className="absolute left-0 top-0 z-10 flex h-[63px] w-full items-center bg-[#8B1538] px-8 shadow-md">
-        <Link to="/landing" className="flex items-center gap-3">
-          <div className="h-10 w-10">
+      <div className="absolute left-0 top-0 z-10 flex h-14 w-full items-center bg-[#8B1538] px-4 shadow-md sm:h-[63px] sm:px-6 lg:px-8">
+        <Link to="/landing" className="flex min-w-0 items-center gap-2 sm:gap-3">
+          <div className="h-9 w-9 shrink-0 sm:h-10 sm:w-10">
             <img alt="School Logo" className="h-full w-full object-contain" src={schoolLogo} />
           </div>
-          <div>
-            <p className="text-lg font-bold leading-tight text-white">Nuestra Señora De Guia</p>
-            <p className="text-xs font-semibold text-white">Academy of Marikina</p>
+          <div className="min-w-0">
+            <p className="truncate text-base font-bold leading-tight text-white sm:text-lg">Nuestra Señora De Guia</p>
+            <p className="truncate text-xs font-semibold text-white">Academy of Marikina</p>
           </div>
         </Link>
       </div>
 
-      <div className="relative z-10 flex h-full items-center justify-center px-4">
-        <div className="w-full max-w-[527px] rounded-lg border border-gray-300 bg-white/80 p-8 shadow-lg backdrop-blur-sm">
+      <div className="relative z-10 flex min-h-[100dvh] items-center justify-center overflow-y-auto px-4 py-20 sm:px-6">
+        <div className="w-full max-w-[527px] rounded-lg border border-gray-300 bg-white/80 p-5 shadow-lg backdrop-blur-sm sm:p-8">
           <div className="space-y-6">
             <div>
               <h2 className="mb-2 text-2xl font-bold text-[#101828]">
@@ -301,7 +301,10 @@ export function Login() {
                 )}
                 <div className="min-w-0">
                   <Label className="mb-3 block text-gray-700">Enter OTP Code</Label>
-                  <div className="flex justify-between gap-3" onPaste={handleOtpPaste}>
+                  <div
+                    className="mx-auto grid w-full max-w-xs grid-cols-6 gap-1.5 sm:max-w-sm sm:gap-2"
+                    onPaste={handleOtpPaste}
+                  >
                     {otp.map((digit, index) => (
                       <Input
                         key={index}
@@ -313,7 +316,7 @@ export function Login() {
                         value={digit}
                         onChange={(e) => handleOtpChange(index, e.target.value)}
                         onPaste={handleOtpPaste}
-                        className="h-14 w-14 text-center text-2xl font-semibold"
+                        className="aspect-square h-auto w-full min-w-0 text-center text-lg font-semibold sm:text-2xl"
                       />
                     ))}
                   </div>

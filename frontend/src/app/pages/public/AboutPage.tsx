@@ -57,7 +57,7 @@ export function AboutPage() {
         </section>
 
         {/* Mission and Vision Cards */}
-        <section className="mx-auto max-w-[1280px] px-8 py-16">
+        <section className="section-container py-16">
           <div className="grid md:grid-cols-2 gap-8">
             {/* Mission Card */}
             <div className="bg-white border border-[rgba(0,0,0,0.1)] rounded-[14px] shadow-[0px_10px_15px_0px_rgba(0,0,0,0.1),0px_4px_6px_0px_rgba(0,0,0,0.1)] p-8">

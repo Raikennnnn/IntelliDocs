@@ -11,7 +11,7 @@ export function ContactPage() {
 
       {/* Hero Section */}
       <section className="bg-[#8B1538] text-white py-16">
-        <div className="mx-auto max-w-[1280px] px-8">
+        <div className="section-container">
           <h1 className="text-4xl sm:text-5xl font-bold mb-4">Contact Us</h1>
           <p className="text-xl text-gray-200">
             Get in touch with us for inquiries, enrollment, and support
@@ -21,7 +21,7 @@ export function ContactPage() {
 
       {/* Contact Information */}
       <section className="py-16">
-        <div className="mx-auto max-w-[1280px] px-8">
+        <div className="section-container">
           {/* Single Box Layout */}
           <Card className="mx-auto max-w-5xl shadow-xl border-[0.909px] border-[rgba(0,0,0,0.1)]">
             <CardContent className="p-12">

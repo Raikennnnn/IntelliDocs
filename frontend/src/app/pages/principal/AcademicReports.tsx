@@ -212,7 +212,7 @@ export function AcademicReports() {
 
       {/* Section Statistics */}
       {selectedStrand && selectedSection && sectionInfo && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="stat-grid">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-gray-600">Section</CardTitle>

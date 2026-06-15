@@ -124,7 +124,7 @@ export function ActivityLogs() {
       </div>
 
       {/* Statistics */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="stat-grid">
         <Card>
           <CardContent className="pt-6">
             <div className="text-center">

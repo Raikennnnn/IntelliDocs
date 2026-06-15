@@ -203,12 +203,12 @@ export function ApplicationForm() {
 
         {/* Folder Tabs */}
         <Card className="shadow-lg border-t-4 border-[#2D5016] mb-6">
-          <div className="flex border-b">
+          <div className="tabs-scroll border-b">
             {tabs.map((tab, index) => (
               <button
                 key={index}
                 onClick={() => setActiveTab(index)}
-                className={`flex-1 px-4 py-4 text-sm font-medium transition-colors ${
+                className={`min-w-[4.5rem] shrink-0 px-3 py-3 text-xs font-medium transition-colors sm:min-w-0 sm:flex-1 sm:px-4 sm:py-4 sm:text-sm ${
                   activeTab === index
                     ? 'bg-[#2D5016] text-white'
                     : 'bg-white text-[#8B1538] border-b-2 border-[#8B1538]'

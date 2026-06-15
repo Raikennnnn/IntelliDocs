@@ -155,7 +155,7 @@ export function ChangePassword() {
   };
 
   return (
-    <div className="relative h-[100dvh] w-full overflow-hidden bg-white">
+    <div className="relative min-h-[100dvh] w-full overflow-x-hidden bg-white">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <img
           alt=""

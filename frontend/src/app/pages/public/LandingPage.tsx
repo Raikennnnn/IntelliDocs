@@ -34,7 +34,7 @@ export function LandingPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-white">
+    <div className="min-h-screen overflow-x-hidden bg-white">
       <LandingNavbar />
 
       {/* Hero — full viewport below nav */}
@@ -49,20 +49,20 @@ export function LandingPage() {
 
         <div className="absolute inset-0 bg-black/40" aria-hidden />
 
-        <div className="relative mx-auto flex h-full min-h-[calc(100dvh-4rem)] max-w-[1280px] items-center px-8">
-          <div className="max-w-[768px] py-12">
-            <p className="mb-4 text-[20px] font-semibold leading-[28px] text-white">
+        <div className="relative mx-auto flex min-h-[calc(100dvh-4rem)] max-w-7xl items-center px-4 sm:px-6 lg:px-8">
+          <div className="max-w-3xl py-8 sm:py-12">
+            <p className="mb-3 text-base font-semibold text-white sm:mb-4 sm:text-xl">
               WELCOME TO
             </p>
-            <h1 className="mb-6 max-w-[672px] text-[60px] font-bold leading-[75px] text-white">
+            <h1 className="mb-4 text-3xl font-bold leading-tight text-white sm:mb-6 sm:text-4xl md:text-5xl lg:text-6xl">
               Nuestra Señora De Guia Academy Marikina
             </h1>
-            <p className="mb-12 text-[24px] font-semibold leading-[32px] text-white">
+            <p className="mb-8 text-lg font-semibold text-white sm:mb-12 sm:text-2xl">
               Senior High School
             </p>
 
             {/* CTA Buttons */}
-            <div className="flex gap-4">
+            <div className="flex flex-col gap-4 sm:flex-row sm:gap-6">
               <div>
                 <Link to="/admissions">
                   <div className="bg-[#8b1538] h-[48px] rounded-[8px] px-6 flex items-center justify-center hover:bg-[#8b1538]/90 transition-colors">
@@ -88,17 +88,17 @@ export function LandingPage() {
       </section>
 
       {/* Announcements & Events */}
-      <section className="bg-gray-50 py-16">
-        <div className="mx-auto max-w-[1280px] px-8">
-          <div className="mb-10">
+      <section className="bg-gray-50 py-10 sm:py-16">
+        <div className="section-container">
+          <div className="mb-8 sm:mb-10">
             <Link
               to="/events"
-              className="group inline-block rounded-lg transition-colors hover:bg-white/60 -m-2 p-2"
+              className="group -m-2 inline-block rounded-lg p-2 transition-colors hover:bg-white/60"
             >
-              <h2 className="font-bold text-[36px] text-[#8b1538] leading-[40px] group-hover:underline">
+              <h2 className="text-2xl font-bold leading-tight text-[#8b1538] group-hover:underline sm:text-3xl lg:text-4xl">
                 Announcements & Events
               </h2>
-              <p className="mt-2 text-[16px] text-[#4a5565] leading-[24px]">
+              <p className="mt-2 text-sm text-[#4a5565] sm:text-base">
                 Stay updated with the latest school updates and activities.
               </p>
               <p className="mt-2 text-sm font-semibold text-[#8b1538] group-hover:underline">
@@ -112,14 +112,13 @@ export function LandingPage() {
       </section>
 
       {/* Academic Strands Section */}
-      <section className="bg-white py-16">
-        <div className="mx-auto max-w-[1280px] px-8">
-          {/* Section Header */}
-          <div className="text-center mb-12">
-            <h2 className="font-bold text-[36px] text-[#8b1538] leading-[40px] mb-4">
+      <section className="bg-white py-10 sm:py-16">
+        <div className="section-container">
+          <div className="mb-8 text-center sm:mb-12">
+            <h2 className="mb-3 text-2xl font-bold text-[#8b1538] sm:mb-4 sm:text-3xl lg:text-4xl">
               Academic Strands
             </h2>
-            <p className="font-normal text-[16px] text-[#4a5565] leading-[24px]">
+            <p className="text-sm text-[#4a5565] sm:text-base">
               Choose your path to success
             </p>
             <p className="mt-2 text-sm text-[#6b7280]">
@@ -128,9 +127,9 @@ export function LandingPage() {
           </div>
 
           {/* Strands Grid — unified maroon accent; each strand links to detail page */}
-          <div className="grid md:grid-cols-2 gap-8 max-w-[1106px] mx-auto">
+          <div className="mx-auto grid max-w-5xl gap-6 md:grid-cols-2 md:gap-8">
             {/* Academic Track */}
-            <div className="rounded-[14px] border border-gray-200 bg-white p-8 shadow-lg">
+            <div className="rounded-[14px] border border-gray-200 bg-white p-5 shadow-lg sm:p-8">
               <div className="mb-6 flex size-[64px] items-center justify-center rounded-[10px] bg-[#2d5016]">
                 <svg className="size-[32px]" fill="none" viewBox="0 0 32 32">
                   <g>
@@ -180,7 +179,7 @@ export function LandingPage() {
             </div>
 
             {/* TVL Track */}
-            <div className="rounded-[14px] border border-gray-200 bg-white p-8 shadow-lg">
+            <div className="rounded-[14px] border border-gray-200 bg-white p-5 shadow-lg sm:p-8">
               <div className="mb-6 flex size-[64px] items-center justify-center rounded-[10px] bg-[#2d5016]">
                 <svg className="size-[32px]" fill="none" viewBox="0 0 32 32">
                   <g>
@@ -235,12 +234,12 @@ export function LandingPage() {
       </section>
 
       {/* CTA Section */}
-      <section className="bg-[#8b1538] py-16">
-        <div className="mx-auto max-w-[1280px] px-8 text-center">
-          <h2 className="font-bold text-[36px] text-white leading-[40px] mb-4">
+      <section className="bg-[#8b1538] py-10 sm:py-16">
+        <div className="section-container text-center">
+          <h2 className="mb-3 text-2xl font-bold text-white sm:mb-4 sm:text-3xl lg:text-4xl">
             Ready to Begin Your Journey?
           </h2>
-          <p className="font-normal text-[18px] text-[#e5e7eb] leading-[28px] mb-8">
+          <p className="mb-6 text-base text-[#e5e7eb] sm:mb-8 sm:text-lg">
             Join our community of learners committed to excellence and values-driven education.
           </p>
           <Link to="/admissions">

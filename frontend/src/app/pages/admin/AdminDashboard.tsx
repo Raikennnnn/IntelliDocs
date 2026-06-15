@@ -115,8 +115,8 @@ export function AdminDashboard() {
       )}
 
       {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-6 gap-6">
-        <Card className="md:col-span-3">
+      <div className="stat-grid-wide">
+        <Card className="sm:col-span-2 lg:col-span-3">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ongoing School Year</CardTitle>
             <Badge variant={summary.ongoingSchoolYear.year ? 'default' : 'destructive'}>
@@ -135,7 +135,7 @@ export function AdminDashboard() {
           </CardContent>
         </Card>
 
-        <Card className="md:col-span-3">
+        <Card className="sm:col-span-2 lg:col-span-3">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ongoing Enrollment</CardTitle>
             <Badge variant={summary.ongoingEnrollment.enabled ? 'default' : 'destructive'}>

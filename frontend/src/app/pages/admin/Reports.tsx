@@ -365,28 +365,30 @@ export function Reports() {
       </div>
 
       <Tabs value={activeTab} onValueChange={(val) => setActiveTab(val as typeof activeTab)}>
-        <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="performance" className="flex items-center gap-2 text-xs">
+        <div className="tabs-scroll w-full overflow-x-auto rounded-lg border bg-muted p-1">
+          <TabsList className="inline-flex h-auto min-w-max gap-1 bg-transparent p-0">
+          <TabsTrigger value="performance" className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs sm:text-sm">
             <Server className="w-4 h-4" />
             Performance
           </TabsTrigger>
-          <TabsTrigger value="security" className="flex items-center gap-2 text-xs">
+          <TabsTrigger value="security" className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs sm:text-sm">
             <Shield className="w-4 h-4" />
             Security
           </TabsTrigger>
-          <TabsTrigger value="database" className="flex items-center gap-2 text-xs">
+          <TabsTrigger value="database" className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs sm:text-sm">
             <Database className="w-4 h-4" />
             Database
           </TabsTrigger>
-          <TabsTrigger value="activity" className="flex items-center gap-2 text-xs">
+          <TabsTrigger value="activity" className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs sm:text-sm">
             <Activity className="w-4 h-4" />
             User Activity
           </TabsTrigger>
-          <TabsTrigger value="audit" className="flex items-center gap-2 text-xs">
+          <TabsTrigger value="audit" className="flex shrink-0 items-center gap-2 whitespace-nowrap text-xs sm:text-sm">
             <FileText className="w-4 h-4" />
             Audit Trail
           </TabsTrigger>
         </TabsList>
+        </div>
 
         <TabsContent value="performance" className="space-y-4">
           <Card>

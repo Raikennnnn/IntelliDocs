@@ -54,7 +54,7 @@ export function EventsPage() {
     <div className="min-h-screen overflow-x-hidden bg-gray-50">
       <LandingNavbar />
 
-      <div className="mx-auto max-w-[1280px] px-8 py-12">
+      <div className="section-container py-12">
         <Link
           to="/landing"
           className="mb-8 inline-flex items-center gap-2 text-sm font-semibold text-[#8b1538] hover:underline"

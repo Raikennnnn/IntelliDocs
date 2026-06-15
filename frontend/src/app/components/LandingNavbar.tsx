@@ -16,7 +16,7 @@ export function LandingNavbar() {
 
   return (
     <nav className="sticky top-0 z-50 h-[64px] bg-[rgba(255,255,255,0.95)] shadow-[0px_4px_6px_0px_rgba(0,0,0,0.1),0px_2px_4px_0px_rgba(0,0,0,0.1)]">
-      <div className="mx-auto flex h-full max-w-[1280px] items-center justify-between px-8">
+      <div className="section-container flex h-full max-w-7xl items-center justify-between">
         <Link to="/landing" className="flex items-center gap-3">
           <div className="size-[40px]">
             <img

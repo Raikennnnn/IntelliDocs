@@ -117,7 +117,7 @@ export function StudentGrades() {
           <CardDescription>Overall academic performance for SY {selectedSchoolYear}</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-5">
             <div>
               <p className="text-sm text-gray-600">Total Subjects</p>
               <p className="text-2xl font-bold">{filteredGrades.length}</p>

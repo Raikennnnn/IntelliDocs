@@ -277,7 +277,7 @@ export function AccessControl() {
       </div>
 
       {/* Summary Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
         <Card className="border-l-4 border-l-gray-400">
           <CardHeader className="pb-1 pt-4 px-4">
             <CardTitle className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Accounts</CardTitle>
