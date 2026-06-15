@@ -49,9 +49,20 @@ else
 fi
 
 step "Nginx"
-start_enable nginx
-if command -v nginx >/dev/null 2>&1; then
-  nginx -t
+if ! systemctl is-active --quiet nginx 2>/dev/null; then
+  if [ -f "$APP_ROOT/scripts/repair_nginx_droplet.sh" ]; then
+    bash "$APP_ROOT/scripts/repair_nginx_droplet.sh" || true
+  else
+    start_enable nginx
+    if command -v nginx >/dev/null 2>&1; then
+      nginx -t || true
+    fi
+  fi
+else
+  start_enable nginx
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t
+  fi
 fi
 
 step "IntelliDocs AI service"
