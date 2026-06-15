@@ -238,7 +238,14 @@ fi
 step "Permissions + reload web stack"
 chown -R www-data:www-data "$APP_ROOT/public" "$APP_ROOT/uploads" "$APP_ROOT/ai/assets" 2>/dev/null || true
 chmod -R u+rwX "$APP_ROOT/uploads" 2>/dev/null || true
-if systemctl is-active --quiet php8.3-fpm; then
+for svc in nginx mysql mariadb php8.3-fpm php8.2-fpm php-fpm intellidocs-ai; do
+  if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "${svc}.service"; then
+    systemctl enable "$svc" 2>/dev/null || true
+  fi
+done
+if [ -f "$APP_ROOT/scripts/start_droplet_web_stack.sh" ]; then
+  bash "$APP_ROOT/scripts/start_droplet_web_stack.sh" || true
+elif systemctl is-active --quiet php8.3-fpm; then
   systemctl reload php8.3-fpm
 elif systemctl is-active --quiet php-fpm; then
   systemctl reload php-fpm
