@@ -322,10 +322,10 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
         if (tableExists($pdo, 'students') && columnExists($pdo, 'students', 'section')) {
             $shiftExpr = studentShiftSqlExpr($pdo);
             $hasLrn = enrollmentsHasColumn($pdo, 'lrn');
-            $lrnSelect = $hasLrn ? 'e.lrn' : "'' AS lrn";
+            $lrnSelect = $hasLrn ? 'e.lrn' : "''";
             $stepsSelect = enrollmentsHasColumn($pdo, 'enrollment_steps')
                 ? 'e.enrollment_steps'
-                : "'' AS enrollment_steps";
+                : "''";
             $gradeLevelSelect = enrollmentsHasColumn($pdo, 'grade_level')
                 ? 'e.grade_level'
                 : "'' AS grade_level";
