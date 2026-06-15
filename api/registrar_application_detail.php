@@ -17,6 +17,8 @@ require_once __DIR__ . '/cohort_helpers.php';
 require_once __DIR__ . '/physical_docs_helpers.php';
 require_once __DIR__ . '/ai_persist.php';
 
+ensureDocumentAiPersistenceSchema($pdo);
+
 function tableExists(PDO $pdo, string $table): bool
 {
     $stmt = $pdo->prepare('SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table LIMIT 1');
@@ -182,7 +184,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 $docs = $d->fetchAll() ?: [];
             } elseif (tableExists($pdo, 'students') && columnExists($pdo, 'documents', 'student_id')) {
                 $d = $pdo->prepare('
-                    SELECT d.id, ' . $selectType . ', ' . $selectOriginalName . ', ' . $selectAiStatus . ', ' . $selectAiScore . ', ' . $selectUploadedAt . ', ' . $selectMime . ', ' . $selectReviewed . ', ' . $selectReviewedAt . ', ' . $selectReviewedBy . ', ' . $selectDecision . ', ' . $selectDocRemarks . '
+                    SELECT d.id, ' . $selectType . ', ' . $selectOriginalName . ', ' . $selectAiStatus . ', ' . $selectAiScore . ', ' . $selectUploadedAt . ', ' . $selectMime . ', ' . $selectReviewed . ', ' . $selectReviewedAt . ', ' . $selectReviewedBy . ', ' . $selectDecision . ', ' . $selectDocRemarks . ', ' . $selectAiSecurityJson . '
                     FROM students s
                     INNER JOIN documents d ON d.student_id = s.id
                     WHERE s.user_id = :uid
@@ -233,9 +235,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     $aiConfidence = max(0, min(100, $aiConfidence));
                 }
 
-                $aiVerify = parseStoredAiVerifyEnvelope(
-                    isset($doc['ai_security_json']) ? (string)$doc['ai_security_json'] : null
-                );
+                $aiSecurityRaw = isset($doc['ai_security_json']) ? (string)$doc['ai_security_json'] : null;
+                $aiStatusRaw = $hasAiStatus ? (string)($doc['ai_status'] ?? 'pending') : 'pending';
+                if ($hasAiStatus) {
+                    $aiStatusRaw = documentReconcileStaleAiProcessing(
+                        $pdo,
+                        (int)$doc['id'],
+                        $aiStatusRaw,
+                        $aiSecurityRaw,
+                        $aiScoreRaw
+                    );
+                }
+
+                $scoreFloat = ($aiScoreRaw !== null && $aiScoreRaw !== '' && is_numeric($aiScoreRaw))
+                    ? (float)$aiScoreRaw
+                    : null;
+                $parsedEnvelope = parseStoredAiVerifyEnvelope($aiSecurityRaw);
+                $aiVerify = null;
+                if ($parsedEnvelope !== null) {
+                    $aiVerify = reconstructAiVerifyApiResult($parsedEnvelope, $scoreFloat, $aiStatusRaw);
+                } elseif ($scoreFloat !== null) {
+                    $aiVerify = reconstructAiVerifyFromScoreOnly($aiStatusRaw, $scoreFloat);
+                } elseif (documentAiVerificationLocked($aiStatusRaw)) {
+                    $aiVerify = reconstructAiVerifyFromLockedRow($aiStatusRaw, null, null);
+                }
 
                 $documents[] = [
                     'id' => (int)$doc['id'],
@@ -244,7 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     'name' => $fileDisplay,
                     'mimeType' => $mimeRaw,
                     'status' => $ui,
-                    'aiStatus' => $hasAiStatus ? strtolower(trim((string)($doc['ai_status'] ?? 'pending'))) : 'pending',
+                    'aiStatus' => strtolower(trim($aiStatusRaw)),
                     'aiConfidence' => $aiConfidence,
                     'uploadedDate' => (string)($doc['uploaded_at'] ?? ''),
                     'issues' => $ui === 'Flagged' && $aiConfidence === null ? ['Requires manual verification'] : [],

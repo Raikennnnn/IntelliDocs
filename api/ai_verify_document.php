@@ -24,6 +24,8 @@ require_once __DIR__ . '/ai_http.php';
 
 header('Content-Type: application/json');
 
+ensureDocumentAiPersistenceSchema($pdo);
+
 require_once __DIR__ . '/api_auth.php';
 require_once __DIR__ . '/permission_guard.php';
 $actor = apiRequireActor($pdo, 'ai/verify-document');
@@ -186,7 +188,7 @@ if (isset($row['ai_score']) && $row['ai_score'] !== '' && is_numeric($row['ai_sc
     $scorePct = (float)$row['ai_score'];
 }
 
-if (documentAiVerificationLocked($aiStatusRaw)) {
+if (documentHasPersistedAiArtifacts($aiStatusRaw, isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null, $row['ai_score'] ?? null)) {
     $storedFp = is_array($storedEnvelope)
         ? trim((string)($storedEnvelope['file_fingerprint'] ?? ''))
         : '';
@@ -196,6 +198,36 @@ if (documentAiVerificationLocked($aiStatusRaw)) {
         echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
         exit;
     }
+}
+
+$aiStatusNorm = strtolower(trim($aiStatusRaw));
+if ($aiStatusNorm === 'processing' && $forceRerun) {
+    documentResetAiPending($pdo, $docId);
+    $aiStatusRaw = 'pending';
+    $aiStatusNorm = 'pending';
+}
+
+if ($aiStatusNorm === 'processing' && !$forceRerun) {
+    if (documentHasPersistedAiArtifacts(
+        $aiStatusRaw,
+        isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null,
+        $row['ai_score'] ?? null
+    )) {
+        echo json_encode([
+            'success' => true,
+            'processing' => true,
+            'cached' => true,
+            'result' => [
+                'status' => 'verified',
+                'confidence' => 0,
+                '_processing' => true,
+            ],
+        ]);
+        exit;
+    }
+    documentResetAiPending($pdo, $docId);
+    $aiStatusRaw = 'pending';
+    $aiStatusNorm = 'pending';
 }
 
 if (!function_exists('curl_init')) {
@@ -240,9 +272,12 @@ if ($expectedStrand !== '' && !$skipGradeStrandForMoral) {
 @set_time_limit(620);
 @ini_set('max_execution_time', '620');
 
+documentMarkAiProcessing($pdo, $docId);
+
 $aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 580);
 
 if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
+    documentResetAiPending($pdo, $docId);
     $decoded = is_array($aiRes['body']) ? $aiRes['body'] : null;
     $error = $aiRes['error'] ?? 'Failed to reach AI service';
     if ($decoded && isset($decoded['error']) && is_string($decoded['error']) && $decoded['error'] !== '') {

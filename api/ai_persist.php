@@ -23,6 +23,98 @@ function aiPersistColumnExists(PDO $pdo, string $column): bool
     return $cache[$key];
 }
 
+/**
+ * Ensure AI columns can store full verification results (scores 0–100, processing, tampered).
+ */
+function ensureDocumentAiPersistenceSchema(PDO $pdo): void
+{
+    static $ensured = false;
+    if ($ensured) {
+        return;
+    }
+    $ensured = true;
+
+    if (!aiPersistColumnExists($pdo, 'ai_status')) {
+        $pdo->exec("ALTER TABLE documents ADD COLUMN ai_status VARCHAR(40) NOT NULL DEFAULT 'pending'");
+    } else {
+        $typeStmt = $pdo->prepare(
+            'SELECT COLUMN_TYPE FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = :table AND column_name = :column LIMIT 1'
+        );
+        $typeStmt->execute([':table' => 'documents', ':column' => 'ai_status']);
+        $columnType = strtolower((string)($typeStmt->fetchColumn() ?: ''));
+        if (str_contains($columnType, 'enum')) {
+            $pdo->exec("ALTER TABLE documents MODIFY COLUMN ai_status VARCHAR(40) NOT NULL DEFAULT 'pending'");
+        }
+    }
+
+    if (!aiPersistColumnExists($pdo, 'ai_score')) {
+        $pdo->exec('ALTER TABLE documents ADD COLUMN ai_score DECIMAL(5,2) NULL');
+    } else {
+        $pdo->exec('ALTER TABLE documents MODIFY COLUMN ai_score DECIMAL(5,2) NULL');
+    }
+
+    if (!aiPersistColumnExists($pdo, 'ai_security_json')) {
+        $pdo->exec('ALTER TABLE documents ADD COLUMN ai_security_json TEXT NULL');
+    }
+}
+
+function documentDeriveAiStatusFromArtifacts(?string $aiSecurityJson, mixed $aiScore): string
+{
+    $envelope = parseStoredAiVerifyEnvelope($aiSecurityJson);
+    if (is_array($envelope)) {
+        $tamper = isset($envelope['tamper_score']) ? (float)$envelope['tamper_score'] : 1.0;
+        $sec = is_array($envelope['security_levels'] ?? null) ? $envelope['security_levels'] : null;
+        if ($tamper < 0.35 || persistDocumentAiIntegrityFailed($sec)) {
+            return 'tampered';
+        }
+        $statusRaw = strtolower(trim((string)($envelope['status'] ?? '')));
+        if ($statusRaw === 'verified') {
+            return 'verified';
+        }
+        if ($statusRaw === 'failed') {
+            return 'failed';
+        }
+    }
+
+    if ($aiScore !== null && $aiScore !== '' && is_numeric($aiScore)) {
+        return 'verified';
+    }
+
+    return 'pending';
+}
+
+/**
+ * Rows with saved scores but blank ai_status (legacy ENUM mismatch) should be treated as scored.
+ */
+function documentRepairAiStatusFromArtifacts(
+    PDO $pdo,
+    int $docId,
+    ?string $aiStatus,
+    ?string $aiSecurityJson,
+    mixed $aiScore
+): string {
+    $st = strtolower(trim((string)$aiStatus));
+    if ($st !== '' && !in_array($st, ['pending', 'queued', 'processing'], true)) {
+        return $st;
+    }
+    if (!documentHasPersistedAiArtifacts($aiStatus, $aiSecurityJson, $aiScore)) {
+        return $st !== '' ? $st : 'pending';
+    }
+
+    $derived = documentDeriveAiStatusFromArtifacts($aiSecurityJson, $aiScore);
+    if ($docId > 0 && aiPersistColumnExists($pdo, 'ai_status')) {
+        $stmt = $pdo->prepare(
+            "UPDATE documents SET ai_status = :st
+              WHERE id = :id
+                AND (ai_status IS NULL OR TRIM(ai_status) = '' OR LOWER(TRIM(ai_status)) IN ('pending', 'processing', 'queued'))"
+        );
+        $stmt->execute([':st' => $derived, ':id' => $docId]);
+    }
+
+    return $derived;
+}
+
 function persistDocumentAiIntegrityFailed(?array $sec): bool
 {
     if (!is_array($sec) || !is_array($sec['levels'] ?? null)) {
@@ -95,7 +187,70 @@ function documentAiVerificationLocked(?string $aiStatus): bool
 {
     $st = strtolower(trim((string)$aiStatus));
 
-    return $st !== '' && !in_array($st, ['pending', 'processing', 'queued'], true);
+    return $st !== '' && !in_array($st, ['pending', 'queued'], true);
+}
+
+function documentHasPersistedAiArtifacts(?string $aiStatus, ?string $aiSecurityJson, mixed $aiScore): bool
+{
+    if (parseStoredAiVerifyEnvelope($aiSecurityJson) !== null) {
+        return true;
+    }
+    if ($aiScore !== null && $aiScore !== '' && is_numeric($aiScore)) {
+        return true;
+    }
+
+    return documentAiVerificationLocked($aiStatus);
+}
+
+function documentMarkAiProcessing(PDO $pdo, int $docId): void
+{
+    if ($docId <= 0 || !aiPersistColumnExists($pdo, 'ai_status')) {
+        return;
+    }
+    $stmt = $pdo->prepare(
+        "UPDATE documents SET ai_status = 'processing'
+          WHERE id = :id
+            AND LOWER(TRIM(COALESCE(ai_status, ''))) IN ('', 'pending')"
+    );
+    $stmt->execute([':id' => $docId]);
+}
+
+function documentResetAiPending(PDO $pdo, int $docId): void
+{
+    if ($docId <= 0 || !aiPersistColumnExists($pdo, 'ai_status')) {
+        return;
+    }
+    $stmt = $pdo->prepare(
+        "UPDATE documents SET ai_status = 'pending'
+          WHERE id = :id
+            AND LOWER(TRIM(COALESCE(ai_status, ''))) = 'processing'"
+    );
+    $stmt->execute([':id' => $docId]);
+}
+
+/**
+ * Abandoned AI runs can leave ai_status=processing with no stored scores.
+ * Reset those rows so the registrar UI can finish scoring once.
+ */
+function documentReconcileStaleAiProcessing(
+    PDO $pdo,
+    int $docId,
+    ?string $aiStatus,
+    ?string $aiSecurityJson,
+    mixed $aiScore
+): string {
+    $st = strtolower(trim((string)$aiStatus));
+    if ($st === 'processing') {
+        if (documentHasPersistedAiArtifacts($aiStatus, $aiSecurityJson, $aiScore)) {
+            return documentRepairAiStatusFromArtifacts($pdo, $docId, $aiStatus, $aiSecurityJson, $aiScore);
+        }
+
+        documentResetAiPending($pdo, $docId);
+
+        return 'pending';
+    }
+
+    return documentRepairAiStatusFromArtifacts($pdo, $docId, $aiStatus, $aiSecurityJson, $aiScore);
 }
 
 function documentHasStoredAiVerification(?string $aiStatus, ?string $aiSecurityJson): bool
@@ -239,6 +394,7 @@ function parseStoredAiVerifyEnvelope(?string $json): ?array
 
 function persistDocumentAiResult(PDO $pdo, int $docId, array $result, ?string $fileFingerprint = null): void
 {
+    ensureDocumentAiPersistenceSchema($pdo);
     if ($docId <= 0 || !aiPersistColumnExists($pdo, 'ai_status')) {
         return;
     }
@@ -255,7 +411,7 @@ function persistDocumentAiResult(PDO $pdo, int $docId, array $result, ?string $f
     } elseif ($statusRaw === 'verified') {
         $aiStatus = 'verified';
     } else {
-        $aiStatus = 'rejected';
+        $aiStatus = 'failed';
     }
 
     $confidence = isset($result['confidence']) ? (float)$result['confidence'] : null;

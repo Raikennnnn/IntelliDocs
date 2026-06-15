@@ -716,17 +716,58 @@ function aiVerifyFromDocument(doc: { aiVerify?: AiVerifyResponse | null }): AiVe
   return payload as AiVerifyResponse;
 }
 
+const DOC_AI_SETTLED_PREFIX = "intellidocs_doc_ai_settled_v1_";
+
+function docAiSettledStorageKey(docId: string): string {
+  return `${DOC_AI_SETTLED_PREFIX}${docId}`;
+}
+
+function isDocumentAiSettledInBrowser(docId: string): boolean {
+  try {
+    return sessionStorage.getItem(docAiSettledStorageKey(docId)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markDocumentAiSettledInBrowser(docId: string): void {
+  try {
+    sessionStorage.setItem(docAiSettledStorageKey(docId), "1");
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
 function documentAiStatus(doc: { aiStatus?: unknown; ai_status?: unknown }): string {
   return String(doc?.aiStatus ?? doc?.ai_status ?? "").toLowerCase().trim();
 }
 
-function documentAiIsPending(doc: { aiStatus?: unknown; ai_status?: unknown }): boolean {
+function documentAiIsPending(doc: { aiStatus?: unknown; ai_status?: unknown; aiConfidence?: unknown; aiVerify?: unknown }): boolean {
+  if (doc?.aiVerify && typeof doc.aiVerify === "object") return false;
+  if (typeof doc?.aiConfidence === "number" && Number.isFinite(doc.aiConfidence)) return false;
   const st = documentAiStatus(doc);
-  return st === "" || st === "pending" || st === "processing" || st === "queued";
+  return st === "" || st === "pending";
+}
+
+function documentAiIsSettled(docId: string, doc: any): boolean {
+  if (isDocumentAiSettledInBrowser(docId)) return true;
+  if (aiVerifyFromDocument(doc)) return true;
+  if (typeof doc?.aiConfidence === "number" && Number.isFinite(doc.aiConfidence)) return true;
+  const st = documentAiStatus(doc);
+  if (st === "processing" || st === "queued") return true;
+  if (st && st !== "pending") return true;
+  return hydrateAiResultFromDocument(doc) !== null;
 }
 
 function documentAiIsLocked(doc: { aiStatus?: unknown; ai_status?: unknown }): boolean {
   return !documentAiIsPending(doc);
+}
+
+function documentNeedsAutoAiRun(docId: string, doc: any): boolean {
+  if (!doc?.id) return false;
+  if (guessDocKind(doc?.mimeType, doc?.fileName || doc?.name) !== "image") return false;
+  if (documentAiIsSettled(docId, doc)) return false;
+  return documentAiIsPending(doc);
 }
 
 function hydrateAiResultFromDocument(doc: any): AiVerifyResponse | null {
@@ -735,11 +776,16 @@ function hydrateAiResultFromDocument(doc: any): AiVerifyResponse | null {
     const docType = mapDocType(doc);
     return aiResultForDisplay(docType, fromEnvelope) ?? fromEnvelope;
   }
-  if (!documentAiIsLocked(doc)) return null;
 
-  const st = documentAiStatus(doc);
-  const verified = st.includes("verify") || st === "approved" || st === "pass";
   if (typeof doc?.aiConfidence === "number" && Number.isFinite(doc.aiConfidence)) {
+    const st = documentAiStatus(doc);
+    const verified =
+      st.includes("verify") ||
+      st === "approved" ||
+      st === "pass" ||
+      st === "" ||
+      st === "failed" ||
+      st === "tampered";
     return {
       v: AI_VERIFY_PAYLOAD_VERSION,
       status: verified ? "verified" : "failed",
@@ -747,6 +793,10 @@ function hydrateAiResultFromDocument(doc: any): AiVerifyResponse | null {
     } as AiVerifyResponse;
   }
 
+  if (!documentAiIsLocked(doc)) return null;
+
+  const st = documentAiStatus(doc);
+  const verified = st.includes("verify") || st === "approved" || st === "pass";
   return {
     v: AI_VERIFY_PAYLOAD_VERSION,
     status: verified ? "verified" : "failed",
@@ -955,7 +1005,6 @@ export function ReviewDocuments() {
   const [aiDocStateById, setAiDocStateById] = useState<
     Record<string, { state: "pending" | "running" | "done" | "error"; error?: string }>
   >({});
-  const autoAiStartedRef = useRef<Set<string>>(new Set());
   // Tracks an in-flight approve/reject so we can disable the buttons against double-submits.
   const [decisionSubmitting, setDecisionSubmitting] = useState<null | "approve" | "reject">(null);
   // Open confirmation dialog for the approve / reject decision. The big
@@ -1154,9 +1203,10 @@ export function ReviewDocuments() {
       const seeded: Record<string, AiVerifyResponse> = {};
       const doneStates: Record<string, { state: "done" }> = {};
       for (const doc of Array.isArray(app?.documents) ? app.documents : []) {
+        if (!doc?.id) continue;
+        const id = String(doc.id);
         const hydrated = hydrateAiResultFromDocument(doc);
-        if (hydrated && doc?.id) {
-          const id = String(doc.id);
+        if (hydrated) {
           seeded[id] = hydrated;
           doneStates[id] = { state: "done" };
         }
@@ -1180,6 +1230,7 @@ export function ReviewDocuments() {
   };
 
   useEffect(() => {
+    setLoading(true);
     loadApplication();
     // Load once. Polling is intentionally disabled because AI verification (EasyOCR)
     // is CPU-heavy and would re-trigger work too often.
@@ -1684,7 +1735,8 @@ export function ReviewDocuments() {
   }, [isDocumentDialogOpen, previewObjectUrl, previewDisplayKind]);
 
   useEffect(() => {
-    autoAiStartedRef.current = new Set();
+    setAiResultsByDocId({});
+    setAiDocStateById({});
   }, [applicationId]);
 
   const runVerifyForDoc = useCallback(
@@ -1717,6 +1769,10 @@ export function ReviewDocuments() {
           setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
           return false;
         }
+        if ((body as { processing?: boolean }).processing) {
+          setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
+          return true;
+        }
         const data = (body as { result?: AiVerifyResponse }).result as AiVerifyResponse;
         if (!data || typeof (data as { confidence?: unknown }).confidence !== "number") {
           setAiDocStateById((prev) => ({
@@ -1731,6 +1787,7 @@ export function ReviewDocuments() {
           [id]: aiResultForDisplay(effectiveDocType, data) ?? data,
         }));
         setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
+        markDocumentAiSettledInBrowser(id);
         return true;
       } catch (e) {
         let msg = "Unexpected error running AI";
@@ -1753,12 +1810,7 @@ export function ReviewDocuments() {
   const pendingImageDocIds = useMemo(() => {
     if (!Array.isArray(application?.documents)) return "";
     return (application.documents as any[])
-      .filter(
-        (d) =>
-          d?.id &&
-          guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image" &&
-          documentAiIsPending(d),
-      )
+      .filter((d) => d?.id && documentNeedsAutoAiRun(String(d.id), d))
       .map((d) => String(d.id))
       .sort()
       .join(",");
@@ -1774,15 +1826,6 @@ export function ReviewDocuments() {
     setAiRunning(true);
     try {
       for (const doc of docs) {
-        const id = String(doc.id);
-        if (documentAiIsLocked(doc)) {
-          const hydrated = hydrateAiResultFromDocument(doc);
-          if (hydrated) {
-            setAiResultsByDocId((prev) => ({ ...prev, [id]: hydrated }));
-            setAiDocStateById((prev) => ({ ...prev, [id]: { state: "done" } }));
-          }
-          continue;
-        }
         await runVerifyForDoc(doc, { rerun: true, applicationSnapshot: application });
       }
     } finally {
@@ -1790,27 +1833,25 @@ export function ReviewDocuments() {
     }
   }, [application, runVerifyForDoc]);
 
-  // Score each document once when status is still pending. Locked rows use DB data only.
+  // Auto-score only documents that have never been verified (DB + browser session).
   useEffect(() => {
-    if (!pendingImageDocIds || !application) return;
+    if (loading || !pendingImageDocIds || !application) return;
     const pendingIds = pendingImageDocIds.split(",").filter(Boolean);
     const docs = (application.documents as any[]).filter((d) =>
       pendingIds.includes(String(d.id)),
     );
-    const toRun = docs.filter((d) => !autoAiStartedRef.current.has(String(d.id)));
-    if (toRun.length === 0) return;
+    if (docs.length === 0) return;
 
     let cancelled = false;
     const run = async () => {
       setAiRunning(true);
       try {
         setAiServiceError(null);
-        for (const doc of toRun) {
+        for (const doc of docs) {
           if (cancelled) return;
           const id = String(doc.id);
-          autoAiStartedRef.current.add(id);
-          const ok = await runVerifyForDoc(doc, { applicationSnapshot: application });
-          if (!ok) autoAiStartedRef.current.delete(id);
+          if (documentAiIsSettled(id, doc)) continue;
+          await runVerifyForDoc(doc, { applicationSnapshot: application });
         }
       } finally {
         if (!cancelled) setAiRunning(false);
@@ -1820,7 +1861,7 @@ export function ReviewDocuments() {
     return () => {
       cancelled = true;
     };
-  }, [applicationId, pendingImageDocIds, application, runVerifyForDoc]);
+  }, [applicationId, pendingImageDocIds, application, runVerifyForDoc, loading]);
 
   if (loading) {
     return (
@@ -2310,6 +2351,8 @@ export function ReviewDocuments() {
                               <CheckCircle className="mr-1 h-3 w-3" />
                               {doc.registrarReviewed ? "You reviewed" : "Verified"}
                             </Badge>
+                          ) : documentAiStatus(doc) === "processing" && aiPct === null ? (
+                            <Badge className="bg-indigo-600 text-white">AI checking…</Badge>
                           ) : aiState === "running" ? (
                             <Badge className="bg-indigo-600 text-white">AI checking…</Badge>
                           ) : aiState === "error" ? (
