@@ -7,7 +7,11 @@ declare(strict_types=1);
 
 const OTP_GUARD_MAX_ATTEMPTS = 5;
 const OTP_GUARD_LOCKOUT_MINUTES = 15;
-const OTP_GUARD_MAX_SENDS_PER_HOUR = 3;
+/** Default hourly send caps per flow (new students often need several login OTPs during onboarding). */
+const OTP_GUARD_MAX_SENDS_PER_HOUR = 8;
+const OTP_GUARD_MAX_SENDS_PER_HOUR_LOGIN = 10;
+const OTP_GUARD_MAX_SENDS_PER_HOUR_REGISTRATION = 6;
+const OTP_GUARD_MAX_SENDS_PER_HOUR_PASSWORD_RESET = 6;
 
 function otpGuardMaxAttempts(): int
 {
@@ -23,11 +27,28 @@ function otpGuardLockoutMinutes(): int
     return max(1, min(120, $v));
 }
 
-function otpGuardMaxSendsPerHour(): int
+function otpGuardMaxSendsPerHour(?string $purpose = null): int
 {
-    $v = (int)(getenv('OTP_MAX_REQUESTS_PER_HOUR') ?: OTP_GUARD_MAX_SENDS_PER_HOUR);
+    $purposeNorm = $purpose !== null && trim($purpose) !== ''
+        ? otpGuardNormalizePurpose($purpose)
+        : '';
 
-    return max(1, min(20, $v));
+    $global = (int)(getenv('OTP_MAX_REQUESTS_PER_HOUR') ?: 0);
+
+    if ($purposeNorm === 'login') {
+        $v = (int)(getenv('OTP_MAX_REQUESTS_PER_HOUR_LOGIN')
+            ?: ($global > 0 ? $global : OTP_GUARD_MAX_SENDS_PER_HOUR_LOGIN));
+    } elseif ($purposeNorm === 'registration') {
+        $v = (int)(getenv('OTP_MAX_REQUESTS_PER_HOUR_REGISTRATION')
+            ?: ($global > 0 ? $global : OTP_GUARD_MAX_SENDS_PER_HOUR_REGISTRATION));
+    } elseif ($purposeNorm === 'password_reset') {
+        $v = (int)(getenv('OTP_MAX_REQUESTS_PER_HOUR_PASSWORD_RESET')
+            ?: ($global > 0 ? $global : OTP_GUARD_MAX_SENDS_PER_HOUR_PASSWORD_RESET));
+    } else {
+        $v = (int)($global > 0 ? $global : OTP_GUARD_MAX_SENDS_PER_HOUR);
+    }
+
+    return max(1, min(30, $v));
 }
 
 function otpGuardNormalizeEmail(string $email): string
@@ -202,7 +223,8 @@ function otpGuardCountSendsLastHour(PDO $pdo, string $email, string $purpose): i
  */
 function otpGuardCheckSendAllowed(PDO $pdo, string $email, string $purpose): array
 {
-    $limit = otpGuardMaxSendsPerHour();
+    $purpose = otpGuardNormalizePurpose($purpose);
+    $limit = otpGuardMaxSendsPerHour($purpose);
     $count = otpGuardCountSendsLastHour($pdo, $email, $purpose);
     if ($count >= $limit) {
         return [
@@ -287,15 +309,25 @@ function otpGuardInvalidVerifyResponse(array $failure): array
     ];
 }
 
-function otpGuardSendLimitResponse(): array
+function otpGuardSendLimitResponse(?string $purpose = null): array
 {
-    $limit = otpGuardMaxSendsPerHour();
+    $purposeNorm = $purpose !== null && trim($purpose) !== ''
+        ? otpGuardNormalizePurpose($purpose)
+        : '';
+    $limit = otpGuardMaxSendsPerHour($purposeNorm !== '' ? $purposeNorm : null);
+    $flowLabel = match ($purposeNorm) {
+        'login' => 'sign-in',
+        'password_reset' => 'password reset',
+        'registration' => 'registration',
+        default => 'verification',
+    };
 
     return [
         'http' => 429,
         'code' => 'otp_resend_limit',
-        'error' => "Maximum {$limit} OTP requests per hour reached. Please wait before requesting another code.",
+        'error' => "Maximum {$limit} {$flowLabel} code requests per hour reached. Please wait before requesting another code.",
         'limit' => $limit,
+        'purpose' => $purposeNorm !== '' ? $purposeNorm : null,
     ];
 }
 

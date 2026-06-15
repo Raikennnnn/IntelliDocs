@@ -7,6 +7,7 @@ import { Label } from '../../components/ui/label';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import schoolLogo from '../../../assets/logo.png';
 import homePageImage from '../../../assets/homepage-Bxdbuq6s.png';
+import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
 
 type Step = 'email' | 'reset';
 
@@ -243,7 +244,7 @@ export function ForgotPasswordPage() {
                   </div>
                 </div>
                 <p className="text-xs text-gray-500 text-center">
-                  Codes expire in 5 minutes. Max 5 attempts, then a 15-minute lockout. Up to 3 code requests per hour.
+                  {otpAttemptHelpText(AUTH_OTP_LIMITS.passwordResetCodesPerHour)}
                 </p>
                 <div className="space-y-2">
                   <Label htmlFor="new-password">New password</Label>

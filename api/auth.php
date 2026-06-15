@@ -382,7 +382,7 @@ if ($action === 'register') {
 
         $sendCheck = otpGuardCheckSendAllowed($pdo, $email, 'registration');
         if (!$sendCheck['allowed']) {
-            $limitResp = otpGuardSendLimitResponse();
+            $limitResp = otpGuardSendLimitResponse('registration');
             appLogEvent($pdo, 'otp_send', 'auth', 'failed', null, 'pending_registration', $email, ['reason' => 'send_limit']);
             http_response_code($limitResp['http']);
             echo json_encode([
@@ -675,7 +675,7 @@ if ($action === 'login') {
             $otpMinutes = getOtpExpiryMinutes($pdo);
             $otpCode = issueLoginOtp($pdo, $accountEmail, $otpMinutes, false);
             if ($otpCode === null) {
-                $limitResp = otpGuardSendLimitResponse();
+                $limitResp = otpGuardSendLimitResponse('login');
                 appLogEvent($pdo, 'login_otp_send', 'auth', 'failed', (int)$user['id'], 'user', (string)$user['id'], [
                     'email' => $accountEmail,
                     'reason' => 'send_limit',
@@ -1020,7 +1020,7 @@ if ($action === 'resend_login_otp') {
         $otpMinutes = getOtpExpiryMinutes($pdo);
         $otpCode = issueLoginOtp($pdo, $accountEmail, $otpMinutes, true);
         if ($otpCode === null) {
-            $limitResp = otpGuardSendLimitResponse();
+            $limitResp = otpGuardSendLimitResponse('login');
             http_response_code($limitResp['http']);
             echo json_encode([
                 'success' => false,
@@ -1242,7 +1242,7 @@ if ($action === 'resend_otp') {
         touchPendingRegistrationExpiry($pdo, $email);
         $sendCheck = otpGuardCheckSendAllowed($pdo, $email, 'registration');
         if (!$sendCheck['allowed']) {
-            $limitResp = otpGuardSendLimitResponse();
+            $limitResp = otpGuardSendLimitResponse('registration');
             appLogEvent($pdo, 'otp_resend', 'auth', 'failed', null, 'pending_registration', $email, ['reason' => 'send_limit']);
             http_response_code($limitResp['http']);
             echo json_encode([
@@ -1309,7 +1309,7 @@ if ($action === 'forgot_password') {
 
         $sendCheck = otpGuardCheckSendAllowed($pdo, $accountEmail, 'password_reset');
         if (!$sendCheck['allowed']) {
-            $limitResp = otpGuardSendLimitResponse();
+            $limitResp = otpGuardSendLimitResponse('password_reset');
             http_response_code($limitResp['http']);
             echo json_encode([
                 'success' => false,

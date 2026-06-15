@@ -8,6 +8,7 @@ import { Label } from '../../components/ui/label';
 import { toast } from 'sonner';
 import schoolLogo from "../../../assets/logo.png";
 import homePageImage from "../../../assets/homepage-Bxdbuq6s.png";
+import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
 
 function navigateForRole(role: string, navigate: ReturnType<typeof useNavigate>) {
   switch (role) {
@@ -188,7 +189,7 @@ export function Login() {
       if (!result.ok) {
         setError(
           result.errorCode === 'otp_resend_limit'
-            ? 'Maximum 3 OTP requests per hour. Please wait before requesting another code.'
+            ? result.errorMessage || `Maximum ${AUTH_OTP_LIMITS.loginCodesPerHour} sign-in code requests per hour. Please wait before requesting another code.`
             : 'Could not resend the login code. Try signing in from the start.',
         );
         return;
@@ -318,7 +319,7 @@ export function Login() {
                   </div>
                 </div>
                 <p className="text-xs text-gray-500 text-center">
-                  Codes expire in 5 minutes. Max 5 attempts, then a 15-minute lockout. Up to 3 code requests per hour.
+                  {otpAttemptHelpText(AUTH_OTP_LIMITS.loginCodesPerHour)}
                 </p>
                 <Button type="submit" disabled={submittingOtp} className="w-full h-12 bg-[#8B1538] hover:bg-[#8B1538]/90 text-white text-base font-semibold rounded-lg">
                   {submittingOtp ? 'Verifying…' : 'Verify & Sign in'}

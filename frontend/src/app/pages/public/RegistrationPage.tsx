@@ -10,6 +10,7 @@ import { Label } from "../../components/ui/label";
 import { Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 import schoolLogo from "../../../assets/logo.png";
+import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
 
 // Registration Page Component
 export function RegistrationPage() {
@@ -103,7 +104,7 @@ export function RegistrationPage() {
           }
         }
       } else if (data.code === 'otp_resend_limit') {
-        toast.error(data.error || 'Maximum 3 OTP requests per hour reached.');
+        toast.error(data.error || `Maximum ${AUTH_OTP_LIMITS.registrationCodesPerHour} registration code requests per hour reached.`);
       } else {
         toast.error(data.error || `Resend failed (${response.status})`);
       }
@@ -190,7 +191,7 @@ export function RegistrationPage() {
         }
         setStep('otp');
       } else if (data.code === 'otp_resend_limit') {
-        toast.error(data.error || 'Maximum 3 OTP requests per hour reached. Try again later.');
+        toast.error(data.error || `Maximum ${AUTH_OTP_LIMITS.registrationCodesPerHour} registration code requests per hour reached. Try again later.`);
       } else {
         toast.error(data.error || `Registration failed (${response.status})`);
       }
@@ -488,7 +489,7 @@ export function RegistrationPage() {
                 </div>
 
                 <p className="text-center text-xs leading-relaxed text-gray-500">
-                  Max 5 incorrect attempts, then 15-minute lockout. Up to 3 code requests per hour.
+                  {otpAttemptHelpText(AUTH_OTP_LIMITS.registrationCodesPerHour)}
                 </p>
 
                 {otpDelivery === 'sent' ? (
