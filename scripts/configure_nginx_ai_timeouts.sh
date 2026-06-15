@@ -35,28 +35,22 @@ patch_file() {
 echo "=== Configure nginx fastcgi timeouts (${TIMEOUT}s) ==="
 PATCHED=0
 
-SNIP_DIR="/etc/nginx/snippets"
-SNIP_FILE="${SNIP_DIR}/intellidocs-php-timeouts.conf"
-mkdir -p "$SNIP_DIR"
-cat > "$SNIP_FILE" <<EOF
-# IntelliDocs — long AI OCR verify (auto-generated)
-fastcgi_read_timeout ${TIMEOUT};
-fastcgi_send_timeout ${TIMEOUT};
-fastcgi_connect_timeout 60;
-EOF
-echo "  Wrote snippet: $SNIP_FILE"
-PATCHED=1
+rm -f /etc/nginx/snippets/intellidocs-php-timeouts.conf
 
 # Debian/Ubuntu default PHP snippet often has no timeout — patch it too.
 FASTCGI_SNIP="/etc/nginx/snippets/fastcgi-php.conf"
 if [ -f "$FASTCGI_SNIP" ]; then
-  if ! grep -q "intellidocs-php-timeouts" "$FASTCGI_SNIP" 2>/dev/null; then
+  sed -i '/intellidocs-php-timeouts/d' "$FASTCGI_SNIP" 2>/dev/null || true
+  sed -i '/IntelliDocs AI verify/d' "$FASTCGI_SNIP" 2>/dev/null || true
+  if ! grep -qE '^[[:space:]]*fastcgi_read_timeout' "$FASTCGI_SNIP" 2>/dev/null; then
     cat >> "$FASTCGI_SNIP" <<EOF
 
 # IntelliDocs AI verify (auto-generated)
-include snippets/intellidocs-php-timeouts.conf;
+fastcgi_read_timeout ${TIMEOUT};
+fastcgi_send_timeout ${TIMEOUT};
+fastcgi_connect_timeout 60;
 EOF
-    echo "  Appended timeout include to $FASTCGI_SNIP"
+    echo "  Appended timeouts to $FASTCGI_SNIP"
     PATCHED=1
   fi
 fi
@@ -65,11 +59,9 @@ for f in /etc/nginx/sites-enabled/* /etc/nginx/sites-available/* /etc/nginx/conf
   [ -f "$f" ] || continue
   grep -q "fastcgi_pass\|intellidocs\|/var/www" "$f" || continue
   patch_file "$f"
-  if grep -q "location.*php" "$f" && ! grep -q "intellidocs-php-timeouts.conf" "$f" 2>/dev/null; then
-    # Include INSIDE the PHP location (after opening brace) so it overrides defaults.
-    sed -i "/location.*\\.php.*{/a\\        include snippets/intellidocs-php-timeouts.conf;" "$f" 2>/dev/null || \
-      sed -i "/location.*php/i\\    include snippets/intellidocs-php-timeouts.conf;" "$f" 2>/dev/null || true
-    echo "  Added snippet include to: $f"
+  if grep -q "location.*php" "$f" && ! grep -qE 'fastcgi_read_timeout[[:space:]]+600' "$f" 2>/dev/null; then
+    sed -i "/location.*\\.php.*{/a\\        fastcgi_read_timeout ${TIMEOUT};\\n        fastcgi_send_timeout ${TIMEOUT};\\n        fastcgi_connect_timeout 60;" "$f" 2>/dev/null || true
+    echo "  Added inline timeouts to: $f"
     PATCHED=1
   fi
 done

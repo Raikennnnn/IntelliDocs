@@ -22,6 +22,22 @@ detect_php_socket() {
   echo "/run/php/php8.3-fpm.sock"
 }
 
+clean_duplicate_fastcgi_timeouts() {
+  local f
+  for f in /etc/nginx/snippets/fastcgi-php.conf \
+           /etc/nginx/sites-available/* \
+           /etc/nginx/sites-enabled/* \
+           /etc/nginx/conf.d/*.conf; do
+    [ -f "$f" ] || continue
+    sed -i '/intellidocs-php-timeouts/d' "$f" 2>/dev/null || true
+    sed -i '/IntelliDocs AI verify/d' "$f" 2>/dev/null || true
+    sed -i '/^[[:space:]]*fastcgi_read_timeout/d' "$f" 2>/dev/null || true
+    sed -i '/^[[:space:]]*fastcgi_send_timeout/d' "$f" 2>/dev/null || true
+    sed -i '/^[[:space:]]*fastcgi_connect_timeout/d' "$f" 2>/dev/null || true
+  done
+  rm -f /etc/nginx/snippets/intellidocs-php-timeouts.conf
+}
+
 step "Diagnose nginx failure"
 nginx -t 2>&1 || true
 journalctl -u nginx -n 25 --no-pager 2>/dev/null || true
@@ -46,6 +62,9 @@ echo "Backup: $BACKUP_DIR"
 PHP_SOCK="$(detect_php_socket)"
 echo "Using PHP socket: $PHP_SOCK"
 
+step "Remove duplicate fastcgi timeout directives"
+clean_duplicate_fastcgi_timeouts
+
 step "Write clean IntelliDocs nginx site (HTTP)"
 cat > "$SITE_AVAIL" <<EOF
 # IntelliDocs — auto-repaired site config
@@ -66,7 +85,9 @@ server {
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:${PHP_SOCK};
-        include snippets/intellidocs-php-timeouts.conf;
+        fastcgi_read_timeout 600;
+        fastcgi_send_timeout 600;
+        fastcgi_connect_timeout 60;
     }
 
     location / {
@@ -79,13 +100,6 @@ server {
         try_files \$uri =404;
     }
 }
-EOF
-
-mkdir -p /etc/nginx/snippets
-cat > /etc/nginx/snippets/intellidocs-php-timeouts.conf <<'EOF'
-fastcgi_read_timeout 600;
-fastcgi_send_timeout 600;
-fastcgi_connect_timeout 60;
 EOF
 
 step "Enable only IntelliDocs site"
