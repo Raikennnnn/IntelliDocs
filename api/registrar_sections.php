@@ -56,6 +56,51 @@ if (!function_exists('columnExists')) {
     }
 }
 
+function enrollmentsHasColumn(PDO $pdo, string $column): bool
+{
+    return tableExists($pdo, 'enrollments') && columnExists($pdo, 'enrollments', $column);
+}
+
+function usersHasColumn(PDO $pdo, string $column): bool
+{
+    return tableExists($pdo, 'users') && columnExists($pdo, 'users', $column);
+}
+
+/** @return list<string> */
+function sectionRowSelectParts(PDO $pdo): array
+{
+    $parts = ['id', 'name', 'strand'];
+    $parts[] = columnExists($pdo, 'sections', 'shift')
+        ? 'shift'
+        : ("'" . SECTION_DEFAULT_SHIFT . "' AS shift");
+    $parts[] = columnExists($pdo, 'sections', 'grade_level')
+        ? 'grade_level'
+        : ("'" . SECTION_DEFAULT_GRADE . "' AS grade_level");
+    $parts[] = columnExists($pdo, 'sections', 'max_boys')
+        ? 'max_boys'
+        : (SECTION_DEFAULT_BOYS . ' AS max_boys');
+    $parts[] = columnExists($pdo, 'sections', 'max_girls')
+        ? 'max_girls'
+        : (SECTION_DEFAULT_GIRLS . ' AS max_girls');
+    $parts[] = columnExists($pdo, 'sections', 'boys_first')
+        ? 'boys_first'
+        : '0 AS boys_first';
+    $parts[] = columnExists($pdo, 'sections', 'created_at')
+        ? 'created_at'
+        : 'NULL AS created_at';
+
+    return $parts;
+}
+
+function sqlEnrollmentGradeKeyOrDefault(PDO $pdo, string $defaultGrade = SECTION_DEFAULT_GRADE): string
+{
+    if (enrollmentsHasColumn($pdo, 'grade_level')) {
+        return sqlEnrollmentGradeKey('e.grade_level');
+    }
+
+    return "'" . normaliseGradeLevel($defaultGrade) . "'";
+}
+
 /**
  * Canonical strand keys + their default per-section capacities.
  * Mirrors the strand values used in StudentEnrollment.tsx.
@@ -208,7 +253,11 @@ if (!in_array($role, ['registrar', 'admin'], true)) {
 require_once __DIR__ . '/permission_guard.php';
 requireActorPermission($pdo, $actor, 'viewApplications');
 
-ensureSectionsSchema($pdo);
+try {
+    ensureSectionsSchema($pdo);
+} catch (Throwable $e) {
+    error_log('registrar_sections schema ensure failed: ' . $e->getMessage());
+}
 
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
@@ -217,18 +266,22 @@ $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
  */
 function studentShiftSqlExpr(PDO $pdo): string
 {
+    $hasEnrollmentSteps = enrollmentsHasColumn($pdo, 'enrollment_steps');
+    $afternoonFromSteps = $hasEnrollmentSteps
+        ? "e.enrollment_steps LIKE '%\"Afternoon Shift\"%'"
+        : '0';
     $hasShiftCol = tableExists($pdo, 'students') && columnExists($pdo, 'students', 'section_shift');
     if ($hasShiftCol) {
         return "CASE
                    WHEN LOWER(TRIM(COALESCE(s.section_shift, ''))) = 'afternoon' THEN 'afternoon'
                    WHEN LOWER(TRIM(COALESCE(s.section_shift, ''))) = 'morning'   THEN 'morning'
-                   WHEN e.enrollment_steps LIKE '%\"Afternoon Shift\"%' THEN 'afternoon'
+                   WHEN {$afternoonFromSteps} THEN 'afternoon'
                    ELSE 'morning'
                END";
     }
 
     return "CASE
-               WHEN e.enrollment_steps LIKE '%\"Afternoon Shift\"%' THEN 'afternoon'
+               WHEN {$afternoonFromSteps} THEN 'afternoon'
                ELSE 'morning'
            END";
 }
@@ -240,10 +293,8 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
     $sectionId = (int)($_GET['section_id'] ?? $_GET['id'] ?? 0);
     $hasEnrollments = tableExists($pdo, 'enrollments');
     try {
-        $secStmt = $pdo->prepare(
-            'SELECT id, name, strand, shift, grade_level, max_boys, max_girls, boys_first, created_at
-               FROM sections WHERE id = :id LIMIT 1'
-        );
+        $sectionSql = 'SELECT ' . implode(', ', sectionRowSelectParts($pdo)) . ' FROM sections WHERE id = :id LIMIT 1';
+        $secStmt = $pdo->prepare($sectionSql);
         $secStmt->execute([':id' => $sectionId]);
         $sec = $secStmt->fetch(PDO::FETCH_ASSOC);
         if (!$sec) {
@@ -259,7 +310,7 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
             $shift = SECTION_DEFAULT_SHIFT;
         }
         $sectionGrade = normaliseGradeLevel((string)($sec['grade_level'] ?? SECTION_DEFAULT_GRADE));
-        $gradeKeyExpr = sqlEnrollmentGradeKey('e.grade_level');
+        $gradeKeyExpr = sqlEnrollmentGradeKeyOrDefault($pdo, $sectionGrade);
         $rosterSy = resolveSectionsRosterSchoolYear($pdo, (string)($_GET['school_year'] ?? 'current'));
         $enrollmentJoin = $hasEnrollments
             ? sqlEnrolledEnrollmentJoin('s.user_id', $sectionGrade)
@@ -270,17 +321,33 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
         $students = [];
         if (tableExists($pdo, 'students') && columnExists($pdo, 'students', 'section')) {
             $shiftExpr = studentShiftSqlExpr($pdo);
-            $hasLrn = $hasEnrollments && columnExists($pdo, 'enrollments', 'lrn');
+            $hasLrn = enrollmentsHasColumn($pdo, 'lrn');
             $lrnSelect = $hasLrn ? 'e.lrn' : "'' AS lrn";
-            $stepsSelect = $hasEnrollments ? 'e.enrollment_steps' : "'' AS enrollment_steps";
-            $selFirstName = columnExists($pdo, 'users', 'first_name')
+            $stepsSelect = enrollmentsHasColumn($pdo, 'enrollment_steps')
+                ? 'e.enrollment_steps'
+                : "'' AS enrollment_steps";
+            $gradeLevelSelect = enrollmentsHasColumn($pdo, 'grade_level')
+                ? 'e.grade_level'
+                : "'' AS grade_level";
+            $schoolYearSelect = enrollmentsHasColumn($pdo, 'school_year')
+                ? 'e.school_year'
+                : "'' AS school_year";
+            $selFirstName = usersHasColumn($pdo, 'first_name')
                 ? 'u.first_name' : "'' AS first_name";
-            $selMiddleName = columnExists($pdo, 'users', 'middle_name')
+            $selMiddleName = usersHasColumn($pdo, 'middle_name')
                 ? 'u.middle_name' : "'' AS middle_name";
-            $selLastName = columnExists($pdo, 'users', 'last_name')
+            $selLastName = usersHasColumn($pdo, 'last_name')
                 ? 'u.last_name' : "'' AS last_name";
-            $selExtensionName = columnExists($pdo, 'users', 'extension_name')
+            $selExtensionName = usersHasColumn($pdo, 'extension_name')
                 ? 'u.extension_name' : "'' AS extension_name";
+            $selSchoolUsername = usersHasColumn($pdo, 'school_username')
+                ? 'u.school_username' : "'' AS school_username";
+            $strandClause = enrollmentsHasColumn($pdo, 'strand')
+                ? "(
+                       LOWER(TRIM(COALESCE(e.strand, ''))) = LOWER(TRIM(:strand))
+                       OR TRIM(COALESCE(e.strand, '')) = ''
+                   )"
+                : '1=1';
             $sql = "
                 SELECT u.id AS user_id,
                        u.full_name,
@@ -290,9 +357,9 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
                        {$selExtensionName},
                        u.email,
                        u.gender,
-                       u.school_username,
-                       e.grade_level,
-                       e.school_year,
+                       {$selSchoolUsername},
+                       {$gradeLevelSelect},
+                       {$schoolYearSelect},
                        {$stepsSelect} AS enrollment_steps,
                        {$lrnSelect} AS lrn,
                        {$shiftExpr} AS resolved_shift
@@ -300,19 +367,20 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
             INNER JOIN users u ON u.id = s.user_id
                 {$enrollmentJoin}
                  WHERE LOWER(TRIM(s.section)) = LOWER(TRIM(:name))
-                   AND (
-                       LOWER(TRIM(COALESCE(e.strand, ''))) = LOWER(TRIM(:strand))
-                       OR TRIM(COALESCE(e.strand, '')) = ''
-                   )
+                   AND {$strandClause}
                    AND {$gradeKeyExpr} = :section_grade
-                   " . ($rosterSy !== '' ? " AND TRIM(COALESCE(e.school_year, '')) = :roster_sy_match" : '') . "
+                   " . ($rosterSy !== '' && enrollmentsHasColumn($pdo, 'school_year')
+                ? " AND TRIM(COALESCE(e.school_year, '')) = :roster_sy_match"
+                : '') . "
               ORDER BY u.id ASC
             ";
             $rosterParams = [
                 ':name' => $name,
-                ':strand' => $strand,
                 ':section_grade' => $sectionGrade,
             ];
+            if (enrollmentsHasColumn($pdo, 'strand')) {
+                $rosterParams[':strand'] = $strand;
+            }
             if ($hasEnrollments) {
                 $rosterParams = array_merge(
                     $rosterParams,
@@ -360,16 +428,20 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
             );
 
             if ($sectionGrade === '11' && $enrollmentSy !== null && $students !== []) {
-                $userIds = array_map(
-                    static fn (array $st): int => (int)($st['userId'] ?? 0),
-                    $students
-                );
-                $declinedSet = grade12DeclinedUserIdSet($pdo, $userIds, $enrollmentSy);
-                foreach ($students as &$st) {
-                    $uid = (int)($st['userId'] ?? 0);
-                    $st['declinedGrade12Continuation'] = isset($declinedSet[$uid]);
+                try {
+                    $userIds = array_map(
+                        static fn (array $st): int => (int)($st['userId'] ?? 0),
+                        $students
+                    );
+                    $declinedSet = grade12DeclinedUserIdSet($pdo, $userIds, $enrollmentSy);
+                    foreach ($students as &$st) {
+                        $uid = (int)($st['userId'] ?? 0);
+                        $st['declinedGrade12Continuation'] = isset($declinedSet[$uid]);
+                    }
+                    unset($st);
+                } catch (Throwable $e) {
+                    error_log('registrar_sections grade12 decline lookup failed: ' . $e->getMessage());
                 }
-                unset($st);
             }
         }
 
@@ -425,7 +497,14 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
         ]);
         exit;
     } catch (Throwable $e) {
-        error_log('registrar_sections class list failed: ' . $e->getMessage());
+        error_log(
+            'registrar_sections class list failed: '
+            . $e->getMessage()
+            . ' @ '
+            . $e->getFile()
+            . ':'
+            . $e->getLine()
+        );
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => 'Failed to load class list']);
         exit;
@@ -437,14 +516,13 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
 // ---------------------------------------------------------------------------
 if ($method === 'GET') {
     try {
-        $sections = $pdo->query(
-            "SELECT id, name, strand, shift, grade_level, max_boys, max_girls, boys_first, created_at
+        $listSql = 'SELECT ' . implode(', ', sectionRowSelectParts($pdo)) . '
                FROM sections
               ORDER BY strand ASC,
                        grade_level ASC,
-                       CASE WHEN shift = 'morning' THEN 0 ELSE 1 END ASC,
-                       name ASC"
-        )->fetchAll(PDO::FETCH_ASSOC) ?: [];
+                       CASE WHEN shift = \'morning\' THEN 0 ELSE 1 END ASC,
+                       name ASC';
+        $sections = $pdo->query($listSql)->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
         // Live counts per (strand, shift, name) from the students table.
         // Joined to users for gender and to enrollments for the strand. The
@@ -454,15 +532,18 @@ if ($method === 'GET') {
         // enrollment_steps.form_data.preferredSchedule for legacy rows.
         $shiftExpr = studentShiftSqlExpr($pdo);
         $countsByKey = [];
-        $gradeKeyExpr = sqlEnrollmentGradeKey('e.grade_level');
+        $gradeKeyExpr = sqlEnrollmentGradeKeyOrDefault($pdo);
         $rosterSy = resolveSectionsRosterSchoolYear($pdo, (string)($_GET['school_year'] ?? 'current'));
         if (tableExists($pdo, 'students') && columnExists($pdo, 'students', 'section')) {
             $enrollmentJoinCounts = tableExists($pdo, 'enrollments')
                 ? sqlEnrolledEnrollmentJoin('s.user_id')
                 : '';
+            $strandKeyExpr = enrollmentsHasColumn($pdo, 'strand')
+                ? "LOWER(TRIM(COALESCE(e.strand, '')))"
+                : "''";
             $sql = "
                 SELECT LOWER(TRIM(s.section)) AS sec_key,
-                       LOWER(TRIM(COALESCE(e.strand, ''))) AS strand_key,
+                       {$strandKeyExpr} AS strand_key,
                        {$shiftExpr} AS shift_key,
                        {$gradeKeyExpr} AS grade_key,
                        SUM(CASE WHEN LOWER(TRIM(COALESCE(u.gender, ''))) IN ('male','m','boy') THEN 1 ELSE 0 END) AS boys,
@@ -472,7 +553,9 @@ if ($method === 'GET') {
             INNER JOIN users u       ON u.id = s.user_id
                 {$enrollmentJoinCounts}
                  WHERE s.section IS NOT NULL AND TRIM(s.section) <> ''
-                   " . ($rosterSy !== '' ? " AND TRIM(COALESCE(e.school_year, '')) = :roster_sy_match" : '') . "
+                   " . ($rosterSy !== '' && enrollmentsHasColumn($pdo, 'school_year')
+                ? " AND TRIM(COALESCE(e.school_year, '')) = :roster_sy_match"
+                : '') . "
               GROUP BY sec_key, strand_key, shift_key, grade_key
             ";
             try {
