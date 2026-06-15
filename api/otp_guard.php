@@ -7,9 +7,9 @@ declare(strict_types=1);
 
 const OTP_GUARD_MAX_ATTEMPTS = 5;
 const OTP_GUARD_LOCKOUT_MINUTES = 15;
-/** Default hourly send caps per flow (new students often need several login OTPs during onboarding). */
-const OTP_GUARD_MAX_SENDS_PER_HOUR = 8;
-const OTP_GUARD_MAX_SENDS_PER_HOUR_LOGIN = 10;
+/** Default hourly send caps per flow. */
+const OTP_GUARD_MAX_SENDS_PER_HOUR = 6;
+const OTP_GUARD_MAX_SENDS_PER_HOUR_LOGIN = 6;
 const OTP_GUARD_MAX_SENDS_PER_HOUR_REGISTRATION = 6;
 const OTP_GUARD_MAX_SENDS_PER_HOUR_PASSWORD_RESET = 6;
 

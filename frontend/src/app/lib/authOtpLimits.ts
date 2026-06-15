@@ -2,7 +2,7 @@
 export const AUTH_OTP_LIMITS = {
   maxAttempts: 5,
   lockoutMinutes: 15,
-  loginCodesPerHour: 10,
+  loginCodesPerHour: 6,
   registrationCodesPerHour: 6,
   passwordResetCodesPerHour: 6,
 } as const;
