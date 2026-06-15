@@ -215,6 +215,16 @@ function documentMarkAiProcessing(PDO $pdo, int $docId): void
     $stmt->execute([':id' => $docId]);
 }
 
+/** Registrar clicked Re-run AI — allow a fresh verify even when a prior score exists. */
+function documentPrepareForAiRerun(PDO $pdo, int $docId): void
+{
+    if ($docId <= 0 || !aiPersistColumnExists($pdo, 'ai_status')) {
+        return;
+    }
+    $stmt = $pdo->prepare("UPDATE documents SET ai_status = 'processing' WHERE id = :id LIMIT 1");
+    $stmt->execute([':id' => $docId]);
+}
+
 function documentResetAiPending(PDO $pdo, int $docId): void
 {
     if ($docId <= 0 || !aiPersistColumnExists($pdo, 'ai_status')) {

@@ -189,11 +189,7 @@ if (isset($row['ai_score']) && $row['ai_score'] !== '' && is_numeric($row['ai_sc
 }
 
 if (documentHasPersistedAiArtifacts($aiStatusRaw, isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null, $row['ai_score'] ?? null)) {
-    $storedFp = is_array($storedEnvelope)
-        ? trim((string)($storedEnvelope['file_fingerprint'] ?? ''))
-        : '';
-    $fileUnchanged = $storedFp === '' || $storedFp === $fileFingerprint;
-    if (!$forceRerun || $fileUnchanged) {
+    if (!$forceRerun) {
         $cached = reconstructAiVerifyFromLockedRow($aiStatusRaw, $scorePct, $storedEnvelope);
         echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
         exit;
@@ -272,7 +268,11 @@ if ($expectedStrand !== '' && !$skipGradeStrandForMoral) {
 @set_time_limit(620);
 @ini_set('max_execution_time', '620');
 
-documentMarkAiProcessing($pdo, $docId);
+if ($forceRerun) {
+    documentPrepareForAiRerun($pdo, $docId);
+} else {
+    documentMarkAiProcessing($pdo, $docId);
+}
 
 $aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 580);
 

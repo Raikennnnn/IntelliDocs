@@ -745,6 +745,14 @@ function markDocumentAiSettledInBrowser(docId: string): void {
   }
 }
 
+function clearDocumentAiSettledInBrowser(docId: string): void {
+  try {
+    sessionStorage.removeItem(docAiSettledStorageKey(docId));
+  } catch {
+    /* ignore */
+  }
+}
+
 function documentAiStatus(doc: { aiStatus?: unknown; ai_status?: unknown }): string {
   return String(doc?.aiStatus ?? doc?.ai_status ?? "").toLowerCase().trim();
 }
@@ -1824,14 +1832,28 @@ export function ReviewDocuments() {
     if (docs.length === 0) return;
     setAiServiceError(null);
     setAiRunning(true);
+    let okCount = 0;
     try {
       for (const doc of docs) {
-        await runVerifyForDoc(doc, { rerun: true, applicationSnapshot: application });
+        const id = String(doc.id);
+        clearDocumentAiSettledInBrowser(id);
+        const ok = await runVerifyForDoc(doc, { rerun: true, applicationSnapshot: application });
+        if (ok) okCount++;
+      }
+      if (okCount > 0) {
+        await loadApplication();
+        toast.success(
+          okCount === docs.length
+            ? "AI re-run finished for all documents."
+            : `AI re-run finished for ${okCount} of ${docs.length} documents.`,
+        );
+      } else {
+        toast.error("AI re-run did not complete. Check the AI service and try again.");
       }
     } finally {
       setAiRunning(false);
     }
-  }, [application, runVerifyForDoc]);
+  }, [application, runVerifyForDoc, loadApplication]);
 
   // Auto-score only documents that have never been verified (DB + browser session).
   useEffect(() => {
@@ -2288,7 +2310,14 @@ export function ReviewDocuments() {
                   }}
                   disabled={aiRunning}
                 >
-                  Re-run AI
+                  {aiRunning ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Re-running AI…
+                    </>
+                  ) : (
+                    "Re-run AI"
+                  )}
                 </Button>
               </div>
               <ConcernScoringHelp />
