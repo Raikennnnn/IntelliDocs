@@ -300,28 +300,30 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
             INNER JOIN users u ON u.id = s.user_id
                 {$enrollmentJoin}
                  WHERE LOWER(TRIM(s.section)) = LOWER(TRIM(:name))
-                   AND LOWER(TRIM(COALESCE(e.strand, ''))) = LOWER(TRIM(:strand))
+                   AND (
+                       LOWER(TRIM(COALESCE(e.strand, ''))) = LOWER(TRIM(:strand))
+                       OR TRIM(COALESCE(e.strand, '')) = ''
+                   )
                    AND {$gradeKeyExpr} = :section_grade
                    " . ($rosterSy !== '' ? " AND TRIM(COALESCE(e.school_year, '')) = :roster_sy_match" : '') . "
               ORDER BY u.id ASC
             ";
-            $rosterStmt = $pdo->prepare($sql);
             $rosterParams = [
                 ':name' => $name,
                 ':strand' => $strand,
                 ':section_grade' => $sectionGrade,
-                ':roster_sy' => $rosterSy,
-                ':roster_sy_filter' => $rosterSy,
-                ':roster_sy_filter_val' => $rosterSy,
             ];
+            if ($hasEnrollments) {
+                $rosterParams = array_merge(
+                    $rosterParams,
+                    rosterEnrollmentJoinParams($rosterSy, true, $sectionGrade)
+                );
+            }
             if ($rosterSy !== '') {
                 $rosterParams[':roster_sy_match'] = $rosterSy;
             }
-            if ($hasEnrollments) {
-                $rosterParams[':sec_grade_order'] = $sectionGrade;
-            }
-            $rosterStmt->execute($rosterParams);
-            foreach ($rosterStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $rows = pdoFetchAllWithEmulatedPrepares($pdo, $sql, $rosterParams);
+            foreach ($rows as $row) {
                 $rowShift = strtolower(trim((string)($row['resolved_shift'] ?? 'morning')));
                 if ($rowShift !== $shift) {
                     continue;
@@ -423,6 +425,7 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
         ]);
         exit;
     } catch (Throwable $e) {
+        error_log('registrar_sections class list failed: ' . $e->getMessage());
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => 'Failed to load class list']);
         exit;
@@ -481,9 +484,8 @@ if ($method === 'GET') {
                 if ($rosterSy !== '') {
                     $countParams[':roster_sy_match'] = $rosterSy;
                 }
-                $countStmt = $pdo->prepare($sql);
-                $countStmt->execute($countParams);
-                foreach ($countStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $countRows = pdoFetchAllWithEmulatedPrepares($pdo, $sql, $countParams);
+                foreach ($countRows as $row) {
                     $key = ($row['strand_key'] ?? '') . '|' . ($row['shift_key'] ?? 'morning') . '|'
                         . ($row['grade_key'] ?? SECTION_DEFAULT_GRADE) . '|' . ($row['sec_key'] ?? '');
                     $countsByKey[$key] = [

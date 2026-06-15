@@ -81,6 +81,47 @@ function sqlEnrolledEnrollmentJoin(string $studentUserIdCol = 's.user_id', ?stri
         )";
 }
 
+/**
+ * Named PDO parameters in subqueries fail with native prepares on some MySQL builds.
+ *
+ * @param array<string, scalar|null> $params
+ * @return list<array<string, mixed>>
+ */
+function pdoFetchAllWithEmulatedPrepares(PDO $pdo, string $sql, array $params): array
+{
+    $previous = $pdo->getAttribute(PDO::ATTR_EMULATE_PREPARES);
+    if (!$previous) {
+        $pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, true);
+    }
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } finally {
+        if (!$previous) {
+            $pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
+        }
+    }
+}
+
+/**
+ * @return array<string, scalar|null>
+ */
+function rosterEnrollmentJoinParams(string $rosterSy, bool $includeGradeOrder, ?string $sectionGrade = null): array
+{
+    $params = [
+        ':roster_sy' => $rosterSy,
+        ':roster_sy_filter' => $rosterSy,
+        ':roster_sy_filter_val' => $rosterSy,
+    ];
+    if ($includeGradeOrder) {
+        $params[':sec_grade_order'] = normaliseGradeLevel((string)($sectionGrade ?? SECTION_DEFAULT_GRADE));
+    }
+
+    return $params;
+}
+
 function sectionGradeMigrateSchema(PDO $pdo, callable $tableExists, callable $columnExists): void
 {
     if (!$tableExists($pdo, 'sections')) {
