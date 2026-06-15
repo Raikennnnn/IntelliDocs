@@ -177,40 +177,22 @@ if ($fullPath === false || !$underUploads || !is_file($fullPath)) {
 $fileFingerprint = documentAiFileFingerprint($fullPath);
 $rerunRaw = strtolower(trim((string)($_GET['rerun'] ?? $_GET['force'] ?? '')));
 $forceRerun = in_array($rerunRaw, ['1', 'true', 'yes'], true);
+$aiStatusRaw = (string)($row['ai_status'] ?? '');
 $storedEnvelope = parseStoredAiVerifyEnvelope(
     isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null
 );
-$hasStored = documentHasStoredAiVerification(
-    isset($row['ai_status']) ? (string)$row['ai_status'] : null,
-    isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null
-);
-$hasScoreOnly = !$hasStored && documentHasRecordedAiScore(
-    isset($row['ai_status']) ? (string)$row['ai_status'] : null,
-    $row['ai_score'] ?? null
-);
+$scorePct = null;
+if (isset($row['ai_score']) && $row['ai_score'] !== '' && is_numeric($row['ai_score'])) {
+    $scorePct = (float)$row['ai_score'];
+}
 
-if (($hasStored && is_array($storedEnvelope)) || $hasScoreOnly) {
-    if ($hasScoreOnly) {
-        $cached = reconstructAiVerifyFromScoreOnly(
-            (string)($row['ai_status'] ?? ''),
-            (float)($row['ai_score'] ?? 0)
-        );
-        echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
-        exit;
-    }
-
-    $storedFp = trim((string)($storedEnvelope['file_fingerprint'] ?? ''));
+if (documentAiVerificationLocked($aiStatusRaw)) {
+    $storedFp = is_array($storedEnvelope)
+        ? trim((string)($storedEnvelope['file_fingerprint'] ?? ''))
+        : '';
     $fileUnchanged = $storedFp === '' || $storedFp === $fileFingerprint;
     if (!$forceRerun || $fileUnchanged) {
-        $scorePct = null;
-        if (isset($row['ai_score']) && $row['ai_score'] !== '' && is_numeric($row['ai_score'])) {
-            $scorePct = (float)$row['ai_score'];
-        }
-        $cached = reconstructAiVerifyApiResult(
-            $storedEnvelope,
-            $scorePct,
-            (string)($row['ai_status'] ?? '')
-        );
+        $cached = reconstructAiVerifyFromLockedRow($aiStatusRaw, $scorePct, $storedEnvelope);
         echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
         exit;
     }

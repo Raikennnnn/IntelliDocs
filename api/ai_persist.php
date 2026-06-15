@@ -91,11 +91,17 @@ function documentAiFileFingerprint(string $fullPath): string
     return 'mtime:' . (string)@filemtime($fullPath) . ':' . (string)@filesize($fullPath);
 }
 
-function documentHasStoredAiVerification(?string $aiStatus, ?string $aiSecurityJson): bool
+function documentAiVerificationLocked(?string $aiStatus): bool
 {
     $st = strtolower(trim((string)$aiStatus));
-    if ($st === '' || $st === 'pending') {
-        return false;
+
+    return $st !== '' && !in_array($st, ['pending', 'processing', 'queued'], true);
+}
+
+function documentHasStoredAiVerification(?string $aiStatus, ?string $aiSecurityJson): bool
+{
+    if (documentAiVerificationLocked($aiStatus)) {
+        return true;
     }
 
     return parseStoredAiVerifyEnvelope($aiSecurityJson) !== null;
@@ -125,6 +131,33 @@ function reconstructAiVerifyFromScoreOnly(string $aiStatus, float $aiScorePct): 
         'v' => AI_VERIFY_PAYLOAD_VERSION,
         'status' => $verified ? 'verified' : 'failed',
         'confidence' => $confidence,
+        'security_levels' => null,
+        'field_checks' => [],
+        'doc_checks' => [],
+        'issues' => [],
+        '_cached' => true,
+    ];
+}
+
+/**
+ * Cached payload when ai_status is final but envelope is missing (legacy rows).
+ *
+ * @return array<string, mixed>
+ */
+function reconstructAiVerifyFromLockedRow(string $aiStatus, ?float $aiScorePct, ?array $envelope = null): array
+{
+    if (is_array($envelope)) {
+        return reconstructAiVerifyApiResult($envelope, $aiScorePct, $aiStatus);
+    }
+    if ($aiScorePct !== null) {
+        return reconstructAiVerifyFromScoreOnly($aiStatus, $aiScorePct);
+    }
+    $verified = str_contains(strtolower($aiStatus), 'verify');
+
+    return [
+        'v' => AI_VERIFY_PAYLOAD_VERSION,
+        'status' => $verified ? 'verified' : 'failed',
+        'confidence' => $verified ? 1.0 : 0.0,
         'security_levels' => null,
         'field_checks' => [],
         'doc_checks' => [],
