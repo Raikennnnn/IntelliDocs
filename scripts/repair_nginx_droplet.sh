@@ -85,6 +85,7 @@ server {
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:${PHP_SOCK};
+        fastcgi_param HTTP_AUTHORIZATION \$http_authorization;
         fastcgi_read_timeout 600;
         fastcgi_send_timeout 600;
         fastcgi_connect_timeout 60;

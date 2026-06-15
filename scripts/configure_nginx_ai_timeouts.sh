@@ -37,25 +37,24 @@ PATCHED=0
 
 rm -f /etc/nginx/snippets/intellidocs-php-timeouts.conf
 
-# Debian/Ubuntu default PHP snippet often has no timeout — patch it too.
+# Never append timeouts to fastcgi-php.conf — intellidocs site config sets them inline.
+# Duplicates in the same location block break nginx -t (fastcgi_read_timeout duplicate).
 FASTCGI_SNIP="/etc/nginx/snippets/fastcgi-php.conf"
 if [ -f "$FASTCGI_SNIP" ]; then
   sed -i '/intellidocs-php-timeouts/d' "$FASTCGI_SNIP" 2>/dev/null || true
   sed -i '/IntelliDocs AI verify/d' "$FASTCGI_SNIP" 2>/dev/null || true
-  if ! grep -qE '^[[:space:]]*fastcgi_read_timeout' "$FASTCGI_SNIP" 2>/dev/null; then
-    cat >> "$FASTCGI_SNIP" <<EOF
-
-# IntelliDocs AI verify (auto-generated)
-fastcgi_read_timeout ${TIMEOUT};
-fastcgi_send_timeout ${TIMEOUT};
-fastcgi_connect_timeout 60;
-EOF
-    echo "  Appended timeouts to $FASTCGI_SNIP"
-    PATCHED=1
-  fi
+  sed -i '/^[[:space:]]*fastcgi_read_timeout/d' "$FASTCGI_SNIP" 2>/dev/null || true
+  sed -i '/^[[:space:]]*fastcgi_send_timeout/d' "$FASTCGI_SNIP" 2>/dev/null || true
+  sed -i '/^[[:space:]]*fastcgi_connect_timeout/d' "$FASTCGI_SNIP" 2>/dev/null || true
+  echo "  Stripped duplicate timeouts from $FASTCGI_SNIP"
 fi
 
-for f in /etc/nginx/sites-enabled/* /etc/nginx/sites-available/* /etc/nginx/conf.d/*.conf; do
+SITE_FILE="/etc/nginx/sites-available/intellidocs"
+if [ -f "$SITE_FILE" ]; then
+  patch_file "$SITE_FILE"
+fi
+
+for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
   [ -f "$f" ] || continue
   grep -q "fastcgi_pass\|intellidocs\|/var/www" "$f" || continue
   patch_file "$f"
