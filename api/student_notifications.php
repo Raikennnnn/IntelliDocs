@@ -20,6 +20,7 @@ require_once __DIR__ . '/api_auth.php';
 require_once __DIR__ . '/permission_guard.php';
 require_once __DIR__ . '/school_year_helpers.php';
 require_once __DIR__ . '/enrollment_status_helpers.php';
+require_once __DIR__ . '/section_grade_helpers.php';
 
 header('Content-Type: application/json');
 
@@ -44,15 +45,64 @@ function notificationsTableExists(PDO $pdo): bool
 
 function ensureNotificationReadsTable(PDO $pdo): void
 {
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS student_notification_reads (
-            user_id INT NOT NULL,
-            notification_key VARCHAR(160) NOT NULL,
-            read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (user_id, notification_key),
-            INDEX idx_notif_reads_user (user_id)
-        )
-    ");
+    try {
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS student_notification_reads (
+                user_id INT NOT NULL,
+                notification_key VARCHAR(160) NOT NULL,
+                read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, notification_key),
+                INDEX idx_notif_reads_user (user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ");
+    } catch (Throwable $e) {
+        error_log('student_notifications: could not ensure reads table: ' . $e->getMessage());
+    }
+}
+
+/** @return list<string> */
+function notificationDocumentIdsForEnrollments(PDO $pdo, array $enrollmentIds): array
+{
+    if (
+        $enrollmentIds === []
+        || !enrollmentTableExists($pdo, 'documents')
+        || !enrollmentColumnExists($pdo, 'documents', 'enrollment_id')
+    ) {
+        return [];
+    }
+
+    $placeholders = [];
+    $params = [];
+    foreach (array_values($enrollmentIds) as $i => $eid) {
+        $key = ':eid_doc' . $i;
+        $placeholders[] = $key;
+        $params[$key] = (int)$eid;
+    }
+    if ($placeholders === []) {
+        return [];
+    }
+
+    $sql = 'SELECT CAST(id AS CHAR) AS doc_id FROM documents WHERE enrollment_id IN (' . implode(',', $placeholders) . ')';
+    try {
+        $rows = pdoFetchAllWithEmulatedPrepares($pdo, $sql, $params);
+    } catch (Throwable $e) {
+        error_log('student_notifications: document id lookup failed: ' . $e->getMessage());
+
+        return [];
+    }
+
+    $out = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $id = trim((string)($row['doc_id'] ?? ''));
+        if ($id !== '') {
+            $out[] = $id;
+        }
+    }
+
+    return array_values(array_unique($out));
 }
 
 /** @return array<string, true> */
@@ -164,7 +214,6 @@ function buildStudentNotifications(PDO $pdo, int $userId): array
 
     if (tableExists($pdo, 'activity_logs')) {
         $params = [':uid' => $userId];
-        $enrollmentClause = '';
         $extraClauses = [];
         if ($enrollmentIds !== []) {
             $placeholders = [];
@@ -176,31 +225,37 @@ function buildStudentNotifications(PDO $pdo, int $userId): array
             $inList = implode(',', $placeholders);
             $extraClauses[] = "(al.target_type = 'enrollment' AND al.target_id IN ({$inList}))";
         }
-        if (tableExists($pdo, 'documents') && $enrollmentIds !== []) {
-            $extraClauses[] = "(
-                al.target_type = 'document'
-                AND al.target_id IN (
-                    SELECT CAST(d.id AS CHAR)
-                      FROM documents d
-                     INNER JOIN enrollments e ON e.id = d.enrollment_id
-                     WHERE e.user_id = :uid_docs
-                )
-            )";
-            $params[':uid_docs'] = $userId;
+        $documentIds = notificationDocumentIdsForEnrollments($pdo, $enrollmentIds);
+        if ($documentIds !== []) {
+            $docPlaceholders = [];
+            foreach ($documentIds as $i => $docId) {
+                $key = ':doc' . $i;
+                $docPlaceholders[] = $key;
+                $params[$key] = $docId;
+            }
+            $docInList = implode(',', $docPlaceholders);
+            $extraClauses[] = "(al.target_type = 'document' AND al.target_id IN ({$docInList}))";
         }
         $enrollmentClause = $extraClauses !== [] ? ' OR ' . implode(' OR ', $extraClauses) : '';
+        $detailsSelect = enrollmentColumnExists($pdo, 'activity_logs', 'details_json')
+            ? 'al.details_json'
+            : 'NULL AS details_json';
 
         $sql = "
-            SELECT al.id, al.action, al.status, al.target_type, al.target_id, al.details_json, al.created_at
+            SELECT al.id, al.action, al.status, al.target_type, al.target_id, {$detailsSelect}, al.created_at
               FROM activity_logs al
              WHERE al.actor_user_id = :uid
                 {$enrollmentClause}
              ORDER BY al.created_at DESC
              LIMIT 60
         ";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        try {
+            $logRows = pdoFetchAllWithEmulatedPrepares($pdo, $sql, $params);
+        } catch (Throwable $e) {
+            error_log('student_notifications: activity log query failed: ' . $e->getMessage());
+            $logRows = [];
+        }
+        foreach ($logRows as $row) {
             $details = [];
             if (!empty($row['details_json'])) {
                 $decoded = json_decode((string)$row['details_json'], true);
@@ -236,8 +291,13 @@ function buildStudentNotifications(PDO $pdo, int $userId): array
     }
 
     // Current-state hints when logs are sparse.
-    $sy = function_exists('getEnrollmentSchoolYear') ? getEnrollmentSchoolYear($pdo) : null;
-    $row = pickPrimaryEnrollmentRow($pdo, $userId, $sy);
+    $row = null;
+    try {
+        $sy = getEnrollmentSchoolYear($pdo);
+        $row = pickPrimaryEnrollmentRow($pdo, $userId, $sy);
+    } catch (Throwable $e) {
+        error_log('student_notifications: enrollment state lookup failed: ' . $e->getMessage());
+    }
     if ($row) {
         $st = strtolower(trim((string)($row['status'] ?? '')));
         $eid = (int)($row['id'] ?? 0);
@@ -279,6 +339,7 @@ if ($method === 'GET') {
             'unread_count' => count(array_filter($notifications, static fn(array $n): bool => empty($n['read']))),
         ]);
     } catch (Throwable $e) {
+        error_log('student_notifications GET failed: ' . $e->getMessage());
         http_response_code(500);
         echo json_encode(['success' => false, 'error' => 'Failed to load notifications']);
     }
@@ -296,8 +357,12 @@ if ($method === 'POST') {
     ensureNotificationReadsTable($pdo);
     $keys = [];
     if (!empty($payload['mark_all_read'])) {
-        foreach (buildStudentNotifications($pdo, $userId) as $n) {
-            $keys[] = (string)($n['id'] ?? '');
+        try {
+            foreach (buildStudentNotifications($pdo, $userId) as $n) {
+                $keys[] = (string)($n['id'] ?? '');
+            }
+        } catch (Throwable $e) {
+            error_log('student_notifications mark_all_read failed: ' . $e->getMessage());
         }
     } elseif (is_array($payload['mark_read'] ?? null)) {
         foreach ($payload['mark_read'] as $id) {
@@ -312,16 +377,18 @@ if ($method === 'POST') {
         exit;
     }
 
-    $ins = $pdo->prepare('
-        INSERT INTO student_notification_reads (user_id, notification_key, read_at)
-        VALUES (:uid, :key, NOW())
-        ON DUPLICATE KEY UPDATE read_at = NOW()
-    ');
-    foreach (array_unique($keys) as $key) {
-        if ($key === '') {
-            continue;
+    if ($keys !== [] && notificationsTableExists($pdo)) {
+        $ins = $pdo->prepare('
+            INSERT INTO student_notification_reads (user_id, notification_key, read_at)
+            VALUES (:uid, :key, NOW())
+            ON DUPLICATE KEY UPDATE read_at = NOW()
+        ');
+        foreach (array_unique($keys) as $key) {
+            if ($key === '') {
+                continue;
+            }
+            $ins->execute([':uid' => $userId, ':key' => $key]);
         }
-        $ins->execute([':uid' => $userId, ':key' => $key]);
     }
 
     echo json_encode(['success' => true]);
