@@ -554,6 +554,13 @@ function normalizeDocTypeFromLabel(label: string): AiDocType {
   return "other";
 }
 
+function mapDocType(doc: { requirementLabel?: unknown; type?: unknown; name?: unknown; fileName?: unknown }): AiDocType {
+  const label = String(doc?.requirementLabel ?? doc?.type ?? "").trim();
+  if (label) return normalizeDocTypeFromLabel(label);
+  const fallback = String(doc?.name ?? doc?.fileName ?? "").trim();
+  return fallback ? normalizeDocTypeFromLabel(fallback) : "other";
+}
+
 function normalizeAiDocTypeKey(docType: string): string {
   const t = docType.toLowerCase().trim();
   if (t === "birthcert") return "birth_certificate";
@@ -1020,13 +1027,6 @@ export function ReviewDocuments() {
   const [docDecisionDialogOpen, setDocDecisionDialogOpen] = useState(false);
   const [docDecisionRemarks, setDocDecisionRemarks] = useState("");
   const [docDecisionSubmitting, setDocDecisionSubmitting] = useState(false);
-
-  const mapDocType = (doc: any): AiDocType => {
-    const label = String(doc?.requirementLabel ?? doc?.type ?? "").trim();
-    if (label) return normalizeDocTypeFromLabel(label);
-    const fallback = String(doc?.name ?? doc?.fileName ?? "").trim();
-    return fallback ? normalizeDocTypeFromLabel(fallback) : "other";
-  };
 
   const resolveEffectiveDocType = (doc: any, ai?: AiVerifyResponse | null): AiDocType => {
     const fromAi = aiDocTypeFromResolved(String(ai?.resolved_doc_type ?? ""));
