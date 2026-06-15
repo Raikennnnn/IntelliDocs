@@ -1,11 +1,17 @@
 import { Link, useLocation, useNavigate } from 'react-router';
-import { LogOut, GraduationCap } from 'lucide-react';
+import { LogOut, GraduationCap, Menu } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { clearAuthStorage } from '../lib/api';
 import { Button } from '../components/ui/button';
-import { ReactNode } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import schoolLogo from '../../assets/logo.png';
 import { SessionKeepalive } from '../components/SessionKeepalive';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '../components/ui/sheet';
 import {
   Home,
   ClipboardList,
@@ -27,10 +33,47 @@ interface DashboardLayoutProps {
   navigation: Array<{ name: string; path: string; icon: React.ComponentType<{ className?: string }> }>;
 }
 
+function DashboardNavLinks({
+  navigation,
+  location,
+  onNavigate,
+}: {
+  navigation: DashboardLayoutProps['navigation'];
+  location: ReturnType<typeof useLocation>;
+  onNavigate?: () => void;
+}) {
+  return (
+    <nav className="space-y-1">
+      {navigation.map((item) => {
+        const active =
+          location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
+        return (
+          <Link
+            key={item.path}
+            to={item.path}
+            onClick={onNavigate}
+            className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-gray-700 transition-colors hover:bg-red-50 hover:text-[#8B1538]${
+              active ? ' bg-red-50 font-medium text-[#8B1538]' : ''
+            }`}
+          >
+            <item.icon className="h-5 w-5 shrink-0" />
+            <span className="text-sm sm:text-base">{item.name}</span>
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
 export function DashboardLayout({ children, navigation }: DashboardLayoutProps) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
 
   const handleLogout = async () => {
     localStorage.removeItem('studentEnrollmentLocked');
@@ -42,63 +85,74 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
   return (
     <div className="min-h-screen bg-gray-50">
       <SessionKeepalive />
-      <header className="sticky top-0 z-10 border-b border-gray-200 bg-[#8B1538] shadow-md">
-        <div className="flex items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white p-1 shadow-md">
+      <header className="fixed inset-x-0 top-0 z-50 border-b border-gray-200 bg-[#8B1538] shadow-md">
+        <div className="flex items-center justify-between gap-2 px-3 py-2.5 sm:px-4 sm:py-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="shrink-0 text-white hover:bg-white/10 lg:hidden"
+              aria-label="Open menu"
+              onClick={() => setMobileNavOpen(true)}
+            >
+              <Menu className="h-5 w-5" />
+            </Button>
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white p-1 shadow-md sm:h-10 sm:w-10">
               <img
                 src={schoolLogo}
                 alt="Nuestra Señora De Guia Academy"
                 className="h-full w-full object-contain"
               />
             </div>
-            <div>
-              <h1 className="text-lg font-bold text-white">Nuestra Señora De Guia Academy</h1>
-              <p className="text-sm capitalize text-white/80">{user?.role} Portal</p>
+            <div className="min-w-0">
+              <h1 className="truncate text-sm font-bold text-white sm:text-lg">
+                Nuestra Señora De Guia Academy
+              </h1>
+              <p className="truncate text-xs capitalize text-white/80 sm:text-sm">{user?.role} Portal</p>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="hidden text-right sm:block">
-              <p className="text-sm font-medium text-white">{user?.name}</p>
-              <p className="text-xs text-green-100">{user?.email}</p>
+          <div className="flex shrink-0 items-center gap-2 sm:gap-4">
+            <div className="hidden max-w-[180px] text-right md:block lg:max-w-none">
+              <p className="truncate text-sm font-medium text-white">{user?.name}</p>
+              <p className="truncate text-xs text-green-100">{user?.email}</p>
             </div>
             <Button
               variant="outline"
               size="sm"
               onClick={() => void handleLogout()}
-              className="border-white bg-white text-[#8B1538] hover:bg-green-50"
+              className="border-white bg-white px-2 text-[#8B1538] hover:bg-green-50 sm:px-3"
             >
-              <LogOut className="mr-2 h-4 w-4" />
-              Logout
+              <LogOut className="h-4 w-4 sm:mr-2" />
+              <span className="hidden sm:inline">Logout</span>
             </Button>
           </div>
         </div>
       </header>
 
-      <div className="flex">
-        <aside className="min-h-[calc(100vh-64px)] w-64 border-r border-gray-200 bg-white p-4">
-          <nav className="space-y-1">
-            {navigation.map((item) => {
-              const active =
-                location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-2 text-gray-700 transition-colors hover:bg-red-50 hover:text-[#8B1538]${
-                    active ? ' bg-red-50 font-medium text-[#8B1538]' : ''
-                  }`}
-                >
-                  <item.icon className="h-5 w-5" />
-                  <span>{item.name}</span>
-                </Link>
-              );
-            })}
-          </nav>
-        </aside>
+      <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+        <SheetContent side="left" className="w-[min(100vw-2rem,18rem)] p-0">
+          <SheetHeader className="border-b border-gray-200 px-4 py-4 text-left">
+            <SheetTitle className="text-base text-[#8B1538]">Menu</SheetTitle>
+            <p className="text-xs text-gray-500 capitalize">{user?.role} portal</p>
+          </SheetHeader>
+          <div className="overflow-y-auto p-4">
+            <DashboardNavLinks
+              navigation={navigation}
+              location={location}
+              onNavigate={() => setMobileNavOpen(false)}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
 
-        <main className="flex-1 p-6">{children}</main>
-      </div>
+      <aside className="fixed left-0 top-16 z-40 hidden h-[calc(100vh-4rem)] w-64 overflow-y-auto border-r border-gray-200 bg-white p-4 lg:block">
+        <DashboardNavLinks navigation={navigation} location={location} />
+      </aside>
+
+      <main className="min-h-screen pt-14 sm:pt-16 lg:ml-64">
+        <div className="p-4 sm:p-6">{children}</div>
+      </main>
     </div>
   );
 }

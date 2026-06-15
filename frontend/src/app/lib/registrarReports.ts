@@ -1,5 +1,6 @@
 import { apiFetch } from './api';
 import { buildFormalReportDocumentHtml } from './formalReportDocument';
+import type { ReportGroup } from './reportGroupedLayout';
 
 export type RegistrarReportType =
   | 'applicants'
@@ -16,11 +17,15 @@ export type RegistrarReportType =
 export type RegistrarReportJson = {
   success?: boolean;
   title?: string;
+  layout?: 'table' | 'grouped';
   columns?: string[];
   rows?: Array<Record<string, string>>;
+  groups?: ReportGroup[];
   rowCount?: number;
+  groupCount?: number;
   schoolYearLabel?: string;
   summary?: Record<string, unknown>;
+  generatedAt?: string;
   filters?: {
     school_year_options?: string[];
     enrollment_school_year_current?: string | null;
@@ -41,17 +46,17 @@ function reportUrl(
   return `/api/registrar/reports?${params.toString()}`;
 }
 
-function buildPrintHtml(
-  title: string,
-  subtitle: string,
-  columns: string[],
-  rows: Array<Record<string, string>>,
-): string {
+function buildPrintHtml(data: RegistrarReportJson): string {
   return buildFormalReportDocumentHtml({
-    title,
-    schoolYearLabel: subtitle,
-    columns,
-    rows,
+    title: data.title ?? 'Report',
+    schoolYearLabel: data.schoolYearLabel ?? '',
+    layout: data.layout,
+    groups: data.groups,
+    columns: data.columns ?? [],
+    rows: data.rows ?? [],
+    generatedAt: data.generatedAt
+      ? new Date(data.generatedAt).toLocaleString()
+      : undefined,
   });
 }
 
@@ -110,14 +115,7 @@ export async function printRegistrarReport(
   schoolYear: string,
 ): Promise<void> {
   const data = await fetchRegistrarReport(report, schoolYear);
-  const columns = data.columns ?? [];
-  const rows = data.rows ?? [];
-  const html = buildPrintHtml(
-    data.title ?? 'Report',
-    data.schoolYearLabel ?? '',
-    columns,
-    rows,
-  );
+  const html = buildPrintHtml(data);
   const win = window.open('', '_blank', 'noopener,noreferrer,width=1100,height=800');
   if (!win) {
     throw new Error('Pop-up blocked. Allow pop-ups to print this report.');

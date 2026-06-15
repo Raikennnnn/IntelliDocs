@@ -40,70 +40,118 @@ try {
     $rejected = 0;
     $byStrand = [];
 
-    $schoolYearScope = rosterEnrollmentContext($pdo)['school_year'] ?? '';
-    $schoolYearLabel = $schoolYearScope !== ''
-        ? 'SY ' . $schoolYearScope . ' (active enrollment)'
-        : 'All school years';
-    $schoolYearSql = '';
-    $schoolYearParams = [];
-    if ($schoolYearScope !== '') {
-        $schoolYearSql = " AND TRIM(COALESCE(school_year, '')) = :overview_sy";
-        $schoolYearParams[':overview_sy'] = $schoolYearScope;
+    require_once __DIR__ . '/school_year_helpers.php';
+    $enrollmentYear = trim((string)(getEnrollmentSchoolYear($pdo) ?? ''));
+    $ongoingYear = trim((string)(getOngoingSchoolYear($pdo) ?? ''));
+    if ($ongoingYear === '') {
+        $ongoingYear = $enrollmentYear;
     }
 
+    if ($enrollmentYear !== '' && $ongoingYear !== '' && $enrollmentYear !== $ongoingYear) {
+        $schoolYearLabel = 'Ongoing SY ' . $ongoingYear . ' · Accepting enrollments for SY ' . $enrollmentYear;
+    } elseif ($ongoingYear !== '') {
+        $schoolYearLabel = 'SY ' . $ongoingYear . ' (ongoing)';
+    } elseif ($enrollmentYear !== '') {
+        $schoolYearLabel = 'SY ' . $enrollmentYear . ' (active enrollment)';
+    } else {
+        $schoolYearLabel = 'All school years';
+    }
+
+    $schoolYearScope = $ongoingYear !== '' ? $ongoingYear : $enrollmentYear;
+
     if (tableExists($pdo, 'enrollments')) {
-        // Scope counts to the active enrollment school year so historical rows
-        // from ended years do not inflate dashboard totals.
-        // total_applications: in-flight queue items only — once an enrollment
-        // is approved (or fully enrolled) it leaves the registrar's review
-        // queue and stops counting toward this stat. Rejected rows are also
-        // excluded since the registrar can no longer act on them.
-        // total_enrolled: every student already approved or enrolled, since
-        // both states represent a student who has secured a seat.
-        $summarySql = "
+        // Pending application queue → enrollment intake year.
+        $appYearSql = '';
+        $appYearParams = [];
+        if ($enrollmentYear !== '') {
+            $appYearSql = " AND TRIM(COALESCE(school_year, '')) = :app_sy";
+            $appYearParams[':app_sy'] = $enrollmentYear;
+        }
+        $appSummarySql = "
             SELECT
                 SUM(CASE WHEN LOWER(status) IN ('pending', 'under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS total_applications,
-                SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS total_enrolled,
                 SUM(CASE WHEN LOWER(status) = 'pending' THEN 1 ELSE 0 END) AS pending_count,
                 SUM(CASE WHEN LOWER(status) IN ('under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS review_count,
-                SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS approved_count,
                 SUM(CASE WHEN LOWER(status) = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
             FROM enrollments
-            WHERE 1=1 {$schoolYearSql}
+            WHERE 1=1 {$appYearSql}
         ";
-        $summaryStmt = $pdo->prepare($summarySql);
-        $summaryStmt->execute($schoolYearParams);
-        $summary = $summaryStmt->fetch() ?: [];
-        $applicationsTotal = (int)($summary['total_applications'] ?? 0);
-        $enrolledTotal = (int)($summary['total_enrolled'] ?? 0);
-        $pending = (int)($summary['pending_count'] ?? 0);
-        $underReview = (int)($summary['review_count'] ?? 0);
-        $approved = (int)($summary['approved_count'] ?? 0);
-        $rejected = (int)($summary['rejected_count'] ?? 0);
+        $appStmt = $pdo->prepare($appSummarySql);
+        $appStmt->execute($appYearParams);
+        $appSummary = $appStmt->fetch() ?: [];
+        $applicationsTotal = (int)($appSummary['total_applications'] ?? 0);
+        $pending = (int)($appSummary['pending_count'] ?? 0);
+        $underReview = (int)($appSummary['review_count'] ?? 0);
+        $rejected = (int)($appSummary['rejected_count'] ?? 0);
 
-        // Per-strand stats use the same semantics: only in-flight rows count
-        // as applications, and approved + enrolled both count as enrolled.
-        $strandSql = "
+        // Enrolled roster → ongoing academic year (fallback: enrollment year).
+        $enrollYearSql = '';
+        $enrollYearParams = [];
+        if ($ongoingYear !== '') {
+            $enrollYearSql = " AND TRIM(COALESCE(school_year, '')) = :enroll_sy";
+            $enrollYearParams[':enroll_sy'] = $ongoingYear;
+        }
+        $enrollSummarySql = "
+            SELECT
+                SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS total_enrolled,
+                SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS approved_count
+            FROM enrollments
+            WHERE 1=1 {$enrollYearSql}
+        ";
+        $enrollStmt = $pdo->prepare($enrollSummarySql);
+        $enrollStmt->execute($enrollYearParams);
+        $enrollSummary = $enrollStmt->fetch() ?: [];
+        $enrolledTotal = (int)($enrollSummary['total_enrolled'] ?? 0);
+        $approved = (int)($enrollSummary['approved_count'] ?? 0);
+
+        // Per-strand: pending from intake year, enrolled from ongoing year.
+        $strandPendingSql = "
             SELECT
                 COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified') AS strand_name,
-                SUM(CASE WHEN LOWER(status) IN ('pending', 'under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS total_applications,
+                SUM(CASE WHEN LOWER(status) IN ('pending', 'under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS total_applications
+            FROM enrollments
+            WHERE 1=1 {$appYearSql}
+            GROUP BY COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified')
+        ";
+        $strandPendingStmt = $pdo->prepare($strandPendingSql);
+        $strandPendingStmt->execute($appYearParams);
+        $pendingByStrand = [];
+        foreach ($strandPendingStmt->fetchAll() ?: [] as $row) {
+            $pendingByStrand[(string)$row['strand_name']] = (int)$row['total_applications'];
+        }
+
+        $strandEnrolledSql = "
+            SELECT
+                COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified') AS strand_name,
                 SUM(CASE WHEN LOWER(status) IN ('approved', 'enrolled') THEN 1 ELSE 0 END) AS enrolled_students
             FROM enrollments
-            WHERE 1=1 {$schoolYearSql}
+            WHERE 1=1 {$enrollYearSql}
             GROUP BY COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified')
-            HAVING total_applications > 0 OR enrolled_students > 0
+            HAVING enrolled_students > 0
             ORDER BY enrolled_students DESC, strand_name ASC
         ";
-        $strandStmt = $pdo->prepare($strandSql);
-        $strandStmt->execute($schoolYearParams);
-        $strandRows = $strandStmt->fetchAll() ?: [];
-        foreach ($strandRows as $row) {
-            $byStrand[] = [
-                'name' => (string)$row['strand_name'],
-                'totalApplications' => (int)$row['total_applications'],
-                'enrolledStudents' => (int)$row['enrolled_students'],
-            ];
+        $strandEnrolledStmt = $pdo->prepare($strandEnrolledSql);
+        $strandEnrolledStmt->execute($enrollYearParams);
+        $enrolledByStrand = [];
+        foreach ($strandEnrolledStmt->fetchAll() ?: [] as $row) {
+            $enrolledByStrand[(string)$row['strand_name']] = (int)$row['enrolled_students'];
         }
+        $strandNames = array_unique(array_merge(array_keys($pendingByStrand), array_keys($enrolledByStrand)));
+        foreach ($strandNames as $name) {
+            $apps = $pendingByStrand[$name] ?? 0;
+            $enrolled = $enrolledByStrand[$name] ?? 0;
+            if ($apps > 0 || $enrolled > 0) {
+                $byStrand[] = [
+                    'name' => $name,
+                    'totalApplications' => $apps,
+                    'enrolledStudents' => $enrolled,
+                ];
+            }
+        }
+        usort($byStrand, static function (array $a, array $b): int {
+            $cmp = $b['enrolledStudents'] <=> $a['enrolledStudents'];
+            return $cmp !== 0 ? $cmp : strcmp($a['name'], $b['name']);
+        });
     }
 
     $totalSections = 0;
@@ -137,6 +185,8 @@ try {
     echo json_encode([
         'success' => true,
         'schoolYear' => $schoolYearScope !== '' ? $schoolYearScope : null,
+        'enrollmentSchoolYear' => $enrollmentYear !== '' ? $enrollmentYear : null,
+        'ongoingSchoolYear' => $ongoingYear !== '' ? $ongoingYear : null,
         'schoolYearLabel' => $schoolYearLabel,
         'summary' => [
             'overallQuota' => $overallQuota,

@@ -717,6 +717,16 @@ function aiVerifyFromDocument(doc: { aiVerify?: AiVerifyResponse | null }): AiVe
   return payload as AiVerifyResponse;
 }
 
+function documentHasPersistedAi(doc: { aiVerify?: AiVerifyResponse | null; aiStatus?: unknown; aiConfidence?: unknown }): boolean {
+  if (aiVerifyFromDocument(doc)) {
+    const st = String(doc?.aiStatus ?? "").toLowerCase();
+    return st !== "" && st !== "pending";
+  }
+  const st = String(doc?.aiStatus ?? "").toLowerCase();
+  if (st === "" || st === "pending") return false;
+  return typeof doc?.aiConfidence === "number" && Number.isFinite(doc.aiConfidence);
+}
+
 type DocCheckRow = { field: string; ok: boolean; scan_method?: string; match_ratio?: number; note?: string };
 
 function isVisualSealOrLogoCheck(c: DocCheckRow): boolean {
@@ -1125,6 +1135,11 @@ export function ReviewDocuments() {
       }
       if (Object.keys(seeded).length > 0) {
         setAiResultsByDocId((prev) => ({ ...seeded, ...prev }));
+        const doneStates: Record<string, { state: "done" }> = {};
+        for (const id of Object.keys(seeded)) {
+          doneStates[id] = { state: "done" };
+        }
+        setAiDocStateById((prev) => ({ ...doneStates, ...prev }));
       }
 
       if (app?.isAlreadyEnrolled && app?.status !== "Rejected") {
@@ -1641,13 +1656,17 @@ export function ReviewDocuments() {
     };
   }, [isDocumentDialogOpen, previewObjectUrl, previewDisplayKind]);
 
-  // Automatically run AI verification for image documents when the application loads.
+  // Run AI only for documents that have never been scored. Stored results load from the DB.
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       if (!application?.documents || !Array.isArray(application.documents) || application.documents.length === 0) return;
       const docs = application.documents as any[];
-      const toVerify = docs.filter((d) => d?.id && guessDocKind(d?.mimeType, d?.fileName || d?.name) === "image");
+      const toVerify = docs.filter((d) => {
+        if (!d?.id || guessDocKind(d?.mimeType, d?.fileName || d?.name) !== "image") return false;
+        if (aiRerunNonce > 0) return true;
+        return !documentHasPersistedAi(d);
+      });
       if (toVerify.length === 0) return;
 
       setAiRunning(true);
@@ -1658,17 +1677,18 @@ export function ReviewDocuments() {
           if (cancelled) return;
           const id = String(doc.id);
           const docType = mapDocType(doc);
-          const cached = aiResultsByDocId[id];
-          if (cached && !isAiVerifyPayloadStale(docType, application, cached)) continue;
+          if (aiRerunNonce === 0 && documentHasPersistedAi(doc)) continue;
 
           try {
             if (!cancelled) {
               setAiDocStateById((prev) => ({ ...prev, [id]: { state: "running" } }));
             }
+            const rerunQs = aiRerunNonce > 0 ? "&rerun=1" : "";
             const aiRes = await apiFetch(
               `/api/ai/verify-document?id=${encodeURIComponent(String(doc.id))}` +
                 `&doc_type=${encodeURIComponent(docType)}` +
-                buildExpectedVerifyQuery(docType, application),
+                buildExpectedVerifyQuery(docType, application) +
+                rerunQs,
             );
             const parsed = await parseApiJson<
               | { success: true; result: AiVerifyResponse }
@@ -2150,8 +2170,6 @@ export function ReviewDocuments() {
                   size="sm"
                   className="shrink-0"
                   onClick={() => {
-                    setAiResultsByDocId({});
-                    setAiDocStateById({});
                     setAiServiceError(null);
                     setAiRerunNonce((n) => n + 1);
                   }}

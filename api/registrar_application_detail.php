@@ -244,6 +244,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     'name' => $fileDisplay,
                     'mimeType' => $mimeRaw,
                     'status' => $ui,
+                    'aiStatus' => $hasAiStatus ? strtolower(trim((string)($doc['ai_status'] ?? 'pending'))) : 'pending',
                     'aiConfidence' => $aiConfidence,
                     'uploadedDate' => (string)($doc['uploaded_at'] ?? ''),
                     'issues' => $ui === 'Flagged' && $aiConfidence === null ? ['Requires manual verification'] : [],

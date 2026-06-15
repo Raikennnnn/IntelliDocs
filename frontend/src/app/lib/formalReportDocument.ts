@@ -3,15 +3,19 @@ import {
   reportDisplayTitle,
   type ReportLetterhead,
 } from './reportLetterhead';
+import type { ReportGroup } from './reportGroupedLayout';
 
 export type FormalReportDocumentInput = {
   title: string;
   schoolYearLabel?: string;
   columns: string[];
   rows: Array<Record<string, string>>;
+  layout?: 'table' | 'grouped';
+  groups?: ReportGroup[];
   generatedAt?: string;
   letterhead?: Partial<ReportLetterhead>;
   rowLimit?: number;
+  groupLimit?: number;
 };
 
 function esc(v: string): string {
@@ -161,6 +165,36 @@ export function formalReportDocumentStyles(): string {
     table.report-table th.text-left {
       text-align: left;
     }
+    .report-group {
+      margin-bottom: 22px;
+      break-inside: avoid;
+    }
+    .report-group-header {
+      border: 1px solid #111;
+      background: #f9fafb;
+      padding: 7px 10px;
+    }
+    .report-group-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .report-group-subtitle {
+      margin: 2px 0 0;
+      font-size: 10px;
+      color: #4b5563;
+    }
+    .report-group table.report-table {
+      margin-top: 0;
+    }
+    .report-group table.report-table td.notes {
+      text-align: left;
+      font-size: 10px;
+      line-height: 1.35;
+      max-width: 260px;
+    }
     .empty-note {
       text-align: center;
       padding: 48px 16px;
@@ -210,19 +244,10 @@ export function formalReportDocumentStyles(): string {
   `;
 }
 
-export function buildFormalReportDocumentHtml(input: FormalReportDocumentInput): string {
-  const head = { ...DEFAULT_REPORT_LETTERHEAD, ...input.letterhead };
-  const displayTitle = reportDisplayTitle(input.title);
-  const schoolYear =
-    input.schoolYearLabel?.trim() ||
-    (input.title.includes(' — ') ? input.title.split(' — ').slice(1).join(' — ').trim() : '');
-  const generatedAt = input.generatedAt ?? new Date().toLocaleString();
-  const columns = input.columns ?? [];
-  const rows = (input.rows ?? []).slice(0, input.rowLimit ?? 500);
-
+function buildTableHtml(columns: string[], rows: Array<Record<string, string>>, notesColumn = 'Notes'): string {
   const headCells = columns
     .map((col, i) => {
-      const cls = i === 0 ? ' class="text-left"' : '';
+      const cls = i === 0 || col === notesColumn ? ' class="text-left"' : '';
       return `<th${cls}>${esc(col)}</th>`;
     })
     .join('');
@@ -231,7 +256,8 @@ export function buildFormalReportDocumentHtml(input: FormalReportDocumentInput):
     .map((row) => {
       const cells = columns
         .map((col, i) => {
-          const cls = i === 0 ? ' class="text-left"' : '';
+          const cls =
+            i === 0 ? ' class="text-left"' : col === notesColumn ? ' class="notes"' : '';
           return `<td${cls}>${esc(String(row[col] ?? ''))}</td>`;
         })
         .join('');
@@ -239,15 +265,64 @@ export function buildFormalReportDocumentHtml(input: FormalReportDocumentInput):
     })
     .join('');
 
-  const tableHtml =
-    columns.length > 0
-      ? `<table class="report-table"><thead><tr>${headCells}</tr></thead><tbody>${bodyRows}</tbody></table>`
+  return `<table class="report-table"><thead><tr>${headCells}</tr></thead><tbody>${bodyRows}</tbody></table>`;
+}
+
+function buildGroupedHtml(groups: ReportGroup[], groupLimit?: number): string {
+  const limited = groupLimit != null ? groups.slice(0, groupLimit) : groups;
+  if (limited.length === 0) {
+    return `<div class="empty-note">No data for this report and school year.</div>`;
+  }
+
+  return limited
+    .map((group) => {
+      const subtitle = group.subtitle?.trim()
+        ? `<p class="report-group-subtitle">${esc(group.subtitle)}</p>`
+        : '';
+      const table =
+        group.columns.length > 0 && group.rows.length > 0
+          ? buildTableHtml(group.columns, group.rows)
+          : `<p class="empty-note" style="padding:12px;margin:0;border:1px solid #111;border-top:none;">No entries.</p>`;
+      return `<section class="report-group">
+        <div class="report-group-header">
+          <p class="report-group-title">${esc(group.title)}</p>
+          ${subtitle}
+        </div>
+        ${table}
+      </section>`;
+    })
+    .join('');
+}
+
+export function buildFormalReportDocumentHtml(input: FormalReportDocumentInput): string {
+  const head = { ...DEFAULT_REPORT_LETTERHEAD, ...input.letterhead };
+  const displayTitle = reportDisplayTitle(input.title);
+  const schoolYear =
+    input.schoolYearLabel?.trim() ||
+    (input.title.includes(' — ') ? input.title.split(' — ').slice(1).join(' — ').trim() : '');
+  const generatedAt = input.generatedAt ?? new Date().toLocaleString();
+  const layout = input.layout ?? 'table';
+  const groups = input.groups ?? [];
+  const columns = input.columns ?? [];
+  const rows = (input.rows ?? []).slice(0, input.rowLimit ?? 500);
+  const isGrouped = layout === 'grouped' && groups.length > 0;
+
+  const tableHtml = isGrouped
+    ? buildGroupedHtml(groups, input.groupLimit)
+    : columns.length > 0
+      ? buildTableHtml(columns, rows)
       : `<div class="empty-note">No data for this report and school year.</div>`;
 
+  const countLabel = isGrouped
+    ? `${groups.length} student(s) · ${input.rows?.length ?? 0} line(s)`
+    : `${rows.length} row(s)`;
+
   const rowNote =
-    input.rowLimit != null && (input.rows?.length ?? 0) > input.rowLimit
+    !isGrouped && input.rowLimit != null && (input.rows?.length ?? 0) > input.rowLimit
       ? `<p class="footnote">Showing first ${input.rowLimit} rows. Export CSV for the full report.</p>`
-      : '';
+      : isGrouped && input.groupLimit != null && groups.length > input.groupLimit
+        ? `<p class="footnote">Showing first ${input.groupLimit} students. Export CSV for the full report.</p>`
+        : '';
 
   const logoHtml = head.schoolLogoUrl
     ? `<img src="${esc(head.schoolLogoUrl)}" alt="School logo" />`
@@ -265,7 +340,7 @@ export function buildFormalReportDocumentHtml(input: FormalReportDocumentInput):
   <div class="toolbar">
     <div>
       <h2>${esc(displayTitle)}</h2>
-      <p>${esc(schoolYear)} · ${rows.length} row(s)</p>
+      <p>${esc(schoolYear)} · ${esc(countLabel)}</p>
     </div>
     <div class="toolbar-actions">
       <button type="button" class="primary" onclick="window.print()">Print / Save PDF</button>

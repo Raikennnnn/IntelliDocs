@@ -73,12 +73,23 @@ function reportResolveSchoolYear(PDO $pdo, string $raw): array
     if (strtolower($raw) === 'all') {
         return ['filter' => '', 'label' => 'All school years'];
     }
-    if ($raw === '' || strtolower($raw) === 'current') {
-        $ctx = rosterEnrollmentContext($pdo);
+    if (strtolower($raw) === 'ongoing') {
+        $sy = trim((string)(getOngoingSchoolYear($pdo) ?? ''));
+        if ($sy === '') {
+            $sy = trim((string)(getEnrollmentSchoolYear($pdo) ?? ''));
+        }
 
         return [
-            'filter' => (string)$ctx['school_year'],
-            'label' => $ctx['school_year'] !== '' ? 'SY ' . $ctx['school_year'] : 'All school years',
+            'filter' => $sy,
+            'label' => $sy !== '' ? 'Ongoing SY ' . $sy : 'All school years',
+        ];
+    }
+    if ($raw === '' || strtolower($raw) === 'current' || strtolower($raw) === 'enrollment') {
+        $sy = trim((string)(getEnrollmentSchoolYear($pdo) ?? ''));
+
+        return [
+            'filter' => $sy,
+            'label' => $sy !== '' ? 'Enrollment intake SY ' . $sy : 'All school years',
         ];
     }
     if (preg_match('/^\d{4}-\d{4}$/', $raw) === 1) {
@@ -158,6 +169,190 @@ function reportSchoolYearClause(string $alias, string $syFilter): array
         'sql' => " AND TRIM(COALESCE({$alias}.school_year, '')) = :report_sy",
         'params' => [':report_sy' => $syFilter],
     ];
+}
+
+function reportDocumentTypeLabel(string $type): string
+{
+    $t = strtolower(trim($type));
+    return match ($t) {
+        'birth_certificate', 'psa' => 'PSA Birth Certificate',
+        'sf9', 'report_card' => 'Grade 10 Report Card (SF9)',
+        'good_moral', 'goodmoral' => 'Good Moral Certificate',
+        'form137', 'sf10' => 'SF10 / Form 137',
+        'id_picture', 'id' => '2x2 Picture',
+        default => $t !== '' ? ucwords(str_replace('_', ' ', $t)) : 'Document',
+    };
+}
+
+/** @return array<string, string> canonical key => short column header */
+function reportAdmissionDocumentColumns(): array
+{
+    return [
+        'psa' => 'PSA',
+        'good_moral' => 'Good Moral',
+        'sf10' => 'SF10',
+        'sf9' => 'SF9',
+        'id_picture' => '2x2',
+    ];
+}
+
+function reportNormalizeDocumentTypeKey(string $type): string
+{
+    $t = strtolower(trim($type));
+    if (in_array($t, ['birth_certificate', 'birthcert', 'psa'], true)) {
+        return 'psa';
+    }
+    if (in_array($t, ['good_moral', 'goodmoral'], true)) {
+        return 'good_moral';
+    }
+    if (in_array($t, ['sf9', 'report_card'], true)) {
+        return 'sf9';
+    }
+    if (in_array($t, ['form137', 'sf10', 'form_137'], true)) {
+        return 'sf10';
+    }
+    if (in_array($t, ['id_picture', 'id'], true)) {
+        return 'id_picture';
+    }
+    if (str_contains($t, 'sf9') || str_contains($t, 'report card')) {
+        return 'sf9';
+    }
+    if (str_contains($t, 'form 137') || str_contains($t, 'form137') || str_contains($t, 'sf10')) {
+        return 'sf10';
+    }
+
+    return $t !== '' ? $t : 'other';
+}
+
+/**
+ * @return array{title: string, layout: string, columns: list<string>, rows: list<array<string, string>>}
+ */
+function reportStudentDocumentScoreTable(string $title, array $rows, array $docColumns, array $extraColumns = []): array
+{
+    $columns = array_merge(['Student', 'Strand'], array_values($docColumns), $extraColumns);
+
+    return [
+        'title' => $title,
+        'layout' => 'table',
+        'columns' => $columns,
+        'rows' => $rows,
+    ];
+}
+
+function reportFormatDocCompletionCell(array $doc): string
+{
+    $score = reportFormatAiScore($doc['ai_score'] ?? null);
+    if ($score !== '—') {
+        return $score;
+    }
+    if (documentRegistrarUiStatus($doc) === 'Verified') {
+        return '✓';
+    }
+    $aiSt = strtolower(trim((string)($doc['ai_status'] ?? '')));
+    if (str_contains($aiSt, 'verified') || in_array($aiSt, ['approved', 'pass'], true)) {
+        return '✓';
+    }
+
+    return '—';
+}
+
+function reportFormatAiScore(mixed $scoreRaw): string
+{
+    if ($scoreRaw === null || $scoreRaw === '') {
+        return '—';
+    }
+    $n = (float)$scoreRaw;
+
+    return $n <= 1 ? (string)round($n * 100) . '%' : (string)round($n) . '%';
+}
+
+function reportExtractDocAnomalies(array $row): string
+{
+    $anomalies = '';
+    if (!empty($row['ai_security_json'])) {
+        $sec = json_decode((string)$row['ai_security_json'], true);
+        if (is_array($sec)) {
+            $issues = [];
+            if (!empty($sec['tamper_signals']) && is_array($sec['tamper_signals'])) {
+                $issues = array_merge($issues, $sec['tamper_signals']);
+            }
+            if (!empty($sec['issues']) && is_array($sec['issues'])) {
+                $issues = array_merge($issues, $sec['issues']);
+            }
+            $anomalies = implode('; ', array_slice(array_unique(array_map('strval', $issues)), 0, 4));
+        }
+    }
+    $aiSt = strtolower(trim((string)($row['ai_status'] ?? '')));
+    if ($anomalies === '' && (str_contains($aiSt, 'tamper') || str_contains($aiSt, 'reject'))) {
+        $anomalies = (string)($row['ai_status'] ?? '');
+    }
+
+    return $anomalies !== '' ? $anomalies : 'None';
+}
+
+/**
+ * @param list<array{title: string, subtitle?: string, columns: list<string>, rows: list<array<string, string>>}> $groups
+ * @return array{title: string, layout: string, groups: list<array>, columns: list<string>, rows: list<array<string, string>>}
+ */
+function reportGroupedPayload(string $title, array $groups, string $studentColumn = 'Student'): array
+{
+    $docColumns = $groups[0]['columns'] ?? [];
+    $flatCols = $docColumns === [] ? [] : array_merge([$studentColumn], $docColumns);
+    $flatRows = [];
+    foreach ($groups as $group) {
+        foreach ($group['rows'] as $row) {
+            $flatRows[] = array_merge([$studentColumn => (string)$group['title']], $row);
+        }
+    }
+
+    return [
+        'title' => $title,
+        'layout' => 'grouped',
+        'groups' => $groups,
+        'columns' => $flatCols,
+        'rows' => $flatRows,
+    ];
+}
+
+/**
+ * @param list<array{title: string, subtitle?: string, columns: list<string>, rows: list<array<string, string>>}> $groups
+ * @param array<string, int> $index
+ */
+function reportStudentGroupMeta(array $row): array
+{
+    $name = reportStudentDisplayName($row);
+    $strand = trim((string)($row['strand'] ?? ''));
+    $sy = trim((string)($row['school_year'] ?? ''));
+    $parts = array_values(array_filter([
+        $strand !== '' ? $strand : null,
+        $sy !== '' ? 'SY ' . $sy : null,
+    ]));
+
+    return [
+        'key' => strtolower($name) . "\0" . strtolower(trim((string)($row['email'] ?? ''))),
+        'title' => $name,
+        'subtitle' => implode(' · ', $parts),
+    ];
+}
+
+/**
+ * @param list<array{title: string, subtitle?: string, columns: list<string>, rows: list<array<string, string>>}> $groups
+ * @param array<string, int> $index
+ */
+function reportEnsureStudentGroup(array &$groups, array &$index, array $row, array $columns): int
+{
+    $meta = reportStudentGroupMeta($row);
+    if (!isset($index[$meta['key']])) {
+        $index[$meta['key']] = count($groups);
+        $groups[] = [
+            'title' => $meta['title'],
+            'subtitle' => $meta['subtitle'],
+            'columns' => $columns,
+            'rows' => [],
+        ];
+    }
+
+    return $index[$meta['key']];
 }
 
 /**
@@ -432,10 +627,12 @@ function reportEnrollmentSummary(PDO $pdo, string $syFilter, string $syLabel): a
  */
 function reportDocumentVerification(PDO $pdo, string $syFilter, string $syLabel): array
 {
-    $columns = ['Student Name', 'Strand', 'Document Type', 'Verification Score', 'AI Status', 'Registrar Status', 'Anomalies', 'School Year'];
+    $title = 'Document Verification Results — ' . $syLabel;
+    $docColumns = reportAdmissionDocumentColumns();
     $rows = [];
+    $index = [];
     if (!tableExists($pdo, 'documents') || !tableExists($pdo, 'enrollments') || !columnExists($pdo, 'documents', 'enrollment_id')) {
-        return ['title' => 'Document Verification Results — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+        return reportStudentDocumentScoreTable($title, $rows, $docColumns);
     }
 
     $sy = reportSchoolYearClause('e', $syFilter);
@@ -443,63 +640,40 @@ function reportDocumentVerification(PDO $pdo, string $syFilter, string $syLabel)
     $selLast = columnExists($pdo, 'users', 'last_name') ? 'u.last_name' : "'' AS last_name";
     $selMiddle = columnExists($pdo, 'users', 'middle_name') ? 'u.middle_name' : "'' AS middle_name";
     $selExt = columnExists($pdo, 'users', 'extension_name') ? 'u.extension_name' : "'' AS extension_name";
-    $selReviewed = columnExists($pdo, 'documents', 'registrar_reviewed') ? 'd.registrar_reviewed' : '0 AS registrar_reviewed';
-    $selDecision = columnExists($pdo, 'documents', 'registrar_doc_decision') ? 'd.registrar_doc_decision' : "'' AS registrar_doc_decision";
     $selType = columnExists($pdo, 'documents', 'type') ? 'd.type' : "'' AS type";
-    $selAi = columnExists($pdo, 'documents', 'ai_status') ? 'd.ai_status' : "'' AS ai_status";
     $selScore = columnExists($pdo, 'documents', 'ai_score') ? 'd.ai_score' : 'NULL AS ai_score';
-    $selSecurity = columnExists($pdo, 'documents', 'ai_security_json') ? 'd.ai_security_json' : 'NULL AS ai_security_json';
 
     $sql = "
-        SELECT {$selType}, {$selAi}, {$selScore}, {$selSecurity}, {$selReviewed}, {$selDecision},
-               e.school_year, e.strand, e.enrollment_steps,
+        SELECT {$selType}, {$selScore},
+               e.strand, e.enrollment_steps,
                u.full_name, u.email, {$selFirst}, {$selMiddle}, {$selLast}, {$selExt}
           FROM documents d
          INNER JOIN enrollments e ON e.id = d.enrollment_id
          INNER JOIN users u ON u.id = e.user_id
          WHERE 1=1 {$sy['sql']}
-         ORDER BY u.full_name ASC, d.id DESC
+         ORDER BY u.full_name ASC, d.id ASC
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($sy['params']);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-        $scoreRaw = $row['ai_score'] ?? null;
-        $scorePct = '';
-        if ($scoreRaw !== null && $scoreRaw !== '') {
-            $n = (float)$scoreRaw;
-            $scorePct = $n <= 1 ? (string)round($n * 100) . '%' : (string)round($n) . '%';
+        $meta = reportStudentGroupMeta($row);
+        if (!isset($index[$meta['key']])) {
+            $index[$meta['key']] = count($rows);
+            $blank = array_fill_keys(array_values($docColumns), '—');
+            $rows[] = array_merge(
+                ['Student' => $meta['title'], 'Strand' => trim((string)($row['strand'] ?? ''))],
+                $blank,
+            );
         }
-        $anomalies = '';
-        if (!empty($row['ai_security_json'])) {
-            $sec = json_decode((string)$row['ai_security_json'], true);
-            if (is_array($sec)) {
-                $issues = [];
-                if (!empty($sec['tamper_signals']) && is_array($sec['tamper_signals'])) {
-                    $issues = array_merge($issues, $sec['tamper_signals']);
-                }
-                if (!empty($sec['issues']) && is_array($sec['issues'])) {
-                    $issues = array_merge($issues, $sec['issues']);
-                }
-                $anomalies = implode('; ', array_slice(array_unique(array_map('strval', $issues)), 0, 5));
-            }
+        $docKey = reportNormalizeDocumentTypeKey((string)($row['type'] ?? ''));
+        if (!isset($docColumns[$docKey])) {
+            continue;
         }
-        $aiSt = strtolower(trim((string)($row['ai_status'] ?? '')));
-        if ($anomalies === '' && (str_contains($aiSt, 'tamper') || str_contains($aiSt, 'reject'))) {
-            $anomalies = (string)($row['ai_status'] ?? '');
-        }
-        $rows[] = [
-            'Student Name' => reportStudentDisplayName($row),
-            'Strand' => (string)($row['strand'] ?? ''),
-            'Document Type' => (string)($row['type'] ?? 'Document'),
-            'Verification Score' => $scorePct !== '' ? $scorePct : '—',
-            'AI Status' => (string)($row['ai_status'] ?? 'pending'),
-            'Registrar Status' => documentRegistrarUiStatus($row),
-            'Anomalies' => $anomalies !== '' ? $anomalies : 'None detected',
-            'School Year' => (string)($row['school_year'] ?? ''),
-        ];
+        $col = $docColumns[$docKey];
+        $rows[$index[$meta['key']]][$col] = reportFormatAiScore($row['ai_score'] ?? null);
     }
 
-    return ['title' => 'Document Verification Results — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+    return reportStudentDocumentScoreTable($title, $rows, $docColumns);
 }
 
 /**
@@ -556,10 +730,11 @@ function reportApprovalRecords(PDO $pdo, string $syFilter, string $syLabel): arr
  */
 function reportRejectionRecords(PDO $pdo, string $syFilter, string $syLabel): array
 {
-    $columns = ['Application ID', 'Student Name', 'Email', 'Strand', 'Rejection Type', 'Details', 'Verification Score', 'School Year', 'Date'];
-    $rows = [];
+    $docColumns = ['Type', 'Details', 'Score', 'Date'];
+    $groups = [];
+    $index = [];
     if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
-        return ['title' => 'Rejection Records — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+        return reportGroupedPayload('Rejection Records — ' . $syLabel, $groups);
     }
 
     $sy = reportSchoolYearClause('e', $syFilter);
@@ -583,16 +758,17 @@ function reportRejectionRecords(PDO $pdo, string $syFilter, string $syLabel): ar
     $stmt = $pdo->prepare($sql);
     $stmt->execute($sy['params']);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-        $id = (int)$row['id'];
-        $rows[] = [
-            'Application ID' => 'APP-' . date('Y') . '-' . str_pad((string)$id, 3, '0', STR_PAD_LEFT),
-            'Student Name' => reportStudentDisplayName($row),
-            'Email' => (string)($row['email'] ?? ''),
-            'Strand' => (string)($row['strand'] ?? ''),
-            'Rejection Type' => 'Application',
+        $gi = reportEnsureStudentGroup($groups, $index, $row, $docColumns);
+        $email = trim((string)($row['email'] ?? ''));
+        if ($email !== '' && ($groups[$gi]['subtitle'] ?? '') === '') {
+            $groups[$gi]['subtitle'] = $email;
+        } elseif ($email !== '' && !str_contains((string)$groups[$gi]['subtitle'], $email)) {
+            $groups[$gi]['subtitle'] = trim((string)$groups[$gi]['subtitle'] . ' · ' . $email);
+        }
+        $groups[$gi]['rows'][] = [
+            'Type' => 'Application',
             'Details' => (string)($row['registrar_remarks'] ?? ''),
-            'Verification Score' => '—',
-            'School Year' => (string)($row['school_year'] ?? ''),
+            'Score' => '—',
             'Date' => (string)($row['updated_at'] ?? ''),
         ];
     }
@@ -624,34 +800,23 @@ function reportRejectionRecords(PDO $pdo, string $syFilter, string $syLabel): ar
         $docStmt = $pdo->prepare($docSql);
         $docStmt->execute($sy['params']);
         foreach ($docStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-            $eid = (int)($row['enrollment_id'] ?? 0);
-            $scoreRaw = $row['ai_score'] ?? null;
-            $scorePct = '—';
-            if ($scoreRaw !== null && $scoreRaw !== '') {
-                $n = (float)$scoreRaw;
-                $scorePct = $n <= 1 ? (string)round($n * 100) . '%' : (string)round($n) . '%';
-            }
+            $gi = reportEnsureStudentGroup($groups, $index, $row, $docColumns);
             $decision = strtolower(trim((string)($row['registrar_doc_decision'] ?? '')));
             $type = $decision === 'reject' ? 'Document (Registrar)' : 'Document (AI)';
             $details = trim((string)($row['registrar_doc_remarks'] ?? ''));
             if ($details === '') {
                 $details = (string)($row['ai_status'] ?? '');
             }
-            $rows[] = [
-                'Application ID' => 'APP-' . date('Y') . '-' . str_pad((string)$eid, 3, '0', STR_PAD_LEFT),
-                'Student Name' => reportStudentDisplayName($row),
-                'Email' => (string)($row['email'] ?? ''),
-                'Strand' => (string)($row['strand'] ?? ''),
-                'Rejection Type' => $type,
+            $groups[$gi]['rows'][] = [
+                'Type' => $type . ' — ' . reportDocumentTypeLabel((string)($row['type'] ?? '')),
                 'Details' => $details,
-                'Verification Score' => $scorePct,
-                'School Year' => (string)($row['school_year'] ?? ''),
+                'Score' => reportFormatAiScore($row['ai_score'] ?? null),
                 'Date' => (string)($row['doc_decided_at'] ?? ''),
             ];
         }
     }
 
-    return ['title' => 'Rejection Records — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+    return reportGroupedPayload('Rejection Records — ' . $syLabel, $groups);
 }
 
 /**
@@ -659,8 +824,10 @@ function reportRejectionRecords(PDO $pdo, string $syFilter, string $syLabel): ar
  */
 function reportAnomalySummary(PDO $pdo, string $syFilter, string $syLabel): array
 {
-    $columns = ['Source', 'Student / Actor', 'Document / Target', 'Anomaly', 'Verification Score', 'Status', 'Date'];
+    $title = 'Anomaly Summary — ' . $syLabel;
+    $docColumns = reportAdmissionDocumentColumns();
     $rows = [];
+    $index = [];
 
     if (tableExists($pdo, 'documents') && tableExists($pdo, 'enrollments') && columnExists($pdo, 'documents', 'enrollment_id')) {
         $sy = reportSchoolYearClause('e', $syFilter);
@@ -669,14 +836,13 @@ function reportAnomalySummary(PDO $pdo, string $syFilter, string $syLabel): arra
         $selMiddle = columnExists($pdo, 'users', 'middle_name') ? 'u.middle_name' : "'' AS middle_name";
         $selExt = columnExists($pdo, 'users', 'extension_name') ? 'u.extension_name' : "'' AS extension_name";
         $selType = columnExists($pdo, 'documents', 'type') ? 'd.type' : "'' AS type";
-        $selAi = columnExists($pdo, 'documents', 'ai_status') ? 'd.ai_status' : "'' AS ai_status";
         $selScore = columnExists($pdo, 'documents', 'ai_score') ? 'd.ai_score' : 'NULL AS ai_score';
         $selSecurity = columnExists($pdo, 'documents', 'ai_security_json') ? 'd.ai_security_json' : 'NULL AS ai_security_json';
-        $selUploaded = columnExists($pdo, 'documents', 'uploaded_at') ? 'd.uploaded_at' : 'NULL AS uploaded_at';
 
         $sql = "
-            SELECT {$selType}, {$selAi}, {$selScore}, {$selSecurity}, {$selUploaded},
-                   e.enrollment_steps, u.full_name, u.email, {$selFirst}, {$selMiddle}, {$selLast}, {$selExt}
+            SELECT {$selType}, {$selScore}, {$selSecurity},
+                   e.enrollment_steps, e.strand,
+                   u.full_name, u.email, {$selFirst}, {$selMiddle}, {$selLast}, {$selExt}
               FROM documents d
              INNER JOIN enrollments e ON e.id = d.enrollment_id
              INNER JOIN users u ON u.id = e.user_id
@@ -686,77 +852,30 @@ function reportAnomalySummary(PDO $pdo, string $syFilter, string $syLabel): arra
                 OR (d.ai_security_json IS NOT NULL AND TRIM(d.ai_security_json) <> '' AND d.ai_security_json <> 'null')
              )
              {$sy['sql']}
-             ORDER BY d.uploaded_at DESC, d.id DESC
+             ORDER BY u.full_name ASC, d.id ASC
         ";
         $stmt = $pdo->prepare($sql);
         $stmt->execute($sy['params']);
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-            $anomaly = (string)($row['ai_status'] ?? 'Anomaly detected');
-            if (!empty($row['ai_security_json'])) {
-                $sec = json_decode((string)$row['ai_security_json'], true);
-                if (is_array($sec)) {
-                    $parts = [];
-                    foreach (['issues', 'tamper_signals'] as $key) {
-                        if (!empty($sec[$key]) && is_array($sec[$key])) {
-                            $parts = array_merge($parts, array_map('strval', $sec[$key]));
-                        }
-                    }
-                    if ($parts !== []) {
-                        $anomaly = implode('; ', array_slice(array_unique($parts), 0, 3));
-                    }
-                }
+            $meta = reportStudentGroupMeta($row);
+            if (!isset($index[$meta['key']])) {
+                $blank = array_fill_keys(array_values($docColumns), '—');
+                $index[$meta['key']] = count($rows);
+                $rows[] = array_merge(
+                    ['Student' => $meta['title'], 'Strand' => trim((string)($row['strand'] ?? ''))],
+                    $blank,
+                );
             }
-            $scoreRaw = $row['ai_score'] ?? null;
-            $scorePct = '—';
-            if ($scoreRaw !== null && $scoreRaw !== '') {
-                $n = (float)$scoreRaw;
-                $scorePct = $n <= 1 ? (string)round($n * 100) . '%' : (string)round($n) . '%';
+            $docKey = reportNormalizeDocumentTypeKey((string)($row['type'] ?? ''));
+            if (!isset($docColumns[$docKey])) {
+                continue;
             }
-            $rows[] = [
-                'Source' => 'AI Verification',
-                'Student / Actor' => reportStudentDisplayName($row),
-                'Document / Target' => (string)($row['type'] ?? 'Document'),
-                'Anomaly' => $anomaly,
-                'Verification Score' => $scorePct,
-                'Status' => (string)($row['ai_status'] ?? ''),
-                'Date' => (string)($row['uploaded_at'] ?? ''),
-            ];
+            $col = $docColumns[$docKey];
+            $rows[$index[$meta['key']]][$col] = reportFormatAiScore($row['ai_score'] ?? null);
         }
     }
 
-    if (tableExists($pdo, 'activity_logs')) {
-        $logSql = "
-            SELECT al.action, al.status, al.target_type, al.target_id, al.details_json, al.created_at,
-                   u.full_name, u.email
-              FROM activity_logs al
-              LEFT JOIN users u ON u.id = al.actor_user_id
-             WHERE al.action LIKE 'anomaly_%'
-             ORDER BY al.created_at DESC
-             LIMIT 200
-        ";
-        foreach ($pdo->query($logSql)->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-            $details = [];
-            if (!empty($row['details_json'])) {
-                $decoded = json_decode((string)$row['details_json'], true);
-                if (is_array($decoded)) {
-                    $details = $decoded;
-                }
-            }
-            $rows[] = [
-                'Source' => 'Security Monitor',
-                'Student / Actor' => trim((string)($row['full_name'] ?? '')) !== ''
-                    ? (string)$row['full_name']
-                    : (string)($row['email'] ?? 'System'),
-                'Document / Target' => trim((string)($row['target_type'] ?? '')) . ' #' . trim((string)($row['target_id'] ?? '')),
-                'Anomaly' => str_replace('_', ' ', (string)($row['action'] ?? 'anomaly')),
-                'Verification Score' => '—',
-                'Status' => (string)($row['status'] ?? ''),
-                'Date' => (string)($row['created_at'] ?? ''),
-            ];
-        }
-    }
-
-    return ['title' => 'Anomaly Summary — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+    return reportStudentDocumentScoreTable($title, $rows, $docColumns);
 }
 
 /**
@@ -764,10 +883,11 @@ function reportAnomalySummary(PDO $pdo, string $syFilter, string $syLabel): arra
  */
 function reportSectionMasterlist(PDO $pdo, string $syFilter, string $syLabel): array
 {
-    $columns = ['Section', 'Strand', 'Shift', 'Grade Level', 'Student Name', 'Email', 'Gender', 'School Year'];
-    $rows = [];
+    $memberColumns = ['Student Name', 'Email', 'Gender'];
+    $groups = [];
+    $index = [];
     if (!tableExists($pdo, 'students') || !tableExists($pdo, 'users') || !tableExists($pdo, 'enrollments')) {
-        return ['title' => 'Section Masterlist — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+        return reportGroupedPayload('Section Masterlist — ' . $syLabel, $groups, 'Section');
     }
 
     $rosterSy = $syFilter !== '' ? $syFilter : rosterEnrollmentContext($pdo)['school_year'];
@@ -807,19 +927,36 @@ function reportSectionMasterlist(PDO $pdo, string $syFilter, string $syLabel): a
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-        $rows[] = [
-            'Section' => (string)($row['section_name'] ?? ''),
-            'Strand' => (string)($row['strand_name'] ?? ''),
-            'Shift' => ucfirst((string)($row['shift_name'] ?? 'morning')),
-            'Grade Level' => (string)($row['grade_level'] ?? ''),
+        $section = (string)($row['section_name'] ?? '');
+        $strand = (string)($row['strand_name'] ?? '');
+        $shift = ucfirst((string)($row['shift_name'] ?? 'morning'));
+        $grade = (string)($row['grade_level'] ?? '');
+        $sy = trim((string)($row['school_year'] ?? ''));
+        $key = strtolower($section) . "\0" . strtolower($strand) . "\0" . strtolower($shift);
+        if (!isset($index[$key])) {
+            $subtitleParts = array_values(array_filter([
+                $strand !== '' ? $strand : null,
+                'Grade ' . $grade,
+                $shift . ' shift',
+                $sy !== '' ? 'SY ' . $sy : null,
+            ]));
+            $index[$key] = count($groups);
+            $groups[] = [
+                'title' => 'Section ' . $section,
+                'subtitle' => implode(' · ', $subtitleParts),
+                'columns' => $memberColumns,
+                'rows' => [],
+            ];
+        }
+        $gi = $index[$key];
+        $groups[$gi]['rows'][] = [
             'Student Name' => reportStudentDisplayName($row),
             'Email' => (string)($row['email'] ?? ''),
             'Gender' => (string)($row['gender'] ?? ''),
-            'School Year' => (string)($row['school_year'] ?? ''),
         ];
     }
 
-    return ['title' => 'Section Masterlist — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+    return reportGroupedPayload('Section Masterlist — ' . $syLabel, $groups, 'Section');
 }
 
 /**
@@ -857,34 +994,21 @@ function reportQuotaSummary(PDO $pdo, string $syFilter, string $syLabel): array
  */
 function reportDocumentCompletion(PDO $pdo, string $syFilter, string $syLabel): array
 {
-    $columns = ['Student Name', 'Strand', 'Documents Verified', 'Documents Total', 'Completion %', 'Physical Docs Complete', 'School Year'];
+    $title = 'Document Completion Report — ' . $syLabel;
+    $docColumns = reportAdmissionDocumentColumns();
     $rows = [];
+    $index = [];
     if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
-        return ['title' => 'Document Completion Report — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+        return reportStudentDocumentScoreTable($title, $rows, $docColumns, ['Physical']);
     }
 
     $sy = reportSchoolYearClause('e', $syFilter);
     $hasDocs = tableExists($pdo, 'documents') && columnExists($pdo, 'documents', 'enrollment_id');
-    $hasReviewed = $hasDocs && columnExists($pdo, 'documents', 'registrar_reviewed');
-    $hasAi = $hasDocs && columnExists($pdo, 'documents', 'ai_status');
     $hasPhysical = columnExists($pdo, 'enrollments', 'physical_docs_completed_at');
     $selFirst = columnExists($pdo, 'users', 'first_name') ? 'u.first_name' : "'' AS first_name";
     $selLast = columnExists($pdo, 'users', 'last_name') ? 'u.last_name' : "'' AS last_name";
     $selMiddle = columnExists($pdo, 'users', 'middle_name') ? 'u.middle_name' : "'' AS middle_name";
     $selExt = columnExists($pdo, 'users', 'extension_name') ? 'u.extension_name' : "'' AS extension_name";
-
-    $verifiedExpr = '0';
-    if ($hasReviewed && $hasAi) {
-        $verifiedExpr = "SUM(CASE WHEN d.registrar_reviewed = 1
-            OR LOWER(TRIM(d.ai_status)) IN ('verified', 'approved', 'pass')
-            OR LOWER(TRIM(d.ai_status)) LIKE '%verify%' THEN 1 ELSE 0 END)";
-    } elseif ($hasReviewed) {
-        $verifiedExpr = 'SUM(CASE WHEN d.registrar_reviewed = 1 THEN 1 ELSE 0 END)';
-    } elseif ($hasAi) {
-        $verifiedExpr = "SUM(CASE WHEN LOWER(TRIM(d.ai_status)) IN ('verified', 'approved', 'pass')
-            OR LOWER(TRIM(d.ai_status)) LIKE '%verify%' THEN 1 ELSE 0 END)";
-    }
-
     $physicalSel = $hasPhysical ? 'e.physical_docs_completed_at' : 'NULL AS physical_docs_completed_at';
 
     $sql = "
@@ -898,34 +1022,48 @@ function reportDocumentCompletion(PDO $pdo, string $syFilter, string $syLabel): 
     ";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($sy['params']);
-    $countStmt = null;
+
+    $docListStmt = null;
     if ($hasDocs) {
-        $countSql = "SELECT COUNT(*) AS total_docs, {$verifiedExpr} AS verified_docs
-                       FROM documents d WHERE d.enrollment_id = :eid";
-        $countStmt = $pdo->prepare($countSql);
-    }
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-        $total = 0;
-        $verified = 0;
-        if ($countStmt !== null) {
-            $countStmt->execute([':eid' => (int)$row['id']]);
-            $c = $countStmt->fetch(PDO::FETCH_ASSOC) ?: [];
-            $total = (int)($c['total_docs'] ?? 0);
-            $verified = (int)($c['verified_docs'] ?? 0);
-        }
-        $pct = $total > 0 ? round(($verified / $total) * 100, 1) : 0.0;
-        $rows[] = [
-            'Student Name' => reportStudentDisplayName($row),
-            'Strand' => (string)($row['strand'] ?? ''),
-            'Documents Verified' => (string)$verified,
-            'Documents Total' => (string)$total,
-            'Completion %' => $pct . '%',
-            'Physical Docs Complete' => !empty($row['physical_docs_completed_at']) ? 'Yes' : 'No',
-            'School Year' => (string)($row['school_year'] ?? ''),
-        ];
+        $selType = columnExists($pdo, 'documents', 'type') ? 'd.type' : "'' AS type";
+        $selAi = columnExists($pdo, 'documents', 'ai_status') ? 'd.ai_status' : "'' AS ai_status";
+        $selScore = columnExists($pdo, 'documents', 'ai_score') ? 'd.ai_score' : 'NULL AS ai_score';
+        $selReviewed = columnExists($pdo, 'documents', 'registrar_reviewed') ? 'd.registrar_reviewed' : '0 AS registrar_reviewed';
+        $selDecision = columnExists($pdo, 'documents', 'registrar_doc_decision') ? 'd.registrar_doc_decision' : "'' AS registrar_doc_decision";
+        $docListStmt = $pdo->prepare("
+            SELECT {$selType}, {$selAi}, {$selScore}, {$selReviewed}, {$selDecision}
+              FROM documents d
+             WHERE d.enrollment_id = :eid
+             ORDER BY d.id ASC
+        ");
     }
 
-    return ['title' => 'Document Completion Report — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+        $meta = reportStudentGroupMeta($row);
+        if (!isset($index[$meta['key']])) {
+            $blank = array_fill_keys(array_values($docColumns), '—');
+            $index[$meta['key']] = count($rows);
+            $rows[] = array_merge(
+                ['Student' => $meta['title'], 'Strand' => trim((string)($row['strand'] ?? ''))],
+                $blank,
+                ['Physical' => !empty($row['physical_docs_completed_at']) ? 'Yes' : 'No'],
+            );
+        }
+        if ($docListStmt === null) {
+            continue;
+        }
+        $docListStmt->execute([':eid' => (int)$row['id']]);
+        foreach ($docListStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $doc) {
+            $docKey = reportNormalizeDocumentTypeKey((string)($doc['type'] ?? ''));
+            if (!isset($docColumns[$docKey])) {
+                continue;
+            }
+            $col = $docColumns[$docKey];
+            $rows[$index[$meta['key']]][$col] = reportFormatDocCompletionCell($doc);
+        }
+    }
+
+    return reportStudentDocumentScoreTable($title, $rows, $docColumns, ['Physical']);
 }
 
 $reportType = strtolower(trim((string)($_GET['report'] ?? 'monitoring_summary')));
@@ -964,8 +1102,11 @@ try {
     $builder = $builders[$reportType];
     $payload = $builder($pdo, $syFilter, $syLabel);
     $title = (string)($payload['title'] ?? 'Report');
+    $layout = (string)($payload['layout'] ?? 'table');
+    $groups = is_array($payload['groups'] ?? null) ? $payload['groups'] : [];
     $columns = is_array($payload['columns'] ?? null) ? $payload['columns'] : [];
     $rows = is_array($payload['rows'] ?? null) ? $payload['rows'] : [];
+    $groupCount = count($groups);
 
     if ($format === 'csv') {
         $safeName = preg_replace('/[^a-z0-9_-]+/i', '_', $reportType) ?: 'report';
@@ -979,22 +1120,29 @@ try {
         'format' => $format,
         'school_year' => $syFilter !== '' ? $syFilter : 'all',
         'rows' => count($rows),
+        'groups' => $groupCount,
     ]);
 
     $response = [
         'success' => true,
         'report' => $reportType,
         'title' => $title,
+        'layout' => $layout,
         'schoolYearLabel' => $syLabel,
         'columns' => $columns,
         'rows' => $rows,
         'rowCount' => count($rows),
+        'groupCount' => $groupCount,
         'generatedAt' => date('c'),
         'filters' => [
             'school_year_options' => reportSchoolYearOptions($pdo),
             'enrollment_school_year_current' => getEnrollmentSchoolYear($pdo),
+            'ongoing_school_year_current' => getOngoingSchoolYear($pdo),
         ],
     ];
+    if ($groups !== []) {
+        $response['groups'] = $groups;
+    }
     if (isset($payload['summary'])) {
         $response['summary'] = $payload['summary'];
     }

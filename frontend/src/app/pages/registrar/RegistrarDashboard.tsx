@@ -229,7 +229,16 @@ export function RegistrarDashboard() {
             );
           })}
           {!loading && strands.length === 0 && (
-            <div className="text-gray-500 text-sm">No strand data available yet.</div>
+            <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 text-sm text-gray-600">
+              No strand data for the current school years yet.
+              {totalApplications === 0 && totalEnrolled === 0 ? (
+                <span>
+                  {' '}
+                  Enrolled students appear under the <strong>ongoing</strong> school year; new applications
+                  appear under the <strong>enrollment</strong> year (set in Admin → School Years).
+                </span>
+              ) : null}
+            </div>
           )}
         </div>
       </div>

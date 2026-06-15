@@ -60,6 +60,9 @@ $stmt = $pdo->prepare('
            d.file_path,
            d.enrollment_id,
            d.type AS document_type,
+           d.ai_status,
+           d.ai_score,
+           d.ai_security_json,
            COALESCE(NULLIF(d.original_name, \'\'), NULLIF(d.filename, \'\'), CONCAT(\'document_\', d.id)) AS download_name,
            COALESCE(NULLIF(d.mime_type, \'\'), \'\') AS mime_type,
            e.enrollment_steps,
@@ -171,6 +174,48 @@ if ($fullPath === false || !$underUploads || !is_file($fullPath)) {
     exit;
 }
 
+$fileFingerprint = documentAiFileFingerprint($fullPath);
+$rerunRaw = strtolower(trim((string)($_GET['rerun'] ?? $_GET['force'] ?? '')));
+$forceRerun = in_array($rerunRaw, ['1', 'true', 'yes'], true);
+$storedEnvelope = parseStoredAiVerifyEnvelope(
+    isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null
+);
+$hasStored = documentHasStoredAiVerification(
+    isset($row['ai_status']) ? (string)$row['ai_status'] : null,
+    isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null
+);
+$hasScoreOnly = !$hasStored && documentHasRecordedAiScore(
+    isset($row['ai_status']) ? (string)$row['ai_status'] : null,
+    $row['ai_score'] ?? null
+);
+
+if (($hasStored && is_array($storedEnvelope)) || $hasScoreOnly) {
+    if ($hasScoreOnly) {
+        $cached = reconstructAiVerifyFromScoreOnly(
+            (string)($row['ai_status'] ?? ''),
+            (float)($row['ai_score'] ?? 0)
+        );
+        echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
+        exit;
+    }
+
+    $storedFp = trim((string)($storedEnvelope['file_fingerprint'] ?? ''));
+    $fileUnchanged = $storedFp === '' || $storedFp === $fileFingerprint;
+    if (!$forceRerun || $fileUnchanged) {
+        $scorePct = null;
+        if (isset($row['ai_score']) && $row['ai_score'] !== '' && is_numeric($row['ai_score'])) {
+            $scorePct = (float)$row['ai_score'];
+        }
+        $cached = reconstructAiVerifyApiResult(
+            $storedEnvelope,
+            $scorePct,
+            (string)($row['ai_status'] ?? '')
+        );
+        echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
+        exit;
+    }
+}
+
 if (!function_exists('curl_init')) {
     http_response_code(500);
     echo json_encode(['success' => false, 'error' => 'PHP cURL extension is required for AI verification']);
@@ -234,7 +279,7 @@ if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
 $decoded = $aiRes['body'];
 
 try {
-    persistDocumentAiResult($pdo, $docId, $decoded);
+    persistDocumentAiResult($pdo, $docId, $decoded, $fileFingerprint !== '' ? $fileFingerprint : null);
 } catch (Throwable $e) {
     // Return AI result even if DB persist fails.
 }

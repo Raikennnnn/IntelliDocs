@@ -73,12 +73,8 @@ function announcementImageUrl(?string $id, ?string $imagePath): ?string
         return null;
     }
 
-    $announcementId = trim((string)($id ?? ''));
-    if ($announcementId !== '') {
-        $base = announcementPublicBasePath();
-        return ($base !== '' ? $base : '') . '/api/announcement-image?id=' . rawurlencode($announcementId);
-    }
-
+    // Serve files directly from /uploads/announcements/ (static). More reliable than
+    // /api/announcement-image in Vite dev and on droplet when APP_PUBLIC_PATH differs.
     $base = announcementPublicBasePath();
     return ($base !== '' ? $base . '/' : '/') . ltrim($relative, '/');
 }

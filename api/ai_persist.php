@@ -46,9 +46,9 @@ function persistDocumentAiIntegrityFailed(?array $sec): bool
  *
  * @return array<string, mixed>
  */
-function buildPersistedAiVerifyEnvelope(array $result): array
+function buildPersistedAiVerifyEnvelope(array $result, ?string $fileFingerprint = null): array
 {
-    return [
+    $envelope = [
         'v' => AI_VERIFY_PAYLOAD_VERSION,
         'security_levels' => $result['security_levels'] ?? null,
         'field_checks' => is_array($result['field_checks'] ?? null) ? $result['field_checks'] : [],
@@ -70,6 +70,109 @@ function buildPersistedAiVerifyEnvelope(array $result): array
         'image_height' => $result['image_height'] ?? null,
         'requested_doc_type' => $result['requested_doc_type'] ?? null,
         'resolved_doc_type' => $result['resolved_doc_type'] ?? null,
+    ];
+    if ($fileFingerprint !== null && trim($fileFingerprint) !== '') {
+        $envelope['file_fingerprint'] = trim($fileFingerprint);
+    }
+
+    return $envelope;
+}
+
+function documentAiFileFingerprint(string $fullPath): string
+{
+    if (!is_file($fullPath)) {
+        return '';
+    }
+    $hash = @hash_file('sha256', $fullPath);
+    if (is_string($hash) && $hash !== '') {
+        return 'sha256:' . $hash;
+    }
+
+    return 'mtime:' . (string)@filemtime($fullPath) . ':' . (string)@filesize($fullPath);
+}
+
+function documentHasStoredAiVerification(?string $aiStatus, ?string $aiSecurityJson): bool
+{
+    $st = strtolower(trim((string)$aiStatus));
+    if ($st === '' || $st === 'pending') {
+        return false;
+    }
+
+    return parseStoredAiVerifyEnvelope($aiSecurityJson) !== null;
+}
+
+function documentHasRecordedAiScore(?string $aiStatus, mixed $aiScore): bool
+{
+    $st = strtolower(trim((string)$aiStatus));
+    if ($st === '' || $st === 'pending') {
+        return false;
+    }
+
+    return $aiScore !== null && $aiScore !== '' && is_numeric($aiScore);
+}
+
+/**
+ * Minimal cached payload when only ai_status + ai_score exist (legacy rows).
+ *
+ * @return array<string, mixed>
+ */
+function reconstructAiVerifyFromScoreOnly(string $aiStatus, float $aiScorePct): array
+{
+    $confidence = max(0.0, min(1.0, $aiScorePct / 100.0));
+    $verified = str_contains(strtolower($aiStatus), 'verify');
+
+    return [
+        'v' => AI_VERIFY_PAYLOAD_VERSION,
+        'status' => $verified ? 'verified' : 'failed',
+        'confidence' => $confidence,
+        'security_levels' => null,
+        'field_checks' => [],
+        'doc_checks' => [],
+        'issues' => [],
+        '_cached' => true,
+    ];
+}
+
+/**
+ * Rebuild the API verify payload from a persisted envelope (no AI call).
+ *
+ * @return array<string, mixed>
+ */
+function reconstructAiVerifyApiResult(array $envelope, ?float $aiScorePct, string $aiStatus): array
+{
+    $confidence = $envelope['confidence'] ?? null;
+    if ($confidence === null && $aiScorePct !== null) {
+        $confidence = max(0.0, min(1.0, (float)$aiScorePct / 100.0));
+    }
+    $statusRaw = strtolower(trim((string)($envelope['status'] ?? '')));
+    if ($statusRaw === '') {
+        $aiSt = strtolower(trim($aiStatus));
+        $statusRaw = str_contains($aiSt, 'verify') ? 'verified' : 'failed';
+    }
+
+    return [
+        'v' => (int)($envelope['v'] ?? AI_VERIFY_PAYLOAD_VERSION),
+        'status' => $statusRaw === 'verified' ? 'verified' : 'failed',
+        'confidence' => $confidence,
+        'match_score' => $envelope['match_score'] ?? null,
+        'ocr_confidence' => $envelope['ocr_confidence'] ?? null,
+        'tamper_score' => $envelope['tamper_score'] ?? null,
+        'tamper_cells' => $envelope['tamper_cells'] ?? [],
+        'tamper_fields' => $envelope['tamper_fields'] ?? [],
+        'tamper_signals' => $envelope['tamper_signals'] ?? [],
+        'tamper_applicable' => $envelope['tamper_applicable'] ?? null,
+        'synthetic_score' => $envelope['synthetic_score'] ?? null,
+        'synthetic_signals' => $envelope['synthetic_signals'] ?? [],
+        'synthetic_applicable' => $envelope['synthetic_applicable'] ?? null,
+        'security_levels' => $envelope['security_levels'] ?? null,
+        'field_checks' => is_array($envelope['field_checks'] ?? null) ? $envelope['field_checks'] : [],
+        'doc_checks' => is_array($envelope['doc_checks'] ?? null) ? $envelope['doc_checks'] : [],
+        'issues' => is_array($envelope['issues'] ?? null) ? $envelope['issues'] : [],
+        'image_width' => $envelope['image_width'] ?? null,
+        'image_height' => $envelope['image_height'] ?? null,
+        'requested_doc_type' => $envelope['requested_doc_type'] ?? null,
+        'resolved_doc_type' => $envelope['resolved_doc_type'] ?? null,
+        '_cached' => true,
     ];
 }
 
@@ -101,7 +204,7 @@ function parseStoredAiVerifyEnvelope(?string $json): ?array
     return null;
 }
 
-function persistDocumentAiResult(PDO $pdo, int $docId, array $result): void
+function persistDocumentAiResult(PDO $pdo, int $docId, array $result, ?string $fileFingerprint = null): void
 {
     if ($docId <= 0 || !aiPersistColumnExists($pdo, 'ai_status')) {
         return;
@@ -125,7 +228,7 @@ function persistDocumentAiResult(PDO $pdo, int $docId, array $result): void
     $confidence = isset($result['confidence']) ? (float)$result['confidence'] : null;
     $scorePct = $confidence !== null ? round(max(0.0, min(100.0, $confidence * 100)), 1) : null;
 
-    $envelope = buildPersistedAiVerifyEnvelope($result);
+    $envelope = buildPersistedAiVerifyEnvelope($result, $fileFingerprint);
     $securityJson = null;
     $encoded = json_encode($envelope, JSON_UNESCAPED_UNICODE);
     if ($encoded !== false) {

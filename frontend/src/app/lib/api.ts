@@ -90,6 +90,22 @@ export function publicAssetUrl(url: string | null | undefined): string | null {
     path = path.slice(XAMPP_PUBLIC_PREFIX.length) || '/';
   }
 
+  // Vite dev proxies /api and /uploads — normalize full XAMPP paths.
+  if (env.DEV) {
+    const uploadsIdx = path.indexOf('/uploads/');
+    if (uploadsIdx >= 0) {
+      const suffix = path.slice(uploadsIdx);
+      if (path.startsWith(`${XAMPP_PUBLIC_PREFIX}/`)) {
+        return `${XAMPP_PUBLIC_PREFIX}${suffix}`;
+      }
+      return suffix;
+    }
+    const apiIdx = path.indexOf('/api/');
+    if (apiIdx >= 0) {
+      return path.slice(apiIdx);
+    }
+  }
+
   if (path.startsWith('/uploads/') || path.startsWith('/api/')) {
     return configuredBase ? `${configuredBase}${path}` : path;
   }

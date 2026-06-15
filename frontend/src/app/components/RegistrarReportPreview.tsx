@@ -9,6 +9,8 @@ import {
   type ReportLetterhead,
 } from '../lib/reportLetterhead';
 import type { RegistrarReportJson } from '../lib/registrarReports';
+import { ReportGroupedSections } from '../lib/reportGroupedLayout';
+import { ReportResponsiveTable } from '../lib/reportResponsiveTable';
 
 type RegistrarReportPreviewProps = {
   open: boolean;
@@ -21,6 +23,7 @@ type RegistrarReportPreviewProps = {
 };
 
 const PREVIEW_ROW_LIMIT = 200;
+const PREVIEW_GROUP_LIMIT = 100;
 
 export function RegistrarReportPreview({
   open,
@@ -52,11 +55,18 @@ export function RegistrarReportPreview({
 
   const title = data?.title ? reportDisplayTitle(data.title) : 'Report preview';
   const schoolYear = data?.schoolYearLabel ?? '';
+  const isGrouped = data?.layout === 'grouped' && (data?.groups?.length ?? 0) > 0;
+  const groups = (data?.groups ?? []).slice(0, PREVIEW_GROUP_LIMIT);
   const columns = data?.columns ?? [];
   const rows = (data?.rows ?? []).slice(0, PREVIEW_ROW_LIMIT);
   const generatedAt = data?.generatedAt
     ? new Date(data.generatedAt).toLocaleString()
     : new Date().toLocaleString();
+  const countLabel = isGrouped
+    ? `${data?.groupCount ?? groups.length} student(s) · ${data?.rowCount ?? rows.length} document line(s)`
+    : data?.rowCount != null
+      ? `${data.rowCount} row(s)`
+      : '';
 
   return (
     <div
@@ -65,33 +75,35 @@ export function RegistrarReportPreview({
       aria-modal="true"
       aria-label={`${title} preview`}
     >
-      <header className="flex shrink-0 items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3 sm:px-6 print:hidden">
-        <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold text-gray-900 sm:text-lg">{title}</h2>
-          <p className="text-xs text-gray-500 sm:text-sm">
-            {schoolYear}
-            {data?.rowCount != null ? ` · ${data.rowCount} row(s)` : ''}
+      <header className="flex shrink-0 flex-col gap-3 border-b border-gray-200 bg-white px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-6 print:hidden">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold leading-tight text-gray-900 sm:text-lg">{title}</h2>
+          <p className="mt-0.5 text-[11px] leading-snug text-gray-500 sm:text-sm">
+            <span className="block sm:inline">{schoolYear}</span>
+            {countLabel ? (
+              <span className="block sm:inline sm:before:content-['·_'] sm:before:mx-1">{countLabel}</span>
+            ) : null}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto">
           <Button
             type="button"
             size="sm"
-            className="bg-[#8B1538] hover:bg-[#6B1028]"
+            className="flex-1 bg-[#8B1538] hover:bg-[#6B1028] sm:flex-none"
             disabled={loading || !data}
             onClick={onPrint}
           >
-            <Printer className="mr-1.5 h-4 w-4" />
+            <Printer className="h-4 w-4 sm:mr-1.5" />
             Print / PDF
           </Button>
-          <Button type="button" size="sm" variant="outline" onClick={onClose}>
-            <X className="mr-1.5 h-4 w-4" />
+          <Button type="button" size="sm" variant="outline" className="flex-1 sm:flex-none" onClick={onClose}>
+            <X className="h-4 w-4 sm:mr-1.5" />
             Close
           </Button>
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-6 sm:px-8 sm:py-8 print:bg-white print:p-0">
+      <div className="min-h-0 flex-1 overflow-auto px-2 py-4 sm:px-6 sm:py-8 print:bg-white print:p-0">
         {loading ? (
           <div className="flex h-full min-h-[40vh] items-center justify-center text-gray-200">
             <Loader2 className="mr-2 h-6 w-6 animate-spin" />
@@ -99,7 +111,7 @@ export function RegistrarReportPreview({
           </div>
         ) : (
           <article
-            className="mx-auto w-full max-w-[8.5in] bg-white px-8 py-10 shadow-2xl sm:px-12 print:max-w-none print:shadow-none print:min-h-0"
+            className="mx-auto w-full max-w-[8.5in] bg-white px-4 py-6 shadow-2xl sm:px-8 sm:py-10 md:px-12 print:max-w-none print:min-h-0 print:shadow-none"
             style={{ fontFamily: '"Times New Roman", Times, serif' }}
           >
             <header className="text-center">
@@ -107,12 +119,12 @@ export function RegistrarReportPreview({
                 <img
                   src={logoSrc}
                   alt="School logo"
-                  className="mx-auto mb-2 h-[72px] w-[72px] object-contain"
+                  className="mx-auto mb-2 h-14 w-14 object-contain sm:h-[72px] sm:w-[72px]"
                 />
               ) : null}
-              <p className="m-0 text-xs leading-snug">{head.republicLine}</p>
-              <p className="mt-1.5 text-[15px] font-bold uppercase tracking-wide">{head.schoolName}</p>
-              <p className="mt-0.5 text-[11px]">{head.schoolAddress}</p>
+              <p className="m-0 text-[10px] leading-snug sm:text-xs">{head.republicLine}</p>
+              <p className="mt-1.5 text-sm font-bold uppercase tracking-wide sm:text-[15px]">{head.schoolName}</p>
+              <p className="mt-0.5 text-[10px] sm:text-[11px]">{head.schoolAddress}</p>
             </header>
 
             <div className="relative my-4 h-0 border-t-2 border-blue-700">
@@ -120,7 +132,7 @@ export function RegistrarReportPreview({
               <span className="absolute -top-[5px] right-0 block h-2 w-2 rotate-45 bg-blue-700" />
             </div>
 
-            <h1 className="text-center text-lg font-bold uppercase tracking-widest text-gray-900">
+            <h1 className="text-center text-base font-bold uppercase tracking-wide text-gray-900 sm:text-lg sm:tracking-widest">
               {title}
             </h1>
             {schoolYear ? (
@@ -130,43 +142,10 @@ export function RegistrarReportPreview({
               Generated {generatedAt}
             </p>
 
-            {columns.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-[11px]">
-                  <thead>
-                    <tr>
-                      {columns.map((col, i) => (
-                        <th
-                          key={col}
-                          className={cn(
-                            'border border-black bg-white px-2 py-1.5 font-bold',
-                            i === 0 ? 'text-left' : 'text-center',
-                          )}
-                        >
-                          {col}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row, idx) => (
-                      <tr key={idx}>
-                        {columns.map((col, i) => (
-                          <td
-                            key={col}
-                            className={cn(
-                              'border border-black px-2 py-1.5 align-middle',
-                              i === 0 ? 'text-left' : 'text-center',
-                            )}
-                          >
-                            {row[col] ?? ''}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            {isGrouped ? (
+              <ReportGroupedSections groups={groups} />
+            ) : columns.length > 0 ? (
+              <ReportResponsiveTable columns={columns} rows={rows} />
             ) : (
               <p className="py-16 text-center text-sm text-gray-500">
                 No data for this report and school year.
@@ -191,7 +170,12 @@ export function RegistrarReportPreview({
               </div>
             </div>
 
-            {data && (data.rowCount ?? 0) > PREVIEW_ROW_LIMIT ? (
+            {data && isGrouped && (data.groupCount ?? 0) > PREVIEW_GROUP_LIMIT ? (
+              <p className="mt-4 text-center font-sans text-[10px] text-gray-500 print:hidden">
+                Showing first {PREVIEW_GROUP_LIMIT} students. Export CSV for the full report.
+              </p>
+            ) : null}
+            {data && !isGrouped && (data.rowCount ?? 0) > PREVIEW_ROW_LIMIT ? (
               <p className="mt-4 text-center font-sans text-[10px] text-gray-500 print:hidden">
                 Showing first {PREVIEW_ROW_LIMIT} rows. Export CSV for the full report.
               </p>

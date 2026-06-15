@@ -129,8 +129,8 @@ const DEFAULT_SUMMARY: MonitoringSummary = {
 };
 
 export function Reports() {
-  const { enrollmentSchoolYearLabel, endedSchoolYears } = useSchoolYear();
-  const [schoolYearFilter, setSchoolYearFilter] = useState<string>('current');
+  const { enrollmentSchoolYearLabel, ongoingSchoolYearLabel, endedSchoolYears } = useSchoolYear();
+  const [schoolYearFilter, setSchoolYearFilter] = useState<string>('ongoing');
   const [schoolYearOptions, setSchoolYearOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -143,6 +143,7 @@ export function Reports() {
 
   const apiSchoolYearParam = useMemo(() => {
     if (schoolYearFilter === 'all') return 'all';
+    if (schoolYearFilter === 'ongoing') return 'ongoing';
     if (schoolYearFilter === 'current') {
       return enrollmentSchoolYearLabel || 'current';
     }
@@ -273,10 +274,14 @@ export function Reports() {
           onChange={(e) => setSchoolYearFilter(e.target.value)}
           className="w-full max-w-md h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
         >
-          {enrollmentSchoolYearLabel && (
-            <option value="current">Active enrollment ({enrollmentSchoolYearLabel})</option>
+          {ongoingSchoolYearLabel && (
+            <option value="ongoing">Ongoing academic year ({ongoingSchoolYearLabel})</option>
           )}
-          {!enrollmentSchoolYearLabel && <option value="current">Active enrollment year</option>}
+          {!ongoingSchoolYearLabel && <option value="ongoing">Ongoing academic year</option>}
+          {enrollmentSchoolYearLabel && (
+            <option value="current">Enrollment intake ({enrollmentSchoolYearLabel})</option>
+          )}
+          {!enrollmentSchoolYearLabel && <option value="current">Enrollment intake year</option>}
           <option value="all">All school years</option>
           {schoolYearOptions.map((y) => (
             <option key={y} value={y}>
@@ -293,7 +298,7 @@ export function Reports() {
         </Alert>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[
           { label: 'Total Enrolled', value: summary.totalEnrolled, color: 'text-blue-600' },
           { label: 'In Review Queue', value: summary.pending + summary.underReview, color: 'text-amber-600' },
@@ -332,11 +337,12 @@ export function Reports() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="w-full sm:w-auto"
                     onClick={() => openPreview(report.id)}
                   >
                     <Eye className="w-4 h-4 mr-1.5" />
@@ -345,7 +351,7 @@ export function Reports() {
                   <Button
                     type="button"
                     size="sm"
-                    className="bg-[#8B1538] hover:bg-[#6B1028]"
+                    className="w-full bg-[#8B1538] hover:bg-[#6B1028] sm:w-auto"
                     disabled={busyPrint}
                     onClick={() => runExport(report.id, 'print', report.title)}
                   >
@@ -359,7 +365,7 @@ export function Reports() {
                   <Button
                     type="button"
                     size="sm"
-                    className="bg-[#2D5016] hover:bg-[#1D3010]"
+                    className="w-full bg-[#2D5016] hover:bg-[#1D3010] sm:w-auto"
                     disabled={busyCsv}
                     onClick={() => runExport(report.id, 'csv', report.title)}
                   >
