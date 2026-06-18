@@ -15,7 +15,7 @@ export function LandingNavbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
-    <nav className="sticky top-0 z-50 h-[64px] bg-[rgba(255,255,255,0.95)] shadow-[0px_4px_6px_0px_rgba(0,0,0,0.1),0px_2px_4px_0px_rgba(0,0,0,0.1)]">
+    <nav className="sticky top-0 z-50 h-[64px] border-b border-gray-100 bg-white/95 shadow-sm backdrop-blur-md">
       <div className="section-container flex h-full max-w-7xl items-center justify-between">
         <Link to="/landing" className="flex items-center gap-3">
           <div className="size-[40px]">
@@ -33,19 +33,24 @@ export function LandingNavbar() {
           </div>
         </Link>
 
-        <div className="hidden items-center gap-8 md:flex">
+        <div className="hidden items-center gap-6 lg:gap-8 md:flex">
           {NAV_LINKS.map((item) => (
             <Link
               key={item.name}
               to={item.href}
-              className="text-[16px] font-medium text-[#364153] transition-colors hover:text-[#8b1538]"
+              className="text-[15px] font-medium text-[#364153] transition-colors hover:text-[#8b1538]"
             >
               {item.name}
             </Link>
           ))}
           <Link to="/login">
-            <div className="flex h-[36px] items-center justify-center rounded-[8px] bg-[#2d5016] px-6 transition-colors hover:bg-[#2d5016]/90">
-              <p className="text-[14px] font-medium text-white">Login</p>
+            <div className="flex h-[36px] items-center justify-center rounded-[8px] border border-[#2d5016] px-5 text-[14px] font-medium text-[#2d5016] transition-colors hover:bg-[#2d5016]/5">
+              Login
+            </div>
+          </Link>
+          <Link to="/registration">
+            <div className="flex h-[36px] items-center justify-center rounded-[8px] bg-[#8b1538] px-5 transition-colors hover:bg-[#7a1231]">
+              <p className="text-[14px] font-medium text-white">Apply Now</p>
             </div>
           </Link>
         </div>
@@ -79,8 +84,13 @@ export function LandingNavbar() {
               </Link>
             ))}
             <Link to="/login" onClick={() => setMobileMenuOpen(false)}>
-              <div className="flex h-[36px] w-full items-center justify-center rounded-[8px] bg-[#2d5016] px-6 hover:bg-[#2d5016]/90">
-                <p className="text-[14px] font-medium text-white">Login</p>
+              <div className="flex h-[40px] w-full items-center justify-center rounded-[8px] border border-[#2d5016] px-6 text-[#2d5016] hover:bg-[#2d5016]/5">
+                <p className="text-[14px] font-medium">Login</p>
+              </div>
+            </Link>
+            <Link to="/registration" onClick={() => setMobileMenuOpen(false)}>
+              <div className="flex h-[40px] w-full items-center justify-center rounded-[8px] bg-[#8b1538] px-6 hover:bg-[#7a1231]">
+                <p className="text-[14px] font-medium text-white">Apply Now</p>
               </div>
             </Link>
           </div>

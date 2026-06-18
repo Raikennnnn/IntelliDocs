@@ -14,7 +14,7 @@ export type LegalDocument = {
 };
 
 const schoolName = 'Nuestra Señora De Guia Academy of Marikina (NSDGA)';
-const portalName = 'IntelliDocs';
+const portalName = 'NSDGA Enrollment Portal';
 
 export const legalDocuments: Record<LegalDocumentId, LegalDocument> = {
   terms: {

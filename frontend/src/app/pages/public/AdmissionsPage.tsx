@@ -2,8 +2,13 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { Footer } from '../../components/Footer';
 import { LandingNavbar } from '../../components/LandingNavbar';
+import { PublicPageHero } from '../../components/public/PublicPageHero';
+import { PublicSectionEyebrow } from '../../components/public/PublicSectionEyebrow';
+import { StrandShowcaseCard } from '../../components/public/StrandShowcaseCard';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
+import { BRAND } from '../../lib/publicBrand';
+import { STRAND_SHOWCASE_ITEMS } from './strandShowcaseData';
 import {
   Dialog,
   DialogContent,
@@ -12,19 +17,10 @@ import {
 } from '../../components/ui/dialog';
 import { cn } from '../../components/ui/utils';
 import {
-  BookOpen,
-  GraduationCap,
   FileText,
   CheckCircle,
   Users,
-  Lightbulb,
-  Briefcase,
-  Wrench,
-  Cpu,
-  Zap,
-  UtensilsCrossed,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 
 import applicationFormSample from '../../assets/admission-samples/application-form.svg';
 import reportCardSf9Sample from '../../assets/admission-samples/report-card-sf9.svg';
@@ -33,51 +29,6 @@ import psaBirthSample from '../../assets/admission-samples/psa-birth-certificate
 import idPictureSample from '../../assets/admission-samples/id-picture-2x2.svg';
 import goodMoralSample from '../../assets/admission-samples/good-moral-certificate.svg';
 import transcriptTorSample from '../../assets/admission-samples/transcript-tor.svg';
-
-const ACADEMIC_STRANDS: { slug: string; Icon: LucideIcon; title: string; description: string }[] = [
-  {
-    slug: 'humss',
-    Icon: BookOpen,
-    title: 'Humanities and Social Sciences (HUMSS)',
-    description:
-      'For students interested in social sciences, education, humanities, liberal arts, and communication arts.',
-  },
-  {
-    slug: 'abm',
-    Icon: Briefcase,
-    title: 'Accountancy, Business, and Management (ABM)',
-    description:
-      'Ideal for students aiming for careers in business, entrepreneurship, finance, and management.',
-  },
-  {
-    slug: 'stem',
-    Icon: Lightbulb,
-    title: 'Science, Technology, Engineering, and Mathematics (STEM)',
-    description:
-      'Designed for students pursuing careers in engineering, medicine, IT, and other science-related fields.',
-  },
-];
-
-const TVL_STRANDS: { slug: string; Icon: LucideIcon; title: string; description: string }[] = [
-  {
-    slug: 'ict',
-    Icon: Cpu,
-    title: 'Information and Communications Technology (ICT)',
-    description: 'Focuses on computer systems, programming, networking, and digital technologies.',
-  },
-  {
-    slug: 'eim',
-    Icon: Zap,
-    title: 'Electrical Installation and Maintenance (EIM)',
-    description: 'Covers electrical wiring, troubleshooting, and maintenance of electrical systems.',
-  },
-  {
-    slug: 'bpp-fbs',
-    Icon: UtensilsCrossed,
-    title: 'Bread and Pastry Production / Food and Beverages Services (BPP/FBS)',
-    description: 'Training in culinary arts, baking, food preparation, and hospitality services.',
-  },
-];
 
 /**
  * Photos can be served two ways:
@@ -192,7 +143,7 @@ export function AdmissionsPage() {
       step: 2,
       title: 'Login to Your Account',
       description: 'Access your student portal using your registered email and password.',
-      to: '/student-login',
+      to: '/login',
     },
     {
       step: 3,
@@ -224,112 +175,45 @@ export function AdmissionsPage() {
   ] as const;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen overflow-x-hidden bg-white">
       <LandingNavbar />
 
-      {/* Hero Section */}
-      <section className="bg-[#8B1538] text-white py-16">
-        <div className="section-container">
-          <h1 className="text-4xl sm:text-5xl font-bold mb-4">Admissions</h1>
-          <p className="text-xl text-gray-200 max-w-3xl">
-            We welcome aspiring students who are committed to academic growth and personal development. 
-            Our Senior High School program offers structured academic tracks designed to prepare learners 
-            for higher education and future careers.
-          </p>
-        </div>
-      </section>
+      <PublicPageHero
+        eyebrow="Senior High School"
+        title="Admissions"
+        description="We welcome students committed to academic growth and values-driven education. Explore our SHS strands, requirements, and online enrollment process."
+      />
 
       {/* Offered Programs */}
-      <section className="py-16">
+      <section className="py-14 sm:py-20" style={{ backgroundColor: BRAND.surface }}>
         <div className="section-container">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
+          <div className="mb-12 text-center">
+            <PublicSectionEyebrow>S.Y. 2025–2026</PublicSectionEyebrow>
+            <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
               Offered Programs
             </h2>
-            <p className="text-gray-600 max-w-2xl mx-auto">
-              Choose the academic strand that aligns with your interests and career goals
-            </p>
-            <p className="text-sm text-gray-500 max-w-2xl mx-auto mt-2">
-              Select a strand below to read an overview, possible careers, and further study options.
+            <p className="mx-auto mt-3 max-w-2xl text-base" style={{ color: BRAND.slate }}>
+              Six senior high strands across Academic and TVL tracks. Select a program to read careers,
+              subjects, and further study options.
             </p>
           </div>
 
-          <div className="mx-auto grid max-w-6xl grid-cols-1 gap-8 lg:grid-cols-2">
-            {/* Academic Track Card */}
-            <Card className="shadow-xl border border-gray-200">
-              <CardContent className="p-8">
-                <div className="flex items-center gap-4 mb-6">
-                  <div className="w-16 h-16 bg-[#2D5016] rounded-lg flex items-center justify-center">
-                    <GraduationCap className="w-8 h-8 text-white" />
-                  </div>
-                  <div>
-                    <h3 className="text-2xl font-bold text-[#2D5016]">Academic Track</h3>
-                  </div>
-                </div>
-                
-                <div className="space-y-4">
-                  {ACADEMIC_STRANDS.map(({ slug, Icon, title, description }) => (
-                    <Link
-                      key={slug}
-                      to={`/admissions/strands/${slug}`}
-                      className="group block rounded-xl border border-transparent p-3 -m-1 transition-colors hover:border-[#2D5016]/25 hover:bg-[#2D5016]/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D5016] focus-visible:ring-offset-2"
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <Icon className="w-5 h-5 text-[#2D5016] shrink-0" aria-hidden />
-                        <h4 className="font-bold text-gray-900 group-hover:text-[#2D5016] transition-colors">
-                          {title}
-                        </h4>
-                      </div>
-                      <p className="text-gray-600 text-sm leading-relaxed pl-7">{description}</p>
-                    </Link>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* TVL Track Card */}
-            <Card className="shadow-xl border border-gray-200">
-              <CardContent className="p-8">
-                <div className="flex items-center gap-4 mb-6">
-                  <div className="w-16 h-16 bg-[#2D5016] rounded-lg flex items-center justify-center">
-                    <Wrench className="w-8 h-8 text-white" />
-                  </div>
-                  <div>
-                    <h3 className="text-2xl font-bold text-[#2D5016]">Technical-Vocational-Livelihood (TVL)</h3>
-                  </div>
-                </div>
-                
-                <div className="space-y-4">
-                  {TVL_STRANDS.map(({ slug, Icon, title, description }) => (
-                    <Link
-                      key={slug}
-                      to={`/admissions/strands/${slug}`}
-                      className="group block rounded-xl border border-transparent p-3 -m-1 transition-colors hover:border-[#2D5016]/25 hover:bg-[#2D5016]/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D5016] focus-visible:ring-offset-2"
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <Icon className="w-5 h-5 text-[#2D5016] shrink-0" aria-hidden />
-                        <h4 className="font-bold text-gray-900 group-hover:text-[#2D5016] transition-colors">
-                          {title}
-                        </h4>
-                      </div>
-                      <p className="text-gray-600 text-sm leading-relaxed pl-7">{description}</p>
-                    </Link>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {STRAND_SHOWCASE_ITEMS.map((strand) => (
+              <StrandShowcaseCard key={strand.slug} strand={strand} />
+            ))}
           </div>
         </div>
       </section>
 
       {/* Admission Requirements */}
-      <section className="py-16 bg-white">
-        <div className="section-container">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
+      <section className="section-container py-14 sm:py-20">
+          <div className="mb-12 text-center">
+            <PublicSectionEyebrow>Documents</PublicSectionEyebrow>
+            <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
               Admission Requirements
             </h2>
-            <p className="text-gray-600">
+            <p className="mt-3" style={{ color: BRAND.slate }}>
               Applicants must submit the following documents
             </p>
           </div>
@@ -370,15 +254,17 @@ export function AdmissionsPage() {
                               type="button"
                               id={`admission-sample-${index}`}
                               onClick={() => setSampleLightboxOpen(true)}
-                              className="group relative overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B1538] focus-visible:ring-offset-2"
+                              className="group relative w-full overflow-hidden rounded-lg border border-gray-200 bg-[#f9fafb] shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2 sm:max-w-[220px]"
                               aria-label={`Enlarge sample image for ${requirement.label}`}
                             >
-                              <AdmissionSampleImage
-                                slug={requirement.slug}
-                                fallbackSrc={requirement.fallbackSrc}
-                                alt=""
-                                imgClassName="mx-auto h-32 w-auto max-w-full object-contain p-2"
-                              />
+                              <div className="flex aspect-[4/3] w-full items-center justify-center p-2">
+                                <AdmissionSampleImage
+                                  slug={requirement.slug}
+                                  fallbackSrc={requirement.fallbackSrc}
+                                  alt=""
+                                  imgClassName="max-h-full max-w-full object-contain"
+                                />
+                              </div>
                               <span className="block border-t border-gray-100 bg-gray-50 px-2 py-1.5 text-center text-xs text-gray-500 group-hover:text-[#8B1538]">
                                 Click to enlarge
                               </span>
@@ -419,88 +305,90 @@ export function AdmissionsPage() {
               ) : null}
             </DialogContent>
           </Dialog>
-        </div>
       </section>
 
       {/* Enrollment Process */}
-      <section className="py-16 bg-gray-50">
+      <section className="py-14 sm:py-20" style={{ backgroundColor: BRAND.surface }}>
         <div className="section-container">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl sm:text-4xl font-bold text-[#8B1538] mb-4">
+          <div className="mb-12 text-center">
+            <PublicSectionEyebrow>Enrollment</PublicSectionEyebrow>
+            <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
               Enrollment Process
             </h2>
-            <p className="text-gray-600 mb-2">
-              Follow these simple steps to complete your enrollment
-            </p>
-            <p className="text-sm text-gray-500">
-              Select a step to open the matching page in the system (you may be asked to log in).
+            <p className="mt-3" style={{ color: BRAND.slate }}>
+              Follow these steps to complete your application online
             </p>
           </div>
 
-          <div className="mx-auto max-w-4xl">
-            <div className="space-y-6">
-              {enrollmentSteps.map((item, index) => (
+          <div className="mx-auto max-w-4xl space-y-4">
+            {enrollmentSteps.map((item) => {
+              const isOdd = item.step % 2 === 1;
+              const accent = isOdd ? BRAND.maroon : BRAND.green;
+              return (
                 <Link
                   key={item.title}
                   to={item.to}
-                  className="group block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D5016] focus-visible:ring-offset-2"
+                  className="group block rounded-[14px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2"
                   aria-label={`${item.title}: ${item.description}`}
                 >
-                  <Card className="shadow-md transition-all group-hover:shadow-lg group-hover:border-[#2D5016]/30 h-full cursor-pointer">
+                  <Card
+                    className="h-full border border-gray-200 shadow-sm transition-all group-hover:shadow-md"
+                    style={{ borderLeftWidth: 4, borderLeftColor: accent }}
+                  >
                     <CardContent className="p-6">
                       <div className="flex items-start gap-4">
-                        <div className="w-12 h-12 bg-[#2D5016] rounded-full flex items-center justify-center text-white font-bold text-lg flex-shrink-0 group-hover:bg-[#244015] transition-colors">
+                        <div
+                          className="flex size-12 shrink-0 items-center justify-center rounded-full text-lg font-bold text-white"
+                          style={{ backgroundColor: accent }}
+                        >
                           {item.step}
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-xl font-bold text-gray-900 mb-2 group-hover:text-[#2D5016] transition-colors">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="mb-2 text-xl font-bold transition-colors group-hover:opacity-90" style={{ color: BRAND.ink }}>
                             {item.title}
                           </h3>
-                          <p className="text-gray-600">{item.description}</p>
+                          <p className="text-sm leading-relaxed sm:text-base" style={{ color: BRAND.slate }}>
+                            {item.description}
+                          </p>
                         </div>
                       </div>
                     </CardContent>
                   </Card>
                 </Link>
-              ))}
-            </div>
+              );
+            })}
           </div>
         </div>
       </section>
 
       {/* Call to Action */}
-      <section className="py-16 bg-[#8B1538] text-white">
-        <div className="mx-auto max-w-4xl px-4 text-center sm:px-6 lg:px-8">
-          <Users className="w-16 h-16 mx-auto mb-6" />
-          <h2 className="text-3xl sm:text-4xl font-bold mb-4">
+      <section className="relative overflow-hidden py-14 sm:py-20" style={{ backgroundColor: BRAND.maroon }}>
+        <div className="pointer-events-none absolute inset-y-0 left-0 w-2 sm:w-3" style={{ backgroundColor: BRAND.green }} aria-hidden />
+        <div className="section-container relative text-center">
+          <Users className="mx-auto mb-6 size-14 text-white/90" />
+          <h2 className="text-3xl font-bold text-white sm:text-4xl">
             Ready to Begin Your Academic Journey?
           </h2>
-          <p className="text-lg mb-8 text-gray-200">
-            Join our community and take the first step towards a brighter future.
+          <p className="mx-auto mt-4 max-w-xl text-lg text-white/90">
+            Join our community and take the first step toward senior high school at NSDGA.
           </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+          <div className="mt-8 flex flex-col justify-center gap-4 sm:flex-row">
             <Link to="/registration">
-              <Button 
-                size="lg" 
-                className="bg-white text-[#8B1538] hover:bg-gray-100 text-lg px-8 py-6"
-              >
-                <FileText className="w-5 h-5 mr-2" />
+              <Button size="lg" className="h-12 bg-white px-8 text-lg hover:bg-gray-100" style={{ color: BRAND.maroon }}>
+                <FileText className="mr-2 size-5" />
                 Create Account
               </Button>
             </Link>
             <Link to="/contact">
-              <Button 
-                size="lg" 
+              <Button
+                size="lg"
                 variant="outline"
-                className="bg-transparent text-white border-white hover:bg-white hover:text-[#8B1538] text-lg px-8 py-6"
+                className="h-12 border-white/70 bg-transparent px-8 text-lg text-white hover:bg-white/10"
               >
-                Contact Admissions Office
+                Contact Registrar
               </Button>
             </Link>
           </div>
-          <p className="text-sm text-gray-300 mt-4">
-            For questions about enrollment, contact our Registrar's Office
-          </p>
         </div>
       </section>
 

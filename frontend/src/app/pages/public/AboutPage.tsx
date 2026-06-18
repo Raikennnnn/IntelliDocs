@@ -1,139 +1,148 @@
+import { Link } from 'react-router';
 import { Footer } from '../../components/Footer';
 import { LandingNavbar } from '../../components/LandingNavbar';
+import { PublicPageHero } from '../../components/public/PublicPageHero';
+import { PublicSectionEyebrow } from '../../components/public/PublicSectionEyebrow';
+import { BRAND } from '../../lib/publicBrand';
 import aboutPageHero from '../../../assets/aboutpage-C52rUoUG.png';
+import schoolLogo from '../../../assets/logo.png';
 import svgPaths from '../../../imports/svg-avo07mw5zs';
+import { Button } from '../../components/ui/button';
 
 export function AboutPage() {
   return (
     <div className="min-h-screen overflow-x-hidden bg-white">
       <LandingNavbar />
 
-      {/* Main Content Container */}
-      <div className="bg-[#f9fafb]">
-        {/* Hero — full viewport below nav */}
-        <section className="relative min-h-[calc(100dvh-4rem)] overflow-hidden">
-          <div className="pointer-events-none absolute inset-0 overflow-hidden">
-            <img
-              alt="About Hero Background"
-              className="absolute h-full min-h-full w-full object-cover"
-              src={aboutPageHero}
-            />
-          </div>
+      <PublicPageHero
+        eyebrow="Our School"
+        title="About Nuestra Señora De Guia Academy"
+        description="A non-sectarian school in Marikina committed to the holistic development of every child — academically, morally, and spiritually."
+        imageSrc={aboutPageHero}
+        imageAlt="NSDGA campus"
+      />
 
-          <div className="absolute inset-0 bg-black/70" aria-hidden />
-
-          <div className="relative mx-auto flex min-h-[calc(100dvh-4rem)] max-w-[1280px] items-center px-8 py-8">
-            {/* Red Background Box with Content */}
-            <div className="relative w-full p-4 sm:p-8 lg:p-12">
-              {/* Background layer with opacity */}
-              <div className="absolute inset-0 rounded-[14px] border border-[rgba(0,0,0,0.1)] bg-[#8b1538] opacity-50 shadow-[0px_10px_15px_0px_rgba(0,0,0,0.1),0px_4px_6px_0px_rgba(0,0,0,0.1)]" />
-              
-              {/* Content layer at full opacity */}
-              <div className="relative flex flex-col items-start gap-6 lg:flex-row lg:items-center lg:gap-16">
-                {/* Left Side - Heading */}
-                <div className="shrink-0">
-                  <h1 className="mb-1 font-[Inter] text-4xl font-bold leading-tight text-white sm:text-5xl lg:text-[64px]">
-                    About
-                  </h1>
-                  <p className="font-[Inter] text-5xl font-bold leading-none text-white sm:text-6xl lg:text-[96px]">
-                    NSDGA
-                  </p>
-                </div>
-
-                {/* Right Side - Description Text */}
-                <div className="flex-1">
-                  <div className="font-normal text-[16px] text-white leading-[26px] text-justify space-y-4">
-                    <p>
-                      <span className="font-bold">NUESTRA SEÑORA DE GUIA ACADEMY OF MARIKINA</span> is a non-sectarian non-Catholic school primarily centered to the child's total personality development with spiritual and ethical values in order to live up to the aspiration of our patron, NUESTRA SEÑORA DE GUIA.
-                    </p>
-                    <p>
-                      Inspired by the admonition of the Holy Bible: <span className="font-bold">"To train up a child the way he should go; and when he is old, he will not depart from it." (Prov. 22:6)</span>, the school emphasizes on the need for growth and the holistic development of the child. <span className="font-bold">NUESTRA SEÑORA DE GUIA ACADEMY OF MARIKINA</span> considers the child as the centerpiece of its foundation and organization. Thus, it commits itself to providing the child with quality education in the service of humanity and God.
-                    </p>
-                  </div>
-                </div>
+      <section className="section-container py-14 sm:py-20" style={{ backgroundColor: BRAND.surface }}>
+        <div
+          className="rounded-[14px] border p-6 sm:p-10"
+          style={{
+            borderColor: `${BRAND.maroon}33`,
+            background: `linear-gradient(135deg, ${BRAND.maroon}08 0%, ${BRAND.green}06 100%)`,
+          }}
+        >
+          <PublicSectionEyebrow>Who We Are</PublicSectionEyebrow>
+          <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:gap-12">
+            <div className="flex shrink-0 items-center gap-4 lg:flex-col lg:items-start">
+              <img src={schoolLogo} alt="" className="size-20 object-contain sm:size-24" />
+              <div>
+                <p className="text-2xl font-bold sm:text-3xl" style={{ color: BRAND.maroon }}>
+                  NSDGA
+                </p>
+                <p className="text-sm font-semibold" style={{ color: BRAND.green }}>
+                  Academy of Marikina
+                </p>
               </div>
             </div>
-          </div>
-        </section>
-
-        {/* Mission and Vision Cards */}
-        <section className="section-container py-16">
-          <div className="grid md:grid-cols-2 gap-8">
-            {/* Mission Card */}
-            <div className="bg-white border border-[rgba(0,0,0,0.1)] rounded-[14px] shadow-[0px_10px_15px_0px_rgba(0,0,0,0.1),0px_4px_6px_0px_rgba(0,0,0,0.1)] p-8">
-              <div className="flex items-center gap-4 mb-6">
-                <div className="bg-[#8b1538] rounded-full size-[64px] flex items-center justify-center">
-                  <svg className="size-[32px]" fill="none" viewBox="0 0 32 32">
-                    <g>
-                      <path 
-                        d={svgPaths.p2eeb1a00} 
-                        stroke="white" 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth="2.66" 
-                      />
-                      <path 
-                        d={svgPaths.p12cd9a80} 
-                        stroke="white" 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth="2.66" 
-                      />
-                      <path 
-                        d={svgPaths.p68ddbf0} 
-                        stroke="white" 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth="2.66" 
-                      />
-                    </g>
-                  </svg>
-                </div>
-                <h2 className="font-bold text-[24px] text-[#101828] leading-[32px]">
-                  Mission
-                </h2>
-              </div>
-              <p className="font-normal text-[16px] text-[#364153] leading-[26px]">
-                Nuestra Señora De Guia Academy of Marikina shall provide quality education to prepare young children to harness their full intellectual capabilities that will aid them to effectively plot the paths they wish to stride later in life.
+            <div className="space-y-4 text-base leading-relaxed" style={{ color: BRAND.slate }}>
+              <p>
+                <strong style={{ color: BRAND.ink }}>Nuestra Señora De Guia Academy of Marikina</strong>{' '}
+                is a non-sectarian school centered on the child&apos;s total personality development
+                with spiritual and ethical values, in honor of our patron, Nuestra Señora De Guia.
               </p>
-            </div>
-
-            {/* Vision Card */}
-            <div className="bg-white border border-[rgba(0,0,0,0.1)] rounded-[14px] shadow-[0px_10px_15px_0px_rgba(0,0,0,0.1),0px_4px_6px_0px_rgba(0,0,0,0.1)] p-8">
-              <div className="flex items-center gap-4 mb-6">
-                <div className="bg-[#2d5016] rounded-full size-[64px] flex items-center justify-center">
-                  <svg className="size-[32px]" fill="none" viewBox="0 0 32 32">
-                    <g>
-                      <path 
-                        d={svgPaths.p1e55af00} 
-                        stroke="white" 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth="2.66" 
-                      />
-                      <path 
-                        d={svgPaths.p3dc23ac0} 
-                        stroke="white" 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth="2.66" 
-                      />
-                    </g>
-                  </svg>
-                </div>
-                <h2 className="font-bold text-[24px] text-[#101828] leading-[32px]">
-                  Vision
-                </h2>
-              </div>
-              <p className="font-normal text-[16px] text-[#364153] leading-[26px]">
-                Nuestra Senora De Guia Academy of Marikina shall be the epitome of <span className="font-bold">ACADEMIC EXCELLENCE</span> by providing quality education relevant to the changing needs of the society.
+              <p>
+                Inspired by <strong>Proverbs 22:6</strong> — &ldquo;Train up a child in the way he
+                should go&rdquo; — we emphasize holistic growth. The child is the centerpiece of our
+                foundation, and we commit to quality education in the service of humanity and God.
               </p>
             </div>
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
 
-      {/* Footer */}
+      <section className="section-container py-14 sm:py-20">
+        <div className="mb-10 text-center">
+          <PublicSectionEyebrow>Our Direction</PublicSectionEyebrow>
+          <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
+            Mission & Vision
+          </h2>
+        </div>
+
+        <div className="grid gap-8 md:grid-cols-2">
+          <div
+            className="rounded-[14px] border border-gray-200 bg-white p-8 shadow-[0px_4px_6px_rgba(0,0,0,0.06)]"
+            style={{ borderTopWidth: 4, borderTopColor: BRAND.maroon }}
+          >
+            <div className="mb-6 flex items-center gap-4">
+              <div
+                className="flex size-16 items-center justify-center rounded-full"
+                style={{ backgroundColor: BRAND.maroon }}
+              >
+                <svg className="size-8" fill="none" viewBox="0 0 32 32" aria-hidden>
+                  <g>
+                    <path d={svgPaths.p2eeb1a00} stroke="white" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.66" />
+                    <path d={svgPaths.p12cd9a80} stroke="white" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.66" />
+                    <path d={svgPaths.p68ddbf0} stroke="white" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.66" />
+                  </g>
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold" style={{ color: BRAND.ink }}>
+                Mission
+              </h2>
+            </div>
+            <p className="text-base leading-relaxed" style={{ color: BRAND.slate }}>
+              Nuestra Señora De Guia Academy of Marikina shall provide quality education to prepare
+              young children to harness their full intellectual capabilities that will aid them to
+              effectively plot the paths they wish to stride later in life.
+            </p>
+          </div>
+
+          <div
+            className="rounded-[14px] border border-gray-200 bg-white p-8 shadow-[0px_4px_6px_rgba(0,0,0,0.06)]"
+            style={{ borderTopWidth: 4, borderTopColor: BRAND.green }}
+          >
+            <div className="mb-6 flex items-center gap-4">
+              <div
+                className="flex size-16 items-center justify-center rounded-full"
+                style={{ backgroundColor: BRAND.green }}
+              >
+                <svg className="size-8" fill="none" viewBox="0 0 32 32" aria-hidden>
+                  <g>
+                    <path d={svgPaths.p1e55af00} stroke="white" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.66" />
+                    <path d={svgPaths.p3dc23ac0} stroke="white" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.66" />
+                  </g>
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold" style={{ color: BRAND.ink }}>
+                Vision
+              </h2>
+            </div>
+            <p className="text-base leading-relaxed" style={{ color: BRAND.slate }}>
+              Nuestra Señora De Guia Academy of Marikina shall be the epitome of{' '}
+              <strong>academic excellence</strong> by providing quality education relevant to the
+              changing needs of society.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="relative overflow-hidden py-14 sm:py-20" style={{ backgroundColor: BRAND.maroon }}>
+        <div className="pointer-events-none absolute inset-y-0 left-0 w-2 sm:w-3" style={{ backgroundColor: BRAND.green }} aria-hidden />
+        <div className="section-container relative text-center">
+          <h2 className="text-3xl font-bold text-white sm:text-4xl">Explore NSDGA</h2>
+          <p className="mx-auto mt-4 max-w-xl text-white/90">
+            Learn about admissions, senior high strands, and how to reach the registrar.
+          </p>
+          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <Button asChild size="lg" className="h-12 bg-white px-8 hover:bg-gray-100" style={{ color: BRAND.maroon }}>
+              <Link to="/admissions">View Admissions</Link>
+            </Button>
+            <Button asChild size="lg" variant="outline" className="h-12 border-white/70 bg-transparent px-8 text-white hover:bg-white/10">
+              <Link to="/contact">Contact Us</Link>
+            </Button>
+          </div>
+        </div>
+      </section>
+
       <Footer />
     </div>
   );
