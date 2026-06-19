@@ -152,7 +152,7 @@ export function LandingPage() {
               <h1 className="mb-3 text-3xl font-bold leading-tight text-white sm:mb-4 sm:text-4xl md:text-5xl lg:text-[3.25rem]">
                 Nuestra Señora De Guia Academy Marikina
               </h1>
-              <p className="mb-6 text-xl font-semibold sm:mb-8 sm:text-2xl" style={{ color: '#d4e4c8' }}>
+              <p className="mb-6 text-xl font-semibold sm:mb-8 sm:text-2xl" style={{ color: BRAND.heroAccent }}>
                 Senior High School
               </p>
               <p className="max-w-xl text-base leading-relaxed text-white/90 sm:text-lg">

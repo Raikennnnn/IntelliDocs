@@ -39,7 +39,7 @@ export function PublicPageHero({
         aria-hidden
       />
       <div className="section-container relative py-14 sm:py-20">
-        {eyebrow ? <PublicSectionEyebrow>{eyebrow}</PublicSectionEyebrow> : null}
+        {eyebrow ? <PublicSectionEyebrow light>{eyebrow}</PublicSectionEyebrow> : null}
         <h1 className="max-w-3xl text-3xl font-bold leading-tight text-white sm:text-4xl lg:text-5xl">
           {title}
         </h1>

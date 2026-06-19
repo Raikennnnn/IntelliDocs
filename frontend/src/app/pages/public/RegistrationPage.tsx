@@ -9,8 +9,10 @@ import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
-import schoolLogo from "../../../assets/logo.png";
 import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
+import { AuthPageHeader } from '../../components/public/AuthPageShell';
+import { PublicSectionEyebrow } from '../../components/public/PublicSectionEyebrow';
+import { BRAND } from '../../lib/publicBrand';
 
 // Registration Page Component
 export function RegistrationPage() {
@@ -258,52 +260,40 @@ export function RegistrationPage() {
   };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-white">
-      <div className="shrink-0 bg-[#8B1538] px-6 py-3">
-        <div className="flex items-center gap-3">
-          <img
-            src={schoolLogo}
-            alt="Nuestra Señora De Guia Academy"
-            className="h-10 w-10 shrink-0 rounded-full bg-white object-contain p-1"
-          />
-          <div>
-            <p className="text-base font-bold leading-tight text-white">
-              Nuestra Señora De Guia
-            </p>
-            <p className="text-xs text-white/90">Academy of Marikina</p>
-          </div>
-        </div>
-      </div>
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-white">
+      <AuthPageHeader />
 
-      <div className="flex flex-1 overflow-hidden">
-        <div className="flex w-full items-center justify-center overflow-y-auto bg-white p-8 lg:w-1/2">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div
+          className="flex w-full items-center justify-center overflow-hidden px-4 py-3 sm:px-6 sm:py-4 lg:w-1/2"
+          style={{ backgroundColor: BRAND.surface }}
+        >
           <div className="w-full max-w-md">
-            {/* Back Button */}
             <button
               type="button"
-              onClick={() => step === 'otp' ? setStep('register') : navigate('/admissions')}
-              className="mb-8 flex items-center gap-2 text-gray-600 transition-colors hover:text-[#8B1538]"
+              onClick={() => (step === 'otp' ? setStep('register') : navigate('/admissions'))}
+              className="mb-3 flex items-center gap-2 transition-colors hover:opacity-80"
+              style={{ color: BRAND.maroon }}
             >
-              <ArrowLeft className="size-5 shrink-0" />
+              <ArrowLeft className="size-4 shrink-0" />
               <span className="text-sm font-medium">Back</span>
             </button>
 
             {step === 'register' ? (
               <>
-                {/* Header */}
-                <div className="mb-8">
-                  <h1 className="mb-2 text-3xl font-bold text-gray-900">
+                <PublicSectionEyebrow>Enrollment</PublicSectionEyebrow>
+                <div className="mb-4">
+                  <h1 className="mb-1 text-2xl font-bold leading-tight" style={{ color: BRAND.ink }}>
                     Create your account
                   </h1>
-                  <p className="text-base text-gray-600">
-                    Fill up all the fields as per your valid details.
+                  <p className="text-sm leading-snug" style={{ color: BRAND.slate }}>
+                    Start your NSDGA senior high school application online.
                   </p>
                 </div>
 
-                {/* Registration Form */}
-                <form onSubmit={handleRegister} className="space-y-5" autoComplete="off">
+                <form onSubmit={handleRegister} className="space-y-3" autoComplete="off">
                 <div className="min-w-0">
-                  <Label htmlFor="email" className="mb-2 block text-gray-700">
+                  <Label htmlFor="email" className="mb-1 block text-sm text-gray-700">
                     Enter your email <span className="text-[#8B1538]">*</span>
                   </Label>
                   <div className="relative min-w-0">
@@ -316,14 +306,14 @@ export function RegistrationPage() {
                       value={formData.email}
                       onChange={(e) => handleInputChange('email', e.target.value)}
                       placeholder="yourname@example.com"
-                      className="h-12 pl-10"
+                      className="h-11 pl-10"
                       required
                     />
                   </div>
                 </div>
 
                 <div className="min-w-0">
-                  <Label htmlFor="password" className="mb-2 block text-gray-700">
+                  <Label htmlFor="password" className="mb-1 block text-sm text-gray-700">
                     Create a password <span className="text-[#8B1538]">*</span>
                   </Label>
                   <div className="relative min-w-0">
@@ -336,7 +326,7 @@ export function RegistrationPage() {
                       value={formData.password}
                       onChange={(e) => handleInputChange('password', e.target.value)}
                       placeholder="Letters and numbers, 8+ characters"
-                      className="h-12 pl-10 pr-10"
+                      className="h-11 pl-10 pr-10"
                       required
                     />
                     <button
@@ -348,14 +338,14 @@ export function RegistrationPage() {
                       {showPassword ? <EyeOff className="size-5" /> : <Eye className="size-5" />}
                     </button>
                   </div>
-                  <p className="mt-1.5 text-xs leading-relaxed text-gray-500">
+                  <p className="mt-1 text-[11px] leading-snug text-gray-500">
                     Use at least 8 characters with letters and numbers. Single repeated characters are
                     not allowed.
                   </p>
                 </div>
 
                 <div className="min-w-0">
-                  <Label htmlFor="confirmPassword" className="mb-2 block text-gray-700">
+                  <Label htmlFor="confirmPassword" className="mb-1 block text-sm text-gray-700">
                     Confirm password <span className="text-[#8B1538]">*</span>
                   </Label>
                   <div className="relative min-w-0">
@@ -368,25 +358,25 @@ export function RegistrationPage() {
                       value={formData.confirmPassword}
                       onChange={(e) => handleInputChange('confirmPassword', e.target.value)}
                       placeholder="Re-enter your password"
-                      className="h-12 pl-10 pr-10"
+                      className="h-11 pl-10 pr-10"
                       required
                     />
                   </div>
                 </div>
 
                 {/* Terms, Privacy, and DPA */}
-                <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:space-y-4 sm:p-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                <div className="space-y-2 rounded-lg border border-gray-200 bg-white p-2.5 shadow-sm sm:p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                     Required agreements
                   </p>
-                  <div className="flex items-start gap-2.5 sm:gap-3">
+                  <div className="flex items-start gap-2">
                     <Checkbox
                       id="terms-privacy"
                       checked={termsPrivacyAccepted}
                       onCheckedChange={(checked) => setTermsPrivacyAccepted(checked === true)}
-                      className="mt-0.5 size-5 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white"
+                      className="mt-0.5 size-4 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white"
                     />
-                    <div className="min-w-0 flex-1 text-sm leading-snug text-gray-700 break-words">
+                    <div className="min-w-0 flex-1 text-xs leading-snug text-gray-700 break-words">
                       <label htmlFor="terms-privacy" className="cursor-pointer font-normal">
                         I have read and agree to the
                       </label>{' '}
@@ -410,14 +400,14 @@ export function RegistrationPage() {
                       <span className="text-gray-600">.</span>
                     </div>
                   </div>
-                  <div className="flex items-start gap-2.5 sm:gap-3">
+                  <div className="flex items-start gap-2">
                     <Checkbox
                       id="dpa"
                       checked={dpaAccepted}
                       onCheckedChange={(checked) => setDpaAccepted(checked === true)}
-                      className="mt-0.5 size-5 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white"
+                      className="mt-0.5 size-4 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white"
                     />
-                    <div className="min-w-0 flex-1 text-sm leading-snug text-gray-700 break-words">
+                    <div className="min-w-0 flex-1 text-xs leading-snug text-gray-700 break-words">
                       <label htmlFor="dpa" className="cursor-pointer font-normal">
                         I consent to the processing of my personal data as described in the
                       </label>{' '}
@@ -433,7 +423,7 @@ export function RegistrationPage() {
                     </div>
                   </div>
                   {(!termsPrivacyAccepted || !dpaAccepted) && (
-                    <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700">
+                    <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-snug text-amber-700">
                       Check both boxes above to continue with registration.
                     </p>
                   )}
@@ -442,12 +432,12 @@ export function RegistrationPage() {
                 <Button
                   type="submit"
                   disabled={isLoading}
-                  className="h-12 w-full bg-[#8B1538] text-base font-semibold text-white hover:bg-[#8B1538]/90 disabled:bg-[#8B1538]/40"
+                  className="h-11 w-full bg-[#8B1538] text-sm font-semibold text-white hover:bg-[#8B1538]/90 disabled:bg-[#8B1538]/40"
                 >
                   {isLoading ? 'Processing...' : 'Continue'}
                 </Button>
 
-                <p className="text-center text-sm leading-relaxed text-gray-600">
+                <p className="text-center text-xs leading-snug text-gray-600">
                   Have an account?{' '}
                   <Link to="/login" className="font-semibold text-[#8B1538] hover:underline">
                     Sign in
@@ -456,16 +446,16 @@ export function RegistrationPage() {
               </form>
             </>
           ) : (
-            <>
-              {/* OTP Verification */}
-              <div className="mb-8">
-                <h1 className="mb-2 text-3xl font-bold text-gray-900">
-                  Verify your email
-                </h1>
-                <p className="text-base text-gray-600">
-                  Enter the 6-digit code from your email inbox.
-                </p>
-              </div>
+              <>
+                <PublicSectionEyebrow>Verify Email</PublicSectionEyebrow>
+                <div className="mb-8">
+                  <h1 className="mb-2 text-3xl font-bold" style={{ color: BRAND.ink }}>
+                    Verify your email
+                  </h1>
+                  <p className="text-base" style={{ color: BRAND.slate }}>
+                    Enter the 6-digit code from your email inbox.
+                  </p>
+                </div>
 
               <form onSubmit={handleVerifyOtp} className="space-y-6" autoComplete="off">
                 <div>
@@ -531,12 +521,27 @@ export function RegistrationPage() {
           </div>
         </div>
 
-        <div className="relative hidden bg-gray-100 lg:block lg:w-1/2">
+        <div
+          className="relative hidden h-full min-h-0 overflow-hidden lg:block lg:w-1/2"
+          style={{ backgroundColor: BRAND.surface }}
+        >
           <img
             src={registrationImage}
             alt="NSDGA students and vocational programs"
             className="h-full w-full object-contain object-center"
           />
+          <div className="absolute inset-x-0 bottom-0 z-[2] p-6">
+            <PublicSectionEyebrow>NSDGA Marikina</PublicSectionEyebrow>
+            <p className="text-xl font-bold leading-tight" style={{ color: BRAND.maroon }}>
+              Senior High School
+            </p>
+            <p className="mt-0.5 text-lg font-semibold" style={{ color: BRAND.green }}>
+              Enrollment
+            </p>
+            <p className="mt-2 max-w-sm text-xs" style={{ color: BRAND.slate }}>
+              Grades 11 &amp; 12 — Academic and TVL strands with online document submission.
+            </p>
+          </div>
         </div>
       </div>
     </div>

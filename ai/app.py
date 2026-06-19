@@ -4,6 +4,7 @@ import re
 import shutil
 import sys
 import tempfile
+import uuid
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -12,6 +13,16 @@ app.config['UPLOAD_FOLDER'] = os.path.join(APP_DIR, 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+
+def _staging_upload_path(file) -> str:
+    """Randomized temp path — never use client filenames on disk."""
+    raw = secure_filename(file.filename or "upload") or "upload"
+    _, ext = os.path.splitext(raw)
+    if not ext or len(ext) > 8:
+        ext = ".jpg"
+    return os.path.join(app.config["UPLOAD_FOLDER"], f"{uuid.uuid4().hex}{ext.lower()}")
+
 
 # OCR backends: Tesseract (fast) and EasyOCR (heavier). Multi-level fallback tries alternate
 # engines / preprocessing when the first pass reads poorly.
@@ -397,10 +408,11 @@ def _upload_document_readability_check(filepath: str, doc_type: str) -> dict:
     try:
         text, avg_conf = _quick_ocr_for_upload_screen(filepath, doc_type)
     except Exception as exc:
+        print(f"[upload screen] readability error: {type(exc).__name__}: {exc}", flush=True)
         return {
             "pass": False,
             "message": "We could not read this document. Retake the photo in good lighting with the full page visible.",
-            "issues": [str(exc)],
+            "issues": ["Document could not be processed"],
             "word_count": 0,
             "ocr_confidence": 0.0,
         }
@@ -6311,8 +6323,7 @@ def screen_quality():
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
 
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    filepath = _staging_upload_path(file)
     file.save(filepath)
 
     try:
@@ -6408,8 +6419,7 @@ def verify_doc():
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
     
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    filepath = _staging_upload_path(file)
     file.save(filepath)
     
     try:

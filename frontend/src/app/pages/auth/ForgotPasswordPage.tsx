@@ -1,13 +1,14 @@
 import { useState, type ClipboardEvent, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router';import { apiFetch } from '../../lib/api';
+import { Link, useNavigate } from 'react-router';
+import { apiFetch } from '../../lib/api';
 import { validatePassword } from '../../lib/passwordPolicy';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import schoolLogo from '../../../assets/logo.png';
-import homePageImage from '../../../assets/homepage-Bxdbuq6s.png';
 import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
+import { AuthPageShell } from '../../components/public/AuthPageShell';
+import { BRAND } from '../../lib/publicBrand';
 
 type Step = 'email' | 'reset';
 
@@ -157,37 +158,16 @@ export function ForgotPasswordPage() {
   };
 
   return (
-    <div className="relative h-[100dvh] w-full overflow-hidden bg-white">
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <img alt="" className="absolute left-0 top-0 h-full w-full scale-110 object-cover" src={homePageImage} />
-      </div>
-      <div className="absolute inset-0 bg-[rgba(72,0,21,0.32)]" />
-
-      <div className="absolute left-0 top-0 z-10 flex h-[63px] w-full items-center bg-[#8B1538] px-4 shadow-md sm:px-8">
-        <Link to="/landing" className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <div className="size-10 shrink-0">
-            <img alt="School Logo" className="h-full w-full object-contain" src={schoolLogo} />
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-bold leading-tight text-white sm:text-lg">Nuestra Señora De Guia</p>
-            <p className="truncate text-xs font-semibold text-white">Academy of Marikina</p>
-          </div>
-        </Link>
-      </div>
-
-      <div className="relative z-10 flex h-full items-center justify-center px-4 py-20">
-        <div className="w-full max-w-[527px] rounded-lg border border-gray-300 bg-white/80 p-5 shadow-lg backdrop-blur-sm sm:p-8">
-          <div className="space-y-6">
-            <div>
-              <h2 className="mb-2 text-2xl font-bold text-[#101828]">
-                {step === 'email' ? 'Forgot password' : 'Reset password'}
-              </h2>
-              <p className="text-base text-black">
-                {step === 'email'
-                  ? 'Enter your email and we will send a 6-digit reset code (valid for 5 minutes).'
-                  : 'Enter the code from your email and choose a new password.'}
-              </p>
-            </div>
+    <AuthPageShell
+      eyebrow="Account Recovery"
+      title={step === 'email' ? 'Forgot password' : 'Reset password'}
+      subtitle={
+        step === 'email'
+          ? 'We will email you a 6-digit reset code valid for 5 minutes.'
+          : 'Enter the code from your email and choose a new password.'
+      }
+    >
+      <div className="space-y-6">
 
             {info && (
               <Alert>
@@ -215,7 +195,12 @@ export function ForgotPasswordPage() {
                     placeholder="you@example.com"
                   />
                 </div>
-                <Button type="submit" disabled={loading} className="w-full h-12 bg-[#8B1538] hover:bg-[#8B1538]/90 text-white">
+                <Button
+                  type="submit"
+                  disabled={loading}
+                  className="h-12 w-full text-white"
+                  style={{ backgroundColor: BRAND.maroon }}
+                >
                   {loading ? 'Sending…' : 'Send reset code'}
                 </Button>
               </form>
@@ -268,7 +253,12 @@ export function ForgotPasswordPage() {
                     className="h-12 bg-[#F9FAFB]"
                   />
                 </div>
-                <Button type="submit" disabled={loading} className="w-full h-12 bg-[#8B1538] hover:bg-[#8B1538]/90 text-white">
+                <Button
+                  type="submit"
+                  disabled={loading}
+                  className="h-12 w-full text-white"
+                  style={{ backgroundColor: BRAND.maroon }}
+                >
                   {loading ? 'Updating…' : 'Update password'}
                 </Button>
                 <Button
@@ -290,13 +280,11 @@ export function ForgotPasswordPage() {
             )}
 
             <div className="text-center">
-              <Link to="/login" className="text-sm text-[#8B1538] font-semibold hover:underline">
+              <Link to="/login" className="text-sm font-semibold hover:underline" style={{ color: BRAND.maroon }}>
                 Back to login
               </Link>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
+    </AuthPageShell>
   );
 }

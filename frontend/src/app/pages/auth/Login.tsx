@@ -6,9 +6,9 @@ import { Input } from '../../components/ui/input';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Label } from '../../components/ui/label';
 import { toast } from 'sonner';
-import schoolLogo from "../../../assets/logo.png";
-import homePageImage from "../../../assets/homepage-Bxdbuq6s.png";
 import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
+import { AuthPageShell, authPortalCopy } from '../../components/public/AuthPageShell';
+import { BRAND } from '../../lib/publicBrand';
 
 function navigateForRole(role: string, navigate: ReturnType<typeof useNavigate>) {
   switch (role) {
@@ -209,38 +209,19 @@ export function Login() {
     }
   };
 
+  const portal = authPortalCopy(location.pathname);
+
   return (
-    <div className="relative min-h-[100dvh] w-full overflow-x-hidden bg-white">
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <img alt="" className="absolute left-0 top-0 h-full w-full scale-110 object-cover" src={homePageImage} />
-      </div>
-      <div className="absolute inset-0 bg-[rgba(72,0,21,0.32)]" />
-
-      <div className="absolute left-0 top-0 z-10 flex h-14 w-full items-center bg-[#8B1538] px-4 shadow-md sm:h-[63px] sm:px-6 lg:px-8">
-        <Link to="/landing" className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <div className="h-9 w-9 shrink-0 sm:h-10 sm:w-10">
-            <img alt="School Logo" className="h-full w-full object-contain" src={schoolLogo} />
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-base font-bold leading-tight text-white sm:text-lg">Nuestra Señora De Guia</p>
-            <p className="truncate text-xs font-semibold text-white">Academy of Marikina</p>
-          </div>
-        </Link>
-      </div>
-
-      <div className="relative z-10 flex min-h-[100dvh] items-center justify-center overflow-y-auto px-4 py-20 sm:px-6">
-        <div className="w-full max-w-[527px] rounded-lg border border-gray-300 bg-white/80 p-5 shadow-lg backdrop-blur-sm sm:p-8">
-          <div className="space-y-6">
-            <div>
-              <h2 className="mb-2 text-2xl font-bold text-[#101828]">
-                {step === 'credentials' ? 'Login' : 'Email verification'}
-              </h2>
-              <p className="text-base text-black">
-                {step === 'credentials'
-                  ? 'Enter your credentials to access the system'
-                  : 'Complete login with the OTP sent to your email (MFA)'}
-              </p>
-            </div>
+    <AuthPageShell
+      eyebrow={portal.eyebrow}
+      title={step === 'credentials' ? portal.title : 'Email verification'}
+      subtitle={
+        step === 'credentials'
+          ? portal.subtitle
+          : 'Complete sign-in with the 6-digit code sent to your email.'
+      }
+    >
+      <div className="space-y-6">
 
             {sessionReasonMessage && step === 'credentials' && (
               <Alert>
@@ -283,7 +264,12 @@ export function Login() {
                     </Link>
                   </div>
                 </div>
-                <Button type="submit" disabled={submittingCredentials} className="w-full h-12 bg-[#8B1538] hover:bg-[#8B1538]/90 text-white text-base font-semibold rounded-lg">
+                <Button
+                  type="submit"
+                  disabled={submittingCredentials}
+                  className="h-12 w-full rounded-[8px] text-base font-semibold text-white"
+                  style={{ backgroundColor: BRAND.maroon }}
+                >
                   {submittingCredentials ? 'Signing in…' : 'Continue'}
                 </Button>
               </form>
@@ -324,13 +310,19 @@ export function Login() {
                 <p className="text-xs text-gray-500 text-center">
                   {otpAttemptHelpText(AUTH_OTP_LIMITS.loginCodesPerHour)}
                 </p>
-                <Button type="submit" disabled={submittingOtp} className="w-full h-12 bg-[#8B1538] hover:bg-[#8B1538]/90 text-white text-base font-semibold rounded-lg">
+                <Button
+                  type="submit"
+                  disabled={submittingOtp}
+                  className="h-12 w-full rounded-[8px] text-base font-semibold text-white"
+                  style={{ backgroundColor: BRAND.maroon }}
+                >
                   {submittingOtp ? 'Verifying…' : 'Verify & Sign in'}
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
                   className="w-full"
+                  style={{ borderColor: BRAND.green, color: BRAND.green }}
                   disabled={resendingOtp || submittingOtp}
                   onClick={() => void handleResendLoginOtp()}
                 >
@@ -351,13 +343,11 @@ export function Login() {
               </p>
             </div>
             <div className="text-center">
-              <Link to="/landing" className="text-sm text-[#2D5016] hover:underline font-medium">
+              <Link to="/landing" className="text-sm font-medium hover:underline" style={{ color: BRAND.green }}>
                 ← Back to Home
               </Link>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
+    </AuthPageShell>
   );
 }

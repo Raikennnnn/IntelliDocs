@@ -28,6 +28,15 @@ require_once __DIR__ . '/api_auth.php';
 $actor = apiRequireActor($pdo, 'registrar/overview');
 $actorId = $actor['id'];
 $actorRole = $actor['role'];
+if (!in_array($actorRole, ['registrar', 'admin'], true)) {
+    appLogEvent($pdo, 'registrar_overview', 'registrar', 'failed', $actorId, 'endpoint', 'registrar/overview', [
+        'reason' => 'access_denied',
+        'role' => $actorRole,
+    ]);
+    http_response_code(403);
+    echo json_encode(['success' => false, 'error' => 'Access denied']);
+    exit;
+}
 
 $overallQuota = 4000;
 

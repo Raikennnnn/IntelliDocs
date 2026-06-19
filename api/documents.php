@@ -329,7 +329,6 @@ if ($method === 'POST') {
                 'success' => false,
                 'error' => $screen['message'],
                 'level' => (int)($screen['level'] ?? 1),
-                'security_levels' => $screen['body']['security_levels'] ?? null,
             ]);
             exit;
         }

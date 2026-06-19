@@ -108,14 +108,12 @@ function aiPostMultipart(
 
     if ($raw === false) {
         $hint = $curlErr ?: 'AI service unreachable';
-        if (stripos($hint, 'connection refused') !== false || stripos($hint, 'failed to connect') !== false) {
-            $hint .= '. Start the AI service (local: python ai/app.py on port 5000; droplet: systemctl start intellidocs-ai on port 8080).';
-        }
+        error_log('[ai_http] curl failed for ' . $path . ': ' . $hint);
         return [
             'ok' => false,
             'status' => 0,
             'body' => null,
-            'error' => $hint,
+            'error' => 'Document verification is temporarily unavailable. Please try again in a few minutes.',
             'base_url' => $base,
         ];
     }
@@ -123,13 +121,12 @@ function aiPostMultipart(
     $decoded = json_decode((string)$raw, true);
     if (!is_array($decoded)) {
         $snippet = trim(substr(preg_replace('/\s+/', ' ', (string)$raw), 0, 200));
+        error_log('[ai_http] invalid JSON from ' . $path . ': ' . $snippet);
         return [
             'ok' => false,
             'status' => $status,
             'body' => null,
-            'error' => $snippet !== ''
-                ? 'AI returned invalid JSON: ' . $snippet
-                : 'AI returned invalid JSON',
+            'error' => 'Document verification is temporarily unavailable. Please try again in a few minutes.',
             'base_url' => $base,
         ];
     }
@@ -158,6 +155,26 @@ function mapDocumentTypeForAi(string $label): string
 }
 
 /**
+ * Strip server paths and internal details from user-facing API errors.
+ */
+function sanitizeClientErrorMessage(string $message): string
+{
+    $message = trim($message);
+    if ($message === '') {
+        return $message;
+    }
+
+    if (preg_match('#(/var/www|/home/|/usr/|\\\\|ai/uploads|uploads/documents)#i', $message)) {
+        return 'Document validation failed. Please upload a clearer photo (JPG or PNG).';
+    }
+
+    $message = preg_replace('#/var/www[^\s"\'\]},]+#', '[internal path]', $message);
+    $message = preg_replace('#[A-Za-z]:\\\\[^\s"\'\]},]+#', '[internal path]', $message);
+
+    return $message;
+}
+
+/**
  * Level 1 quality gate for student uploads.
  *
  * @return array{ok: bool, pass: bool, message: string, body: array<string, mixed>|null, error?: string}
@@ -173,20 +190,24 @@ function aiScreenUploadQuality(
     ], 45);
 
     if (!$res['ok'] || !is_array($res['body'])) {
+        $message = sanitizeClientErrorMessage($res['error'] ?? '');
+        if ($message === '') {
+            $message = 'AI quality check unavailable. Try again later.';
+        }
         return [
             'ok' => false,
             'pass' => false,
             'level' => 1,
-            'message' => $res['error'] ?? 'AI quality check unavailable. Try again later.',
-            'body' => $res['body'],
-            'error' => $res['error'] ?? null,
+            'message' => $message,
+            'body' => null,
+            'error' => $message,
         ];
     }
 
     $body = $res['body'];
     $pass = !empty($body['pass']);
     $level = (int)($body['level'] ?? ($pass ? 2 : 1));
-    $message = trim((string)($body['message'] ?? ''));
+    $message = sanitizeClientErrorMessage(trim((string)($body['message'] ?? '')));
     if ($message === '' && !$pass) {
         $message = $level === 2
             ? 'We could not read enough text on this document. Upload a clearer photo (JPG or PNG).'
@@ -198,6 +219,6 @@ function aiScreenUploadQuality(
         'pass' => $pass,
         'level' => $level,
         'message' => $message,
-        'body' => $body,
+        'body' => null,
     ];
 }
