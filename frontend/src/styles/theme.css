@@ -19,8 +19,8 @@
   --destructive: #dc2626;
   --destructive-foreground: #ffffff;
   --border: rgba(0, 0, 0, 0.1);
-  --input: transparent;
-  --input-background: #f9fafb;
+  --input: #d1d5db;
+  --input-background: #ffffff;
   --switch-background: #d1d5db;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
@@ -177,6 +177,17 @@
     font-size: var(--text-base);
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
+  }
+
+  select:not([data-slot]),
+  textarea:not([data-slot]) {
+    border-color: #d1d5db;
+    background-color: #ffffff;
+  }
+
+  input:not([data-slot]):not([type='checkbox']):not([type='radio']):not([type='file']):not([type='range']):not([type='hidden']):not([type='button']):not([type='submit']):not([type='reset']) {
+    border-color: #d1d5db;
+    background-color: #ffffff;
   }
 
   html {

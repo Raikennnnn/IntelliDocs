@@ -53,17 +53,17 @@ export function AuthPageShell({ children, eyebrow, title, subtitle }: AuthPageSh
 
       <AuthPageHeader />
 
-      <div className="relative z-10 flex flex-1 items-center justify-center overflow-y-auto px-4 py-8 sm:px-6 sm:py-12">
+      <div className="relative z-10 flex flex-1 items-center justify-center overflow-y-auto px-4 pb-10 pt-6 sm:px-6 sm:pb-12 sm:pt-8">
         <div className="w-full max-w-[32rem]">
           {(eyebrow || title || subtitle) && (
-            <div className="mb-5 text-center sm:mb-6">
+            <div className="mb-3 text-center sm:mb-4">
               {eyebrow ? (
                 <div className="flex justify-center">
                   <PublicSectionEyebrow light>{eyebrow}</PublicSectionEyebrow>
                 </div>
               ) : null}
               {title ? (
-                <h1 className="text-2xl font-bold text-white sm:text-3xl">{title}</h1>
+                <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">{title}</h1>
               ) : null}
               {subtitle ? (
                 <p
@@ -76,7 +76,7 @@ export function AuthPageShell({ children, eyebrow, title, subtitle }: AuthPageSh
             </div>
           )}
           <div
-            className="overflow-hidden rounded-[14px] border border-white/30 bg-white/95 shadow-2xl backdrop-blur-md"
+            className="overflow-hidden rounded-xl border border-white/30 bg-white/95 shadow-2xl backdrop-blur-md"
             style={{ borderTopWidth: 4, borderTopColor: BRAND.maroon }}
           >
             <div className="p-5 sm:p-8">{children}</div>
@@ -92,6 +92,13 @@ export function authPortalCopy(pathname: string): {
   title: string;
   subtitle: string;
 } {
+  if (pathname === '/login') {
+    return {
+      eyebrow: 'NSDGA Portal',
+      title: 'Sign In',
+      subtitle: '',
+    };
+  }
   if (pathname.startsWith('/registrar-login')) {
     return {
       eyebrow: 'Registrar',

@@ -188,7 +188,6 @@ export function AdmissionsPage() {
       <section className="py-14 sm:py-20" style={{ backgroundColor: BRAND.surface }}>
         <div className="section-container">
           <div className="mb-12 text-center">
-            <PublicSectionEyebrow>S.Y. 2025–2026</PublicSectionEyebrow>
             <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
               Offered Programs
             </h2>
@@ -198,7 +197,7 @@ export function AdmissionsPage() {
             </p>
           </div>
 
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid items-start gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {STRAND_SHOWCASE_ITEMS.map((strand) => (
               <StrandShowcaseCard key={strand.slug} strand={strand} />
             ))}
@@ -257,12 +256,12 @@ export function AdmissionsPage() {
                               className="group relative w-full overflow-hidden rounded-lg border border-gray-200 bg-[#f9fafb] shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8b1538] focus-visible:ring-offset-2 sm:max-w-[220px]"
                               aria-label={`Enlarge sample image for ${requirement.label}`}
                             >
-                              <div className="flex aspect-[4/3] w-full items-center justify-center p-2">
+                              <div className="flex min-h-[140px] w-full items-center justify-center p-2 sm:min-h-[160px]">
                                 <AdmissionSampleImage
                                   slug={requirement.slug}
                                   fallbackSrc={requirement.fallbackSrc}
                                   alt=""
-                                  imgClassName="max-h-full max-w-full object-contain"
+                                  imgClassName="mx-auto max-h-[min(200px,40vh)] w-full object-contain"
                                 />
                               </div>
                               <span className="block border-t border-gray-100 bg-gray-50 px-2 py-1.5 text-center text-xs text-gray-500 group-hover:text-[#8B1538]">

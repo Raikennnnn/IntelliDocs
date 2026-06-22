@@ -259,13 +259,15 @@ export function RegistrationPage() {
     }
   };
 
+  const agreementsComplete = termsPrivacyAccepted && dpaAccepted;
+
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-white">
       <AuthPageHeader />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
-          className="flex w-full items-center justify-center overflow-hidden px-4 py-3 sm:px-6 sm:py-4 lg:w-1/2"
+          className="flex w-full min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 py-4 pb-8 sm:px-6 sm:py-6 lg:w-1/2"
           style={{ backgroundColor: BRAND.surface }}
         >
           <div className="w-full max-w-md">
@@ -281,7 +283,7 @@ export function RegistrationPage() {
 
             {step === 'register' ? (
               <>
-                <PublicSectionEyebrow>Enrollment</PublicSectionEyebrow>
+                <PublicSectionEyebrow>Register</PublicSectionEyebrow>
                 <div className="mb-4">
                   <h1 className="mb-1 text-2xl font-bold leading-tight" style={{ color: BRAND.ink }}>
                     Create your account
@@ -429,13 +431,17 @@ export function RegistrationPage() {
                   )}
                 </div>
 
-                <Button
+                <button
                   type="submit"
-                  disabled={isLoading}
-                  className="h-11 w-full bg-[#8B1538] text-sm font-semibold text-white hover:bg-[#8B1538]/90 disabled:bg-[#8B1538]/40"
+                  disabled={isLoading || !agreementsComplete}
+                  className={`h-11 w-full rounded-md border-2 text-sm font-semibold transition-colors ${
+                    isLoading || !agreementsComplete
+                      ? 'cursor-not-allowed border-gray-300 bg-white text-gray-700'
+                      : 'border-[#8B1538] bg-[#8B1538] text-white hover:bg-[#8B1538]/90'
+                  }`}
                 >
                   {isLoading ? 'Processing...' : 'Continue'}
-                </Button>
+                </button>
 
                 <p className="text-center text-xs leading-snug text-gray-600">
                   Have an account?{' '}
@@ -500,7 +506,7 @@ export function RegistrationPage() {
                 <Button
                   type="submit"
                   disabled={isLoading}
-                  className="h-12 w-full bg-[#2D5016] text-base font-semibold text-white hover:bg-[#2D5016]/90"
+                  className="h-12 w-full border-2 border-[#2D5016] bg-[#2D5016] text-base font-semibold text-white hover:bg-[#2D5016]/90 disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-white disabled:text-gray-600 disabled:opacity-100"
                 >
                   {isLoading ? 'Verifying...' : 'Verify & Complete Registration'}
                 </Button>
@@ -530,15 +536,15 @@ export function RegistrationPage() {
             alt="NSDGA students and vocational programs"
             className="h-full w-full object-contain object-center"
           />
-          <div className="absolute inset-x-0 bottom-0 z-[2] p-6">
+          <div className="absolute bottom-0 left-[38%] z-[2] w-[18rem] -translate-x-1/2 p-5 text-left sm:w-[20rem] sm:p-7">
             <PublicSectionEyebrow>NSDGA Marikina</PublicSectionEyebrow>
             <p className="text-xl font-bold leading-tight" style={{ color: BRAND.maroon }}>
               Senior High School
             </p>
-            <p className="mt-0.5 text-lg font-semibold" style={{ color: BRAND.green }}>
-              Enrollment
+            <p className="mt-1 text-lg font-semibold" style={{ color: BRAND.green }}>
+              Register
             </p>
-            <p className="mt-2 max-w-sm text-xs" style={{ color: BRAND.slate }}>
+            <p className="mt-3 max-w-sm text-xs" style={{ color: BRAND.slate }}>
               Grades 11 &amp; 12 — Academic and TVL strands with online document submission.
             </p>
           </div>

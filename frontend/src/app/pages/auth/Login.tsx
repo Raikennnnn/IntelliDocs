@@ -310,27 +310,28 @@ export function Login() {
                 <p className="text-xs text-gray-500 text-center">
                   {otpAttemptHelpText(AUTH_OTP_LIMITS.loginCodesPerHour)}
                 </p>
-                <Button
+                <button
                   type="submit"
                   disabled={submittingOtp}
-                  className="h-12 w-full rounded-[8px] text-base font-semibold text-white"
-                  style={{ backgroundColor: BRAND.maroon }}
+                  className="h-12 w-full rounded-[8px] border-2 border-[#8b1538] bg-[#8b1538] text-base font-semibold text-white transition-colors hover:bg-[#8b1538]/90 disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-200 disabled:text-gray-500"
                 >
                   {submittingOtp ? 'Verifying…' : 'Verify & Sign in'}
-                </Button>
-                <Button
+                </button>
+                <button
                   type="button"
-                  variant="outline"
-                  className="w-full"
-                  style={{ borderColor: BRAND.green, color: BRAND.green }}
                   disabled={resendingOtp || submittingOtp}
                   onClick={() => void handleResendLoginOtp()}
+                  className="h-12 w-full rounded-[8px] border-2 border-[#2d5016] bg-white text-base font-semibold text-[#2d5016] transition-colors hover:bg-[#2d5016]/5 disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-100 disabled:text-gray-500"
                 >
                   {resendingOtp ? 'Sending new code…' : 'Resend login code'}
-                </Button>
-                <Button type="button" variant="ghost" className="w-full" onClick={() => { setStep('credentials'); setOtp(['', '', '', '', '', '']); setError(''); }}>
+                </button>
+                <button
+                  type="button"
+                  className="h-11 w-full rounded-[8px] text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                  onClick={() => { setStep('credentials'); setOtp(['', '', '', '', '', '']); setError(''); }}
+                >
                   Back to login
-                </Button>
+                </button>
               </form>
             )}
 

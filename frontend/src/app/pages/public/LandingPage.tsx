@@ -4,6 +4,8 @@ import { LandingNavbar } from '../../components/LandingNavbar';
 import { AnnouncementCarousel, type CarouselAnnouncement } from '../../components/AnnouncementCarousel';
 import { Button } from '../../components/ui/button';
 import { PublicSectionEyebrow } from '../../components/public/PublicSectionEyebrow';
+import { NsdgaCampusStatsBar, NSDGA_STATS_BORDER_SPACER } from '../../components/public/NsdgaCampusStatsBar';
+import { NsdgaStepGrid } from '../../components/public/NsdgaStepGrid';
 import { StrandShowcaseCard } from '../../components/public/StrandShowcaseCard';
 import { BRAND } from '../../lib/publicBrand';
 import { STRAND_SHOWCASE_ITEMS } from './strandShowcaseData';
@@ -29,13 +31,12 @@ type LandingAnnouncement = CarouselAnnouncement;
 const HERO_STATS: {
   value: string;
   label: string;
-  accent: 'maroon' | 'green';
   Icon: LucideIcon;
 }[] = [
-  { value: '6', label: 'SHS Strands', accent: 'maroon', Icon: GraduationCap },
-  { value: 'Online', label: 'Enrollment Portal', accent: 'green', Icon: Monitor },
-  { value: 'Gr. 11 & 12', label: 'Senior High School', accent: 'maroon', Icon: UserPlus },
-  { value: 'Marikina', label: 'Campus', accent: 'green', Icon: MapPin },
+  { value: '6', label: 'SHS Strands', Icon: GraduationCap },
+  { value: 'Online', label: 'Enrollment Portal', Icon: Monitor },
+  { value: 'Gr. 11 & 12', label: 'Senior High School', Icon: UserPlus },
+  { value: 'Marikina', label: 'Campus', Icon: MapPin },
 ];
 
 const ENROLLMENT_STEPS = [
@@ -126,33 +127,33 @@ export function LandingPage() {
     <div className="min-h-screen overflow-x-hidden bg-white">
       <LandingNavbar />
 
-      {/* Hero — NSDGA original tone with refreshed layout */}
-      <section className="relative min-h-[calc(100dvh-4rem)] overflow-hidden">
-        <div className="pointer-events-none absolute inset-0">
-          <img
-            alt=""
-            className="absolute h-full min-h-full w-full object-cover"
-            src={homePageHeroBg}
-          />
-          <div className="absolute inset-0 bg-black/45" />
-          <div
-            className="absolute inset-0 opacity-80"
-            style={{
-              background: `linear-gradient(105deg, ${BRAND.maroon}99 0%, transparent 42%, ${BRAND.green}66 100%)`,
-            }}
-          />
-        </div>
+      <div className="relative">
+        {/* Hero — background anchored high so campus illustration stays visible */}
+        <section className="relative min-h-[calc(100dvh-4rem)] overflow-hidden">
+          <div className="pointer-events-none absolute inset-0">
+            <img
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover object-[center_18%] sm:object-[center_22%] lg:object-[center_26%]"
+              src={homePageHeroBg}
+            />
+            <div className="absolute inset-0 bg-black/45" />
+            <div
+              className="absolute inset-0 opacity-80"
+              style={{
+                background: `linear-gradient(105deg, ${BRAND.maroon}99 0%, transparent 42%, ${BRAND.green}66 100%)`,
+              }}
+            />
+          </div>
 
-        <div className="relative mx-auto flex min-h-[calc(100dvh-4rem)] max-w-7xl flex-col justify-center px-4 py-12 sm:px-6 lg:px-8">
-          <div className="grid items-center gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-14">
-            <div className="max-w-2xl">
-              <p className="mb-3 text-base font-semibold text-white sm:mb-4 sm:text-xl">
-                WELCOME TO
+          <div className="relative mx-auto flex min-h-[calc(100dvh-4rem)] max-w-7xl flex-col justify-center px-4 pb-12 pt-20 sm:px-6 sm:pt-24 lg:px-8">
+            <div className="max-w-3xl">
+              <p className="mb-3 text-sm font-semibold uppercase tracking-widest text-white/80 sm:text-base">
+                Welcome to
               </p>
-              <h1 className="mb-3 text-3xl font-bold leading-tight text-white sm:mb-4 sm:text-4xl md:text-5xl lg:text-[3.25rem]">
+              <h1 className="mb-3 text-3xl font-bold leading-tight text-white sm:text-4xl md:text-5xl lg:text-[3.25rem]">
                 Nuestra Señora De Guia Academy Marikina
               </h1>
-              <p className="mb-6 text-xl font-semibold sm:mb-8 sm:text-2xl" style={{ color: BRAND.heroAccent }}>
+              <p className="mb-4 text-xl font-semibold sm:text-2xl" style={{ color: BRAND.heroAccent }}>
                 Senior High School
               </p>
               <p className="max-w-xl text-base leading-relaxed text-white/90 sm:text-lg">
@@ -164,121 +165,57 @@ export function LandingPage() {
                 <div>
                   <Button
                     asChild
-                    className="h-12 rounded-[8px] px-8 text-[18px] font-medium hover:opacity-95"
+                    className="h-12 rounded-lg px-8 text-base font-semibold hover:opacity-95"
                     style={{ backgroundColor: BRAND.maroon }}
                   >
                     <Link to="/registration">Apply Now</Link>
                   </Button>
-                  <p className="mt-2 text-[12px] leading-4 text-[#d1d5dc]">Not yet enrolled?</p>
+                <p className="mt-2 text-xs" style={{ color: BRAND.heroAccent }}>
+                  Not yet enrolled?
+                </p>
                 </div>
                 <div>
                   <Button
                     asChild
                     variant="outline"
-                    className="h-12 rounded-[8px] border-white bg-white/90 px-8 text-[18px] font-medium hover:bg-white"
+                    className="h-12 rounded-lg border-white bg-white/90 px-8 text-base font-semibold hover:bg-white"
                     style={{ color: BRAND.maroon }}
                   >
                     <Link to="/login">Login</Link>
                   </Button>
-                  <p className="mt-2 text-[12px] leading-4 text-[#d1d5dc]">
-                    For students with portal access
-                  </p>
+                <p className="mt-2 text-xs" style={{ color: BRAND.heroAccent }}>
+                  For students with portal access
+                </p>
                 </div>
               </div>
             </div>
-
-            <div className="overflow-hidden rounded-2xl border border-white/25 bg-black/30 shadow-2xl backdrop-blur-md">
-              <div className="grid grid-cols-2">
-                {HERO_STATS.map((stat, index) => {
-                  const color = stat.accent === 'maroon' ? BRAND.maroon : BRAND.green;
-                  const { Icon } = stat;
-                  return (
-                    <div
-                      key={stat.label}
-                      className={`relative px-4 py-5 text-center sm:px-5 sm:py-6 ${
-                        index % 2 === 0 ? 'border-r border-white/15' : ''
-                      } ${index < 2 ? 'border-b border-white/15' : ''}`}
-                    >
-                      <div
-                        className="absolute inset-x-0 top-0 h-1"
-                        style={{ backgroundColor: color }}
-                        aria-hidden
-                      />
-                      <Icon className="mx-auto mb-2 size-5 text-white/80" aria-hidden />
-                      <p className="text-xl font-bold leading-none text-white sm:text-2xl lg:text-3xl">
-                        {stat.value}
-                      </p>
-                      <p className="mt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/75 sm:text-xs">
-                        {stat.label}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
           </div>
-        </div>
-      </section>
+        </section>
+
+        <NsdgaCampusStatsBar stats={HERO_STATS} onBorder revealOnScroll />
+      </div>
 
       {/* Enrollment steps */}
-      <section id="how-it-works" className="py-14 sm:py-20" style={{ backgroundColor: BRAND.surface }}>
+      <section id="how-it-works" className={`bg-white pb-14 sm:pb-20 ${NSDGA_STATS_BORDER_SPACER}`}>
         <div className="section-container">
-          <div className="mx-auto mb-12 max-w-2xl text-center">
-            <PublicSectionEyebrow>Enrollment</PublicSectionEyebrow>
-            <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
-              How to Apply Online
-            </h2>
-            <p className="mt-3 text-base sm:text-lg" style={{ color: BRAND.slate }}>
-              Four steps from registration to tracking your application with the registrar.
-            </p>
-          </div>
-
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-            {ENROLLMENT_STEPS.map(({ step, Icon, title, description }) => {
-              const isOdd = step % 2 === 1;
-              return (
-                <div
-                  key={step}
-                  className="rounded-[14px] border border-gray-200 bg-white p-6 shadow-[0px_4px_6px_rgba(0,0,0,0.06)]"
-                  style={{ borderTopWidth: 4, borderTopColor: isOdd ? BRAND.maroon : BRAND.green }}
-                >
-                  <div className="mb-4 flex items-center justify-between">
-                    <span
-                      className="flex size-10 items-center justify-center rounded-full text-lg font-bold text-white"
-                      style={{ backgroundColor: isOdd ? BRAND.maroon : BRAND.green }}
-                    >
-                      {step}
-                    </span>
-                    <Icon
-                      className="size-6"
-                      style={{ color: isOdd ? BRAND.maroon : BRAND.green }}
-                      aria-hidden
-                    />
-                  </div>
-                  <h3 className="text-lg font-bold" style={{ color: BRAND.ink }}>
-                    {title}
-                  </h3>
-                  <p className="mt-2 text-sm leading-relaxed" style={{ color: BRAND.slate }}>
-                    {description}
-                  </p>
-                </div>
-              );
-            })}
+          <PublicSectionEyebrow>Enrollment</PublicSectionEyebrow>
+          <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
+            How to enroll at NSDGA
+          </h2>
+          <p className="mt-3 max-w-2xl text-base" style={{ color: BRAND.slate }}>
+            Four registrar-guided steps from online registration to enrollment tracking.
+          </p>
+          <div className="mt-10">
+            <NsdgaStepGrid steps={[...ENROLLMENT_STEPS]} />
           </div>
         </div>
       </section>
 
       {/* About */}
-      <section className="border-y border-gray-100 bg-white py-14 sm:py-20">
+      <section className="py-14 sm:py-20" style={{ backgroundColor: BRAND.surface }}>
         <div className="section-container">
           <div className="grid items-start gap-10 lg:grid-cols-2 lg:gap-16">
-            <div
-              className="rounded-[14px] border p-6 sm:p-8 lg:p-10"
-              style={{
-                borderColor: `${BRAND.maroon}33`,
-                background: `linear-gradient(135deg, ${BRAND.maroon}08 0%, ${BRAND.green}06 100%)`,
-              }}
-            >
+            <div>
               <PublicSectionEyebrow>About NSDGA</PublicSectionEyebrow>
               <h2 className="text-3xl font-bold leading-tight sm:text-4xl" style={{ color: BRAND.maroon }}>
                 Educating with purpose since Marikina.
@@ -289,7 +226,7 @@ export function LandingPage() {
                 service to the community.
               </p>
               <div
-                className="mt-6 flex items-start gap-3 rounded-[10px] border bg-white p-4"
+                className="mt-6 flex items-start gap-3 rounded-xl border bg-white p-4 shadow-sm"
                 style={{ borderColor: `${BRAND.green}40` }}
               >
                 <MapPin className="mt-0.5 size-5 shrink-0" style={{ color: BRAND.green }} aria-hidden />
@@ -367,31 +304,26 @@ export function LandingPage() {
       {/* Strands */}
       <section className="bg-white py-14 sm:py-20">
         <div className="section-container">
-          <div className="mx-auto mb-12 max-w-2xl text-center">
-            <PublicSectionEyebrow>Senior High School</PublicSectionEyebrow>
-            <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
-              Academic Strands
-            </h2>
-            <p className="mt-3 text-base" style={{ color: BRAND.slate }}>
-              Choose your path — Academic and TVL tracks offered for School Year 2025–2026.
-            </p>
-          </div>
-
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          <PublicSectionEyebrow>Senior High School</PublicSectionEyebrow>
+          <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
+            Academic Strands
+          </h2>
+          <p className="mt-3 max-w-2xl text-base" style={{ color: BRAND.slate }}>
+            Choose your path — Academic and TVL tracks.
+          </p>
+          <div className="mt-10 grid items-start gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {STRAND_SHOWCASE_ITEMS.map((strand) => (
               <StrandShowcaseCard key={strand.slug} strand={strand} />
             ))}
           </div>
 
           <div className="mt-10 text-center">
-            <Button
-              asChild
-              variant="outline"
-              className="rounded-[8px]"
-              style={{ borderColor: BRAND.maroon, color: BRAND.maroon }}
+            <Link
+              to="/admissions"
+              className="inline-flex h-12 items-center justify-center rounded-lg border-2 border-[#8b1538] bg-white px-8 text-base font-semibold text-[#8b1538] shadow-sm transition-colors hover:bg-[#8b1538]/5"
             >
-              <Link to="/admissions">View admissions requirements</Link>
-            </Button>
+              View admissions requirements
+            </Link>
           </div>
         </div>
       </section>
@@ -399,63 +331,52 @@ export function LandingPage() {
       {/* FAQ */}
       <section className="py-14 sm:py-20" style={{ backgroundColor: BRAND.surface }}>
         <div className="section-container">
-          <div className="mx-auto max-w-3xl">
-            <div className="mb-10 text-center">
-              <PublicSectionEyebrow>Admissions</PublicSectionEyebrow>
-              <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
-                Frequently Asked Questions
-              </h2>
-            </div>
+          <div className="mx-auto max-w-3xl text-center">
+            <PublicSectionEyebrow>Admissions</PublicSectionEyebrow>
+            <h2 className="text-3xl font-bold sm:text-4xl" style={{ color: BRAND.maroon }}>
+              Frequently Asked Questions
+            </h2>
+          </div>
 
-            <div className="space-y-4">
-              {FAQ_ITEMS.map((item) => (
-                <details
-                  key={item.q}
-                  className="group rounded-[14px] border border-gray-200 bg-white p-5 shadow-sm open:shadow-md"
-                  style={{ borderLeftWidth: 4, borderLeftColor: BRAND.green }}
-                >
-                  <summary className="cursor-pointer list-none font-semibold marker:content-none [&::-webkit-details-marker]:hidden" style={{ color: BRAND.ink }}>
-                    <span className="flex items-center justify-between gap-4">
-                      {item.q}
-                      <ChevronDown
-                        className="size-5 shrink-0 transition-transform group-open:rotate-180"
-                        style={{ color: BRAND.maroon }}
-                        aria-hidden
-                      />
-                    </span>
-                  </summary>
-                  <p className="mt-3 text-sm leading-relaxed" style={{ color: BRAND.slate }}>
-                    {item.a}
-                  </p>
-                </details>
-              ))}
-            </div>
+          <div className="mx-auto mt-10 max-w-3xl space-y-4">
+            {FAQ_ITEMS.map((item) => (
+              <details
+                key={item.q}
+                className="group rounded-[14px] border border-gray-200 bg-white p-5 shadow-sm open:shadow-md"
+                style={{ borderLeftWidth: 4, borderLeftColor: BRAND.green }}
+              >
+                <summary className="cursor-pointer list-none font-semibold marker:content-none [&::-webkit-details-marker]:hidden" style={{ color: BRAND.ink }}>
+                  <span className="flex items-center justify-between gap-4">
+                    {item.q}
+                    <ChevronDown
+                      className="size-5 shrink-0 transition-transform group-open:rotate-180"
+                      style={{ color: BRAND.maroon }}
+                      aria-hidden
+                    />
+                  </span>
+                </summary>
+                <p className="mt-3 text-sm leading-relaxed" style={{ color: BRAND.slate }}>
+                  {item.a}
+                </p>
+              </details>
+            ))}
           </div>
         </div>
       </section>
 
       {/* CTA */}
-      <section className="relative overflow-hidden py-14 sm:py-20" style={{ backgroundColor: BRAND.maroon }}>
-        <div
-          className="pointer-events-none absolute inset-y-0 left-0 w-2 sm:w-3"
-          style={{ backgroundColor: BRAND.green }}
-          aria-hidden
-        />
-        <div className="section-container relative text-center">
-          <div className="mb-4 flex justify-center">
-            <img src={schoolLogo} alt="" className="size-14 object-contain drop-shadow-md" />
-          </div>
-          <h2 className="text-3xl font-bold text-white sm:text-4xl">
-            Ready to Begin Your Journey?
-          </h2>
-          <p className="mx-auto mt-4 max-w-xl text-base text-[#e5e7eb] sm:text-lg">
-            Join our community of learners committed to excellence and values-driven education.
+      <section className="py-14 sm:py-20" style={{ backgroundColor: BRAND.maroon }}>
+        <div className="section-container text-center">
+          <img src={schoolLogo} alt="" className="mx-auto mb-5 size-16 object-contain" />
+          <h2 className="text-3xl font-bold text-white sm:text-4xl">Ready to enroll?</h2>
+          <p className="mx-auto mt-4 max-w-xl text-base text-white/85 sm:text-lg">
+            Start your Senior High application online — the registrar will guide you through each step.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Button
               asChild
               size="lg"
-              className="h-12 rounded-[8px] bg-white px-8 hover:bg-gray-100"
+              className="h-12 rounded-lg bg-white px-8 hover:bg-gray-100"
               style={{ color: BRAND.maroon }}
             >
               <Link to="/registration">Apply Now</Link>
@@ -464,7 +385,7 @@ export function LandingPage() {
               asChild
               size="lg"
               variant="outline"
-              className="h-12 rounded-[8px] border-white/70 bg-transparent px-8 text-white hover:bg-white/10"
+              className="h-12 rounded-lg border-white/70 bg-transparent px-8 text-white hover:bg-white/10"
             >
               <Link to="/admissions">Learn More</Link>
             </Button>

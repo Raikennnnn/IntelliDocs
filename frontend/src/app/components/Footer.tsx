@@ -1,85 +1,61 @@
 import { Link } from 'react-router';
 import schoolLogo from '../../assets/logo.png';
+import { BRAND } from '../lib/publicBrand';
 
 export function Footer() {
   return (
-    <footer className="bg-[#101828] py-4">
-      <div className="section-container">
-        <div className="grid md:grid-cols-3 gap-6 mb-4">
-          {/* School Info */}
+    <footer style={{ backgroundColor: BRAND.ink }}>
+      <div className="section-container py-10">
+        <div className="grid gap-8 md:grid-cols-3">
           <div>
-            <div className="flex items-center gap-2 mb-2">
-              <div className="size-[28px]">
-                <img 
-                  alt="School Logo" 
-                  className="w-full h-full object-contain" 
-                  src={schoolLogo} 
-                />
-              </div>
+            <div className="mb-3 flex items-center gap-2">
+              <img alt="NSDGA" className="size-8 object-contain" src={schoolLogo} />
               <div>
-                <p className="font-bold text-[13px] text-white leading-tight">
-                  Nuestra Señora De Guia
-                </p>
-                <p className="font-normal text-[11px] text-[#99a1af]">
-                  Academy of Marikina
-                </p>
+                <p className="text-sm font-bold text-white">Nuestra Señora De Guia</p>
+                <p className="text-xs text-white/60">Academy of Marikina</p>
               </div>
             </div>
-            <p className="font-normal text-[11px] text-[#99a1af] leading-[16px]">
-              Empowering students through quality education, strong values, and innovative learning pathways for a brighter future.
+            <p className="text-sm leading-relaxed text-white/55">
+              Senior High School — Grades 11 &amp; 12 with online enrollment and registrar support.
             </p>
           </div>
 
-          {/* Quick Links - 2 Columns */}
           <div>
-            <h4 className="font-bold text-[13px] text-white mb-2">Quick Links</h4>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
-              <Link to="/landing" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
+            <h4 className="mb-3 text-sm font-bold text-white">Quick Links</h4>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <Link to="/landing" className="text-white/55 hover:text-white">
                 Home
               </Link>
-              <Link to="/admissions" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
+              <Link to="/admissions" className="text-white/55 hover:text-white">
                 Admissions
               </Link>
-              <Link to="/about" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
-                About Us
+              <Link to="/about" className="text-white/55 hover:text-white">
+                About
               </Link>
-              <Link to="/contact" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
+              <Link to="/contact" className="text-white/55 hover:text-white">
                 Contact
               </Link>
-              <Link to="/login" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
+              <Link to="/login" className="text-white/55 hover:text-white">
                 Student Portal
               </Link>
-              <Link to="/registration" className="font-normal text-[11px] text-[#99a1af] hover:text-white transition-colors">
+              <Link to="/registration" className="text-white/55 hover:text-white">
                 Enroll Now
               </Link>
             </div>
           </div>
 
-          {/* Contact Us */}
           <div>
-            <h4 className="font-bold text-[13px] text-white mb-2">Contact Us</h4>
-            <ul className="space-y-1.5">
-              <li className="font-normal text-[11px] text-[#99a1af] leading-[16px]">
-                <span className="font-semibold text-white block mb-0.5">Address:</span>
-                96 Soliven St., Greenheights Subd., Ph. 3, Nangka, Marikina City, Philippines
-              </li>
-              <li className="font-normal text-[11px] text-[#99a1af]">
-                <span className="font-semibold text-white block mb-0.5">Office Hours:</span>
-                Monday - Friday | 8:00 AM - 5:00 PM
-              </li>
-              <li className="font-normal text-[11px] text-[#99a1af]">
-                <span className="font-semibold text-white block mb-0.5">Email:</span>
-                registrar@nsdga.edu.ph
-              </li>
+            <h4 className="mb-3 text-sm font-bold text-white">Registrar</h4>
+            <ul className="space-y-2 text-sm text-white/55">
+              <li>96 Soliven St., Greenheights Subd., Ph. 3, Nangka, Marikina City</li>
+              <li>Mon – Fri · 8:00 AM – 5:00 PM</li>
+              <li>registrar@nsdga.edu.ph</li>
             </ul>
           </div>
         </div>
 
-        {/* Copyright */}
-        <div className="border-t border-[#1e2939] pt-3">
-          <p className="font-normal text-[11px] text-[#99a1af] text-center">
-            © 2026 Nuestra Señora De Guia Academy. All rights reserved.
-          </p>
+        <div className="mt-8 border-t border-white/10 pt-6 text-center text-xs text-white/45">
+          © 2026 Nuestra Señora De Guia Academy. All rights reserved.
         </div>
       </div>
     </footer>

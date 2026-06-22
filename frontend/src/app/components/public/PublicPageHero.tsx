@@ -34,7 +34,7 @@ export function PublicPageHero({
         </>
       ) : null}
       <div
-        className="pointer-events-none absolute inset-y-0 left-0 w-2 sm:w-3"
+        className="pointer-events-none absolute inset-y-0 left-0 w-1.5 sm:w-2"
         style={{ backgroundColor: BRAND.green }}
         aria-hidden
       />

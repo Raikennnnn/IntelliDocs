@@ -1,0 +1,12 @@
+Place one photo per strand (same base names, any of: .jpg .jpeg .png .webp):
+
+humss.jpg
+abm.jpg
+stem.jpg
+ict.jpg
+eim.jpg
+bpp-fbs.jpg
+
+When a file exists here, the strand detail page uses it instead of the built-in placeholder.
+
+After `npm run build`, copy these files into dist/strands/ if you deploy only the dist folder.

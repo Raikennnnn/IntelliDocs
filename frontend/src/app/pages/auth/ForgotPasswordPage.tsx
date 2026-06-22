@@ -253,29 +253,31 @@ export function ForgotPasswordPage() {
                     className="h-12 bg-[#F9FAFB]"
                   />
                 </div>
-                <Button
+                <button
                   type="submit"
                   disabled={loading}
-                  className="h-12 w-full text-white"
-                  style={{ backgroundColor: BRAND.maroon }}
+                  className="h-12 w-full rounded-[8px] border-2 border-[#8b1538] bg-[#8b1538] text-base font-semibold text-white transition-colors hover:bg-[#8b1538]/90 disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-200 disabled:text-gray-500"
                 >
                   {loading ? 'Updating…' : 'Update password'}
-                </Button>
-                <Button
+                </button>
+                <button
                   type="button"
-                  variant="outline"
-                  className="w-full"
                   disabled={resending || loading}
                   onClick={() => {
                     setResending(true);
                     void requestResetCode().finally(() => setResending(false));
                   }}
+                  className="h-12 w-full rounded-[8px] border-2 border-[#2d5016] bg-white text-base font-semibold text-[#2d5016] transition-colors hover:bg-[#2d5016]/5 disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-100 disabled:text-gray-500"
                 >
                   {resending ? 'Sending…' : 'Resend reset code'}
-                </Button>
-                <Button type="button" variant="ghost" className="w-full" onClick={() => setStep('email')}>
+                </button>
+                <button
+                  type="button"
+                  className="h-11 w-full rounded-[8px] text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100"
+                  onClick={() => setStep('email')}
+                >
                   Use a different email
-                </Button>
+                </button>
               </form>
             )}
 

@@ -264,7 +264,7 @@ export function StudentDashboard() {
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 className="text-2xl font-semibold text-gray-900">
-            Welcome back, {user.name || user.email}!
+            Welcome back!
           </h2>
           <p className="text-gray-600 mt-1">Here&apos;s your enrollment overview</p>
         </div>
