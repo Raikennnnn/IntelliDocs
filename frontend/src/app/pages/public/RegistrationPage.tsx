@@ -1,5 +1,6 @@
 import registrationImage from '../../../assets/registerpage.png';
 import { apiFetch } from '../../lib/api';
+import { validateEmail } from '../../lib/emailValidation';
 import { validatePassword } from '../../lib/passwordPolicy';
 import { useState, type ClipboardEvent, type FormEvent } from 'react';
 import { useNavigate, Link } from 'react-router';
@@ -12,6 +13,7 @@ import { toast } from "sonner";
 import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
 import { AuthPageHeader } from '../../components/public/AuthPageShell';
 import { PublicSectionEyebrow } from '../../components/public/PublicSectionEyebrow';
+import { PasswordStrengthChecker } from '../../components/public/PasswordStrengthChecker';
 import { BRAND } from '../../lib/publicBrand';
 
 // Registration Page Component
@@ -30,10 +32,32 @@ export function RegistrationPage() {
   const [otpDelivery, setOtpDelivery] = useState<'sent' | 'failed' | null>(null);
   const [termsPrivacyAccepted, setTermsPrivacyAccepted] = useState(false);
   const [dpaAccepted, setDpaAccepted] = useState(false);
+  const [showPasswordHints, setShowPasswordHints] = useState(false);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
+
+  const toastEmailValidation = () => {
+    const result = validateEmail(formData.email);
+    if (!result.ok) {
+      toast.error(result.message);
+      return false;
+    }
+    return true;
+  };
+
+  const toastPasswordValidation = () => {
+    const passwordCheck = validatePassword(formData.password);
+    if (!passwordCheck.ok) {
+      toast.error(passwordCheck.message);
+      return false;
+    }
+    return true;
+  };
+
+  const passwordsMatch =
+    formData.confirmPassword.length > 0 && formData.password === formData.confirmPassword;
 
   const handleOtpChange = (index: number, value: string) => {
     const digitsOnly = value.replace(/\D/g, '');
@@ -120,20 +144,23 @@ export function RegistrationPage() {
   const handleRegister = async (e: FormEvent) => {
     e.preventDefault();
 
-    // Validation
-    if (!formData.email || !formData.password || !formData.confirmPassword) {
-      toast.error('Please fill in all fields');
+    if (!formData.email.trim() || !formData.password || !formData.confirmPassword) {
+      toast.error('Please fill in all fields.');
+      return;
+    }
+
+    const emailCheck = validateEmail(formData.email);
+    if (!emailCheck.ok) {
+      toast.error(emailCheck.message);
+      return;
+    }
+
+    if (!toastPasswordValidation()) {
       return;
     }
 
     if (formData.password !== formData.confirmPassword) {
-      toast.error('Passwords do not match');
-      return;
-    }
-
-    const passwordCheck = validatePassword(formData.password);
-    if (!passwordCheck.ok) {
-      toast.error(passwordCheck.message);
+      toast.error('Passwords do not match. Re-enter the same password in both fields.');
       return;
     }
 
@@ -307,6 +334,11 @@ export function RegistrationPage() {
                       autoComplete="off"
                       value={formData.email}
                       onChange={(e) => handleInputChange('email', e.target.value)}
+                      onBlur={() => {
+                        if (formData.email.trim()) {
+                          void toastEmailValidation();
+                        }
+                      }}
                       placeholder="yourname@example.com"
                       className="h-11 pl-10"
                       required
@@ -327,7 +359,13 @@ export function RegistrationPage() {
                       autoComplete="new-password"
                       value={formData.password}
                       onChange={(e) => handleInputChange('password', e.target.value)}
-                      placeholder="Letters and numbers, 8+ characters"
+                      onFocus={() => setShowPasswordHints(true)}
+                      onBlur={() => {
+                        if (formData.password) {
+                          void toastPasswordValidation();
+                        }
+                      }}
+                      placeholder="Letters, numbers, and symbols"
                       className="h-11 pl-10 pr-10"
                       required
                     />
@@ -340,10 +378,9 @@ export function RegistrationPage() {
                       {showPassword ? <EyeOff className="size-5" /> : <Eye className="size-5" />}
                     </button>
                   </div>
-                  <p className="mt-1 text-[11px] leading-snug text-gray-500">
-                    Use at least 8 characters with letters and numbers. Single repeated characters are
-                    not allowed.
-                  </p>
+                  {(showPasswordHints || formData.password.length > 0) && (
+                    <PasswordStrengthChecker password={formData.password} />
+                  )}
                 </div>
 
                 <div className="min-w-0">
@@ -359,11 +396,29 @@ export function RegistrationPage() {
                       autoComplete="new-password"
                       value={formData.confirmPassword}
                       onChange={(e) => handleInputChange('confirmPassword', e.target.value)}
+                      onBlur={() => {
+                        if (
+                          formData.confirmPassword &&
+                          formData.password &&
+                          formData.password !== formData.confirmPassword
+                        ) {
+                          toast.error('Passwords do not match.');
+                        }
+                      }}
                       placeholder="Re-enter your password"
-                      className="h-11 pl-10 pr-10"
+                      className={`h-11 pl-10 pr-10 ${
+                        formData.confirmPassword && !passwordsMatch
+                          ? 'border-red-400 focus-visible:border-red-500 focus-visible:ring-red-500/30'
+                          : ''
+                      }`}
                       required
                     />
                   </div>
+                  {formData.confirmPassword && !passwordsMatch ? (
+                    <p className="mt-1 text-[11px] text-red-600">Passwords do not match.</p>
+                  ) : formData.confirmPassword && passwordsMatch ? (
+                    <p className="mt-1 text-[11px] text-[#2d5016]">Passwords match.</p>
+                  ) : null}
                 </div>
 
                 {/* Terms, Privacy, and DPA */}
