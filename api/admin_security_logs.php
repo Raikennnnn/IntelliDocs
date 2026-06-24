@@ -22,13 +22,7 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'GET') {
 }
 
 require_once __DIR__ . '/permission_guard.php';
-$actor = apiRequireActor($pdo, 'admin/security-logs');
-if ($actor['role'] !== 'admin') {
-    http_response_code(403);
-    echo json_encode(['success' => false, 'error' => 'Access denied']);
-    exit;
-}
-
+$actor = apiRequireAdmin($pdo, 'admin/security-logs');
 requireActorPermission($pdo, $actor, 'viewActivityLogs', false);
 
 function tableExistsLocal(PDO $pdo, string $table): bool

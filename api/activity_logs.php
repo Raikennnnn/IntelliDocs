@@ -27,13 +27,7 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'GET') {
 }
 
 require_once __DIR__ . '/permission_guard.php';
-$actor = apiRequireActor($pdo, 'activity-logs');
-if (!in_array($actor['role'], ['admin', 'registrar'], true)) {
-    http_response_code(403);
-    echo json_encode(['success' => false, 'error' => 'Access denied']);
-    exit;
-}
-
+$actor = apiRequireRoles($pdo, 'activity-logs', ['admin', 'registrar']);
 if ($actor['role'] === 'admin') {
     requireActorPermission($pdo, $actor, 'viewActivityLogs', false);
 } else {

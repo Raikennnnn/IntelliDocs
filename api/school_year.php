@@ -10,18 +10,13 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/user_role.php';
 require_once __DIR__ . '/school_year_helpers.php';
+require_once __DIR__ . '/api_auth.php';
 
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
 function requireAdminActor(PDO $pdo, string $label): int
 {
-    require_once __DIR__ . '/api_auth.php';
-    $actor = apiRequireActor($pdo, $label);
-    if ($actor['role'] !== 'admin' && !userIsAdmin($pdo, $actor['id'])) {
-        http_response_code(403);
-        echo json_encode(['success' => false, 'error' => 'Access denied. School year management requires an admin account.']);
-        exit;
-    }
+    $actor = apiRequireAdmin($pdo, $label);
     return $actor['id'];
 }
 
@@ -83,16 +78,22 @@ if ($method === 'GET') {
     $ongoing = getOngoingSchoolYear($pdo);
     $enrollment = getEnrollmentSchoolYear($pdo);
     $ended = getEndedSchoolYears($pdo);
-    $records = listSchoolYearRecords($pdo, $enrollment);
-    echo json_encode([
+    $payload = [
         'success' => true,
         'ongoing_school_year' => $ongoing,
         'enrollment_school_year' => $enrollment,
         'active_school_year' => $enrollment, // backward compat for older frontends
         'enrollment_enabled' => $enrollment !== null,
         'ended_school_years' => $ended,
-        'school_years' => $records,
-    ], JSON_UNESCAPED_UNICODE);
+    ];
+    require_once __DIR__ . '/session_token.php';
+    $actor = tryResolveActorFromRequest($pdo, 'school-year');
+    if ($actor !== null && userIsAdmin($pdo, (int)$actor['id'])) {
+        require_once __DIR__ . '/permission_guard.php';
+        requireActorPermission($pdo, $actor, 'configureSystem', false);
+        $payload['school_years'] = listSchoolYearRecords($pdo, $enrollment);
+    }
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE);
     exit;
 }
 

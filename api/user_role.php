@@ -102,6 +102,44 @@ function syncRoleTableUsernamesFromUsers(PDO $pdo): void
 }
 
 /**
+ * @return 'admin'|'registrar'|'student'|null null when user is not in any role table
+ */
+function getUserRoleFromRoleTables(PDO $pdo, int $userId): ?string
+{
+    if ($userId <= 0 || !roleTablesExist($pdo)) {
+        return null;
+    }
+    $stmt = $pdo->prepare("
+        SELECT
+            au.user_id AS admin_id,
+            ru.user_id AS registrar_id,
+            su.user_id AS student_id
+        FROM users u
+        LEFT JOIN admin_users au ON au.user_id = u.id
+        LEFT JOIN registrar_users ru ON ru.user_id = u.id
+        LEFT JOIN student_users su ON su.user_id = u.id
+        WHERE u.id = :id
+        LIMIT 1
+    ");
+    $stmt->execute([':id' => $userId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return null;
+    }
+    if (!empty($row['admin_id'])) {
+        return 'admin';
+    }
+    if (!empty($row['registrar_id'])) {
+        return 'registrar';
+    }
+    if (!empty($row['student_id'])) {
+        return 'student';
+    }
+
+    return null;
+}
+
+/**
  * @return 'admin'|'registrar'|'student'
  */
 function getUserRole(PDO $pdo, int $userId): string
@@ -110,34 +148,21 @@ function getUserRole(PDO $pdo, int $userId): string
         return 'student';
     }
     if (roleTablesExist($pdo)) {
-        $stmt = $pdo->prepare("
-            SELECT
-                CASE
-                    WHEN au.user_id IS NOT NULL THEN 'admin'
-                    WHEN ru.user_id IS NOT NULL THEN 'registrar'
-                    WHEN su.user_id IS NOT NULL THEN 'student'
-                    ELSE 'student'
-                END AS role
-            FROM users u
-            LEFT JOIN admin_users au ON au.user_id = u.id
-            LEFT JOIN registrar_users ru ON ru.user_id = u.id
-            LEFT JOIN student_users su ON su.user_id = u.id
-            WHERE u.id = :id
-            LIMIT 1
-        ");
-        $stmt->execute([':id' => $userId]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        $r = strtolower(trim((string)($row['role'] ?? 'student')));
-        if (!in_array($r, ['admin', 'registrar'], true) && userRoleColumnExists($pdo)) {
+        $tableRole = getUserRoleFromRoleTables($pdo, $userId);
+        if ($tableRole !== null) {
+            // Role tables are authoritative — never promote via legacy users.role.
+            return $tableRole;
+        }
+        if (userRoleColumnExists($pdo)) {
             $legacyStmt = $pdo->prepare('SELECT LOWER(TRIM(COALESCE(role, \'\'))) FROM users WHERE id = :id LIMIT 1');
             $legacyStmt->execute([':id' => $userId]);
             $legacy = strtolower(trim((string)($legacyStmt->fetchColumn() ?: '')));
             if (in_array($legacy, ['admin', 'registrar', 'student'], true)) {
-                $r = $legacy;
+                return $legacy;
             }
         }
 
-        return in_array($r, ['admin', 'registrar', 'student'], true) ? $r : 'student';
+        return 'student';
     }
     if (userRoleColumnExists($pdo)) {
         $stmt = $pdo->prepare('SELECT role FROM users WHERE id = :id LIMIT 1');
