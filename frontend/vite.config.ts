@@ -84,5 +84,35 @@ export default defineConfig(({ mode }) => {
       '@': path.resolve(__dirname, './src/app'),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) {
+            return undefined;
+          }
+          if (id.includes('react-dom') || id.includes('react-router') || /\/react\//.test(id)) {
+            return 'vendor-react';
+          }
+          if (id.includes('@radix-ui')) {
+            return 'vendor-radix';
+          }
+          if (id.includes('lucide-react')) {
+            return 'vendor-icons';
+          }
+          if (id.includes('recharts') || id.includes('d3-')) {
+            return 'vendor-charts';
+          }
+          if (id.includes('@mui') || id.includes('@emotion')) {
+            return 'vendor-mui';
+          }
+          if (id.includes('react-pdf') || id.includes('pdfjs-dist')) {
+            return 'vendor-pdf';
+          }
+          return undefined;
+        },
+      },
+    },
+  },
 };
 });

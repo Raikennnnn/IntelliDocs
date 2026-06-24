@@ -1,61 +1,25 @@
 import { createBrowserRouter, Navigate } from 'react-router';
+import { Suspense, type ReactNode } from 'react';
 import { ErrorBoundary, NotFound } from './components/ErrorBoundary';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { RouteLoading } from './components/RouteLoading';
 import { DashboardLayout, studentNavigation, registrarNavigation, adminNavigation } from './layouts/DashboardLayout';
 import { useRolePermissions } from './context/RolePermissionsContext';
-import { type ReactNode } from 'react';
+import * as Pages from './routePages';
 
-// Auth pages
-import { Login } from './pages/auth/Login';
-import { ForgotPasswordPage } from './pages/auth/ForgotPasswordPage';
-
-// Student pages
-import { StudentDashboard } from './pages/student/StudentDashboard';
-import { StudentEnrollment } from './pages/student/StudentEnrollment';
-import { ApplicationStatus } from './pages/student/ApplicationStatus';
-import { Notifications } from './pages/student/Notifications';
-import { StudentProfile } from './pages/student/StudentProfile';
-import { ChangePassword } from './pages/student/ChangePassword';
-
-// Registrar pages
-import { RegistrarDashboard } from './pages/registrar/RegistrarDashboard';
-import { Applications } from './pages/registrar/Applications';
-import { ReviewDocuments } from './pages/registrar/ReviewDocuments';
-import { AIVerification } from './pages/registrar/AIVerification';
-import { Reports } from './pages/registrar/Reports';
-import { ActivityLogs as RegistrarActivityLogs } from './pages/registrar/ActivityLogs';
-import { Students as RegistrarStudents } from './pages/registrar/Students';
-import { Sections as RegistrarSections } from './pages/registrar/Sections';
-
-// Admin pages
-import { AdminDashboard } from './pages/admin/AdminDashboard';
-import { UserManagement } from './pages/admin/UserManagement';
-import { Students as AdminStudents } from './pages/admin/Students';
-import { Reports as AdminReports } from './pages/admin/Reports';
-import { ActivityLogs as AdminActivityLogs } from './pages/admin/ActivityLogs';
-import { SecurityMonitoring } from './pages/admin/SecurityMonitoring';
-import { SystemSettings } from './pages/admin/SystemSettings';
-import { SchoolYearManagement } from './pages/admin/SchoolYearManagement';
-
-// Shared pages
-import { Announcements } from './pages/shared/Announcements';
-
-// Public pages
-import { LandingPage } from './pages/public/LandingPage';
-import { AboutPage } from './pages/public/AboutPage';
-import { AdmissionsPage } from './pages/public/AdmissionsPage';
-import { StrandInfoPage } from './pages/public/StrandInfoPage';
-import { ContactPage } from './pages/public/ContactPage';
-import { EventsPage } from './pages/public/EventsPage';
-import { ApplicationForm } from './pages/public/ApplicationForm';
-import { RegistrationPage } from './pages/public/RegistrationPage';
-import { LegalDocumentPage } from './pages/public/LegalDocumentPage';
+function withRouteSuspense(node: ReactNode) {
+  return <Suspense fallback={<RouteLoading />}>{node}</Suspense>;
+}
 
 // Route wrapper with layout
 function RouteWithLayout({ children, navigation }: { children: ReactNode; navigation: any[] }) {
   const { filterNavigation, loaded } = useRolePermissions();
   const visibleNav = loaded ? filterNavigation(navigation) : navigation;
-  return <DashboardLayout navigation={visibleNav}>{children}</DashboardLayout>;
+  return (
+    <DashboardLayout navigation={visibleNav}>
+      <Suspense fallback={<RouteLoading />}>{children}</Suspense>
+    </DashboardLayout>
+  );
 }
 
 export const router = createBrowserRouter([
@@ -66,27 +30,27 @@ export const router = createBrowserRouter([
   },
   {
     path: '/login',
-    element: <Login />,
+    element: withRouteSuspense(<Pages.Login />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/forgot-password',
-    element: <ForgotPasswordPage />,
+    element: withRouteSuspense(<Pages.ForgotPasswordPage />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/student-login',
-    element: <Login />,
+    element: withRouteSuspense(<Pages.Login />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/registrar-login',
-    element: <Login />,
+    element: withRouteSuspense(<Pages.Login />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/admin-login',
-    element: <Login />,
+    element: withRouteSuspense(<Pages.Login />),
     errorElement: <ErrorBoundary />,
   },
   // Student Routes (prefixed /student/... to match registrar/admin URLs)
@@ -95,7 +59,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['student']}>
         <RouteWithLayout navigation={studentNavigation}>
-          <StudentDashboard />
+          <Pages.StudentDashboard />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -106,7 +70,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['student']}>
         <RouteWithLayout navigation={studentNavigation}>
-          <StudentEnrollment />
+          <Pages.StudentEnrollment />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -117,7 +81,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['student']}>
         <RouteWithLayout navigation={studentNavigation}>
-          <ApplicationStatus />
+          <Pages.ApplicationStatus />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -128,7 +92,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['student']}>
         <RouteWithLayout navigation={studentNavigation}>
-          <Notifications />
+          <Pages.Notifications />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -139,7 +103,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['student']}>
         <RouteWithLayout navigation={studentNavigation}>
-          <StudentProfile />
+          <Pages.StudentProfile />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -150,7 +114,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['student']}>
         <RouteWithLayout navigation={studentNavigation}>
-          <Announcements />
+          <Pages.Announcements />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -163,10 +127,10 @@ export const router = createBrowserRouter([
     // `ProtectedRoute` special-cases this exact path so the First_Login_Guard
     // does not redirect away from it.
     path: '/student/change-password',
-    element: (
+    element: withRouteSuspense(
       <ProtectedRoute allowedRoles={['student']}>
-        <ChangePassword />
-      </ProtectedRoute>
+        <Pages.ChangePassword />
+      </ProtectedRoute>,
     ),
     errorElement: <ErrorBoundary />,
   },
@@ -182,7 +146,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <RegistrarDashboard />
+          <Pages.RegistrarDashboard />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -193,7 +157,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <Applications />
+          <Pages.Applications />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -204,7 +168,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <RegistrarStudents />
+          <Pages.RegistrarStudents />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -215,7 +179,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <RegistrarSections />
+          <Pages.RegistrarSections />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -226,7 +190,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <ReviewDocuments />
+          <Pages.ReviewDocuments />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -237,7 +201,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <ReviewDocuments />
+          <Pages.ReviewDocuments />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -248,7 +212,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <AIVerification />
+          <Pages.AIVerification />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -259,7 +223,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <Reports />
+          <Pages.Reports />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -270,7 +234,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <RegistrarActivityLogs />
+          <Pages.RegistrarActivityLogs />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -281,7 +245,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation}>
-          <Announcements />
+          <Pages.Announcements />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -293,7 +257,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <AdminDashboard />
+          <Pages.AdminDashboard />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -304,7 +268,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <UserManagement />
+          <Pages.UserManagement />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -315,7 +279,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <AdminStudents />
+          <Pages.AdminStudents />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -326,7 +290,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <AdminReports />
+          <Pages.AdminReports />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -337,7 +301,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <AdminActivityLogs />
+          <Pages.AdminActivityLogs />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -348,7 +312,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <SecurityMonitoring />
+          <Pages.SecurityMonitoring />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -359,7 +323,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <SystemSettings />
+          <Pages.SystemSettings />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -370,7 +334,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <SchoolYearManagement />
+          <Pages.SchoolYearManagement />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -381,7 +345,7 @@ export const router = createBrowserRouter([
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
         <RouteWithLayout navigation={adminNavigation}>
-          <Announcements />
+          <Pages.Announcements />
         </RouteWithLayout>
       </ProtectedRoute>
     ),
@@ -390,47 +354,47 @@ export const router = createBrowserRouter([
   // Public Routes
   {
     path: '/landing',
-    element: <LandingPage />,
+    element: withRouteSuspense(<Pages.LandingPage />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/about',
-    element: <AboutPage />,
+    element: withRouteSuspense(<Pages.AboutPage />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/admissions/strands/:strandSlug',
-    element: <StrandInfoPage />,
+    element: withRouteSuspense(<Pages.StrandInfoPage />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/admissions',
-    element: <AdmissionsPage />,
+    element: withRouteSuspense(<Pages.AdmissionsPage />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/contact',
-    element: <ContactPage />,
+    element: withRouteSuspense(<Pages.ContactPage />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/events',
-    element: <EventsPage />,
+    element: withRouteSuspense(<Pages.EventsPage />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/application-form',
-    element: <ApplicationForm />,
+    element: withRouteSuspense(<Pages.ApplicationForm />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/registration',
-    element: <RegistrationPage />,
+    element: withRouteSuspense(<Pages.RegistrationPage />),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/legal/:docId',
-    element: <LegalDocumentPage />,
+    element: withRouteSuspense(<Pages.LegalDocumentPage />),
     errorElement: <ErrorBoundary />,
   },
   // Error Handling
