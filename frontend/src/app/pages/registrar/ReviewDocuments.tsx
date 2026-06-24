@@ -1170,8 +1170,19 @@ export function ReviewDocuments() {
     if (!isPhoto) {
       if (cells.length > 0) parts.push(`${cells.length} suspicious grade cell(s)`);
       if (fields.length > 0) parts.push(`${fields.length} suspicious field(s)`);
-    } else if (fields.length > 0) {
-      parts.push(`${fields.length} suspicious region(s)`);
+    } else {
+      const actionable = fields.filter(
+        (f) => String(f?.risk || "").toLowerCase() in { high: 1, warning: 1 },
+      );
+      const portraitOnly =
+        fields.length > 0 &&
+        actionable.length === 0 &&
+        fields.some((f) => String(f?.field || "").toLowerCase() === "portrait");
+      if (actionable.length > 0) {
+        parts.push(`${actionable.length} suspicious region(s)`);
+      } else if (portraitOnly) {
+        parts.push("portrait area scanned — no edit hotspots");
+      }
     }
     const what = parts.length
       ? parts.join(" and ")
@@ -3687,7 +3698,9 @@ export function ReviewDocuments() {
                           const color =
                             risk === "high"
                               ? "border-fuchsia-600 bg-fuchsia-500/10"
-                              : "border-sky-500 bg-sky-400/10";
+                              : risk === "info"
+                                ? "border-blue-400 bg-blue-400/10"
+                                : "border-sky-500 bg-sky-400/10";
                           return (
                             <div
                               key={`f-${idx}`}
@@ -3698,7 +3711,11 @@ export function ReviewDocuments() {
                                 width: `${f.w * sx}px`,
                                 height: `${f.h * sy}px`,
                               }}
-                              title={`Suspicious field (${f.field}): ${f.text}`}
+                              title={
+                                f.field === "Portrait"
+                                  ? "Portrait area scanned for edits"
+                                  : `Suspicious field (${f.field}): ${f.text}`
+                              }
                             />
                           );
                         })}

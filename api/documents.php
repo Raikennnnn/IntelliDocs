@@ -307,7 +307,7 @@ if ($method === 'POST') {
         exit;
     }
 
-    // Level 1 — image quality + readability (blur / lighting / OCR text). PDFs rejected above.
+    // Level 1 — image quality only (readability runs after upload via /documents/screen-readability).
     if (in_array($ext, ['jpg', 'jpeg', 'png'], true)) {
         require_once __DIR__ . '/ai_http.php';
         $docTypeKey = mapDocumentTypeForAi($documentType);
@@ -498,7 +498,7 @@ if ($method === 'POST') {
             ':mime_type' => $mimeType,
             ':file_size' => $size,
             ':file_path' => $relativeFilePath,
-            ':ai_status' => 'pending',
+            ':ai_status' => 'screening',
         ];
         if ($hasUploadCountCol) {
             $params[':upload_count'] = $newUploadCount;
@@ -523,7 +523,8 @@ if ($method === 'POST') {
                 'filename' => $finalName,
                 'file_path' => $relativeFilePath,
                 'uploaded_at' => date('Y-m-d H:i:s'),
-                'ai_status' => 'pending',
+                'ai_status' => 'screening',
+                'readability_pending' => true,
                 'upload_count' => $newUploadCount,
                 'attempt_limit' => $UPLOAD_LIMIT,
                 'resubmit_attempt' => $inResubmitPhase,

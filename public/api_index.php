@@ -54,6 +54,10 @@ switch ($route) {
     case 'role-permissions/':
         require_once __DIR__ . '/../api/role_permissions.php';
         break;
+    case 'documents/screen-readability':
+    case 'documents/screen-readability/':
+        require_once __DIR__ . '/../api/document_screen_readability.php';
+        break;
     case 'documents':
     case 'documents/':
         require_once __DIR__ . '/../api/documents.php';

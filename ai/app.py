@@ -2010,10 +2010,19 @@ def _build_security_levels(
     high_risk = any(str(c.get("risk")) == "high" for c in cells) or any(
         str(f.get("risk")) == "high" for f in fields
     )
+    warn_hotspots = sum(
+        1
+        for x in (cells + fields)
+        if str(x.get("risk") or "").lower() == "warning"
+    )
     # Level 3 should reflect tamper/integrity only.
     # Overall pass still requires Levels 1–3, but we don't want a quality/match failure
     # to incorrectly show "possible edits" when integrity is clean (e.g., 100%).
-    l3_pass = tamper_score >= 0.50 and not (high_risk and tamper_score < 0.65)
+    l3_pass = (
+        tamper_score >= 0.50
+        and not (high_risk and tamper_score < 0.65)
+        and not (warn_hotspots >= 2 and tamper_score < 0.72)
+    )
     l3_concern = _concern_display_score(l3_pass, tamper_pct)
     if l3_pass:
         hotspot_n = len(cells) + len(fields)
@@ -2576,6 +2585,8 @@ def _merge_localized_tamper_score(
     global_score: float,
     cells: list[dict] | None,
     fields: list[dict] | None,
+    *,
+    is_photo: bool = False,
 ) -> tuple[float, list[str]]:
     """
     Global _tamper_check can miss pasted edits. When localized ELA checks flag regions,
@@ -2585,6 +2596,14 @@ def _merge_localized_tamper_score(
     cells = cells or []
     fields = fields or []
     merged = list(cells) + list(fields)
+    if is_photo:
+        # Portrait guide box is informational only; do not penalize normal ID photos.
+        merged = [
+            x
+            for x in merged
+            if str(x.get("risk") or "").lower() in ("high", "warning")
+            and str(x.get("field") or "") not in ("Portrait", "REGION")
+        ]
     if not merged:
         return s, []
 
@@ -2596,13 +2615,18 @@ def _merge_localized_tamper_score(
         r = str(x.get("risk") or "").lower().strip()
         if r == "high":
             high += 1
-        elif r == "warning" or r == "":
+        elif r in ("warning", ""):
             warn += 1
+        elif r == "info":
+            continue
     if high == 0 and warn == 0:
         warn = len(merged)
 
     # Penalize: high-risk regions are strong evidence of inconsistent compression / edits.
-    penalty = min(0.72, high * 0.20 + warn * 0.09)
+    if is_photo:
+        penalty = min(0.55, high * 0.28 + warn * 0.12)
+    else:
+        penalty = min(0.78, high * 0.22 + warn * 0.10)
     s2 = _clamp01(s - penalty)
     signals = []
     if penalty > 0.0:
@@ -2841,6 +2865,10 @@ def _grid_hotspot_tamper(
     tamper_map: "object|None",
     image_w: int | None,
     image_h: int | None,
+    *,
+    high_z: float = 2.95,
+    warn_z: float = 2.65,
+    min_high_cells: int = 2,
 ) -> list[dict]:
     """
     OCR-INDEPENDENT tamper detection.
@@ -2897,8 +2925,8 @@ def _grid_hotspot_tamper(
     # Robust z-score; 0.6745 makes MAD comparable to std for normal data.
     z = 0.6745 * (means - median) / mad
 
-    HIGH_Z = 7.0
-    WARN_Z = 4.5
+    HIGH_Z = float(high_z)
+    WARN_Z = float(warn_z)
     flagged = np.zeros((rows, cols), dtype=np.int8)
     flagged[(z >= WARN_Z) & content] = 1
     flagged[(z >= HIGH_Z) & content] = 2
@@ -2938,6 +2966,8 @@ def _grid_hotspot_tamper(
             y1 = int(min(rs) * h_img / rows)
             y2 = int((max(rs) + 1) * h_img / rows)
             peak_z = float(z[rs, cs].max()) if cells else 0.0
+            if max_level >= 2 and len(cells) < int(min_high_cells):
+                continue
             suspects.append(
                 {
                     "field": "REGION",
@@ -3023,9 +3053,9 @@ def _sf9_cell_tamper(diff_arr: "object|None", boxes: list[dict]) -> list[dict]:
     # Flag outliers relative to baseline to reduce false positives across different scans.
     for cell, v in candidates:
         ratio = v / baseline
-        if ratio >= 2.8:
+        if ratio >= 1.30:
             suspects.append({**cell, "ela_var": round(v, 2), "ratio": round(ratio, 2), "risk": "high"})
-        elif ratio >= 2.0:
+        elif ratio >= 1.18:
             suspects.append({**cell, "ela_var": round(v, 2), "ratio": round(ratio, 2), "risk": "warning"})
     return suspects
 
@@ -3147,9 +3177,9 @@ def _sf9_field_tamper(diff_arr: "object|None", boxes: list[dict], image_w: int |
             if v is None:
                 return
             ratio = v / baseline
-            if ratio >= 2.6:
+            if ratio >= 1.35:
                 risk = "high"
-            elif ratio >= 1.9:
+            elif ratio >= 1.20:
                 risk = "warning"
             else:
                 return
@@ -3200,6 +3230,174 @@ def _sf9_field_tamper(diff_arr: "object|None", boxes: list[dict], image_w: int |
     return suspects
 
 
+_TAMPER_VALUE_STOP = frozenset(
+    {
+        "OF",
+        "THE",
+        "AND",
+        "OR",
+        "IN",
+        "ON",
+        "AT",
+        "TO",
+        "NO",
+        "IS",
+        "A",
+        "AN",
+        "SY",
+        "JR",
+        "SR",
+        "ST",
+        "DR",
+        "MR",
+        "MS",
+        "CITY",
+        "INC",
+        "DEPT",
+        "DEPED",
+        "REGION",
+        "DIVISION",
+        "NCR",
+    }
+)
+
+
+def _tamper_label_is_boilerplate(field: str, label_text: str) -> bool:
+    """Skip OCR boxes that contain a keyword but are not real field labels."""
+    import re
+
+    nl = re.sub(r"[^A-Z0-9/ ]+", " ", (label_text or "").upper())
+    nl = re.sub(r"\s+", " ", nl).strip()
+    if not nl:
+        return True
+    if field == "SCHOOL":
+        skip_phrases = (
+            "SCHOOLS DIVISION",
+            "DIVISION OF",
+            "SCHOOL YEAR",
+            "SCHOOLYEAR",
+            "DEPARTMENT OF",
+            "NATIONAL CAPITAL",
+            "REPUBLIC OF",
+            "JUNIOR HIGH SCHOOL STUDENT",
+            "SENIOR HIGH SCHOOL STUDENT",
+            "SENIOR HIGH SCHOOL",
+            "VIOLATED SCHOOL",
+            "THIS SCHOOL",
+            "OF THIS SCHOOL",
+            "STUDENT OF THIS",
+            "CERTIFICATION",
+            "CERTIFICATE",
+            "GOOD MORAL",
+        )
+        if any(p in nl for p in skip_phrases):
+            return True
+        if "SCHOOLS" in nl and "DIVISION" in nl:
+            return True
+    if field == "NAME" and any(k in nl for k in ("CERTIFY", "CERTIFIES", "REPUBLIC", "DEPARTMENT")):
+        return True
+    if field in ("DATE OF BIRTH", "PLACE OF BIRTH", "REGISTRY NO", "PSA"):
+        if any(k in nl for k in ("REPUBLIC", "PHILIPPINE STATISTICS", "CERTIFICATE OF LIVE", "CIVIL REGISTRAR")):
+            return True
+        if field == "PLACE OF BIRTH" and nl in ("PLACE", "PLACE OF", "BIRTH"):
+            return True
+        if field == "DATE OF BIRTH" and "DATE OF BIRTH" not in nl and nl in ("DATE", "BIRTH", "BIRTHDATE"):
+            return True
+    return False
+
+
+def _tamper_value_text_plausible(field: str, value_text: str) -> bool:
+    """Reject OCR fragments (OF, H, form labels, etc.) that are not real field values."""
+    import re
+
+    t = re.sub(r"\s+", " ", (value_text or "").strip().upper())
+    if not t:
+        return False
+    if t in _TAMPER_VALUE_STOP:
+        return False
+    if len(t) <= 2:
+        return False
+    if re.match(r"^\(.*\)$", t):
+        return False
+    if re.match(r"^\d+[A-Z]?\.?$", t):
+        return False
+    form_junk = {
+        "TOTAL",
+        "BEFORE",
+        "AFTER",
+        "NAME",
+        "FIRST",
+        "MIDDLE",
+        "LAST",
+        "DATE",
+        "BIRTH",
+        "PLACE",
+        "SEX",
+        "MALE",
+        "FEMALE",
+        "REGISTRY",
+        "PSA",
+        "LIVE",
+        "CERTIFICATE",
+        "CHILD",
+        "MOTHER",
+        "FATHER",
+    }
+    if t.rstrip(".") in form_junk:
+        return False
+    if field == "SCHOOL":
+        if len(t) < 4:
+            return False
+        tokens = [w for w in re.findall(r"[A-Z0-9]+", t) if len(w) >= 2]
+        if not tokens:
+            return False
+        distinctive = [w for w in tokens if w not in _TAMPER_VALUE_STOP and len(w) >= 4]
+        if not distinctive:
+            return False
+    if field == "NAME":
+        letters = re.sub(r"[^A-Z]", "", t)
+        if len(letters) < 4:
+            return False
+    if field == "DATE OF BIRTH":
+        if not (
+            re.search(r"\d", t)
+            or re.search(
+                r"\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b",
+                t,
+            )
+        ):
+            return False
+    if field == "PLACE OF BIRTH":
+        letters = re.sub(r"[^A-Z]", "", t)
+        if len(letters) < 4:
+            return False
+    if field == "REGISTRY NO":
+        if not re.search(r"\d{3,}", t):
+            return False
+    return True
+
+
+def _tamper_label_matches_variant(field: str, label_text: str, variant: str) -> bool:
+    """Keyword match with fewer false hits from certificate boilerplate."""
+    import re
+
+    nt = re.sub(r"[^A-Z0-9/ ]+", " ", (label_text or "").upper())
+    nt = re.sub(r"\s+", " ", nt).strip()
+    vu = variant.upper().strip()
+    if not nt or not vu:
+        return False
+    if field == "SCHOOL":
+        if vu == "SCHOOL":
+            if "SCHOOLS DIVISION" in nt or "SCHOOL YEAR" in nt:
+                return False
+            return bool(re.search(r"\bSCHOOL\b", nt) or re.search(r"\bSCHOOLS\b", nt))
+        if vu == "HIGH SCHOOL":
+            return "HIGH SCHOOL" in nt
+        if vu == "ACADEMY":
+            return "ACADEMY" in nt
+    return vu in nt
+
+
 def _keyword_field_tamper(
     diff_arr: "object|None",
     boxes: list[dict],
@@ -3208,6 +3406,8 @@ def _keyword_field_tamper(
     field_map: dict[str, list[str]],
     *,
     search_y_max_ratio: float = 0.9,
+    min_ratio_high: float = 1.35,
+    min_ratio_warn: float = 1.20,
 ) -> list[dict]:
     """
     Generic field tamper detector for non-table documents.
@@ -3268,8 +3468,9 @@ def _keyword_field_tamper(
         t = str(b.get("text", "") or "")
         nt = norm(t)
         for field, variants in field_map.items():
-            if any(v in nt for v in variants):
-                label_boxes[field].append(b)
+            if any(_tamper_label_matches_variant(field, t, v) for v in variants):
+                if not _tamper_label_is_boilerplate(field, t):
+                    label_boxes[field].append(b)
 
     def find_value_box(lbl: dict) -> dict | None:
         try:
@@ -3308,6 +3509,9 @@ def _keyword_field_tamper(
             vb = find_value_box(lbl)
             if not vb:
                 continue
+            value_text = str(vb.get("text", "")).strip()
+            if not _tamper_value_text_plausible(field, value_text):
+                continue
             try:
                 x = int(vb.get("x", 0))
                 y = int(vb.get("y", 0))
@@ -3317,16 +3521,16 @@ def _keyword_field_tamper(
                 if v is None:
                     continue
                 ratio = v / baseline
-                if ratio >= 2.6:
+                if ratio >= min_ratio_high:
                     risk = "high"
-                elif ratio >= 1.9:
+                elif ratio >= min_ratio_warn:
                     risk = "warning"
                 else:
                     continue
                 suspects.append(
                     {
                         "field": field,
-                        "text": str(vb.get("text", "")).strip(),
+                        "text": value_text,
                         "x": x,
                         "y": y,
                         "w": w,
@@ -3393,6 +3597,490 @@ def _composite_verify_score(
         base -= 0.10
 
     return max(0.0, min(1.0, base))
+
+
+def _sanitize_person_name_candidate(name: str) -> str:
+    """Strip OCR noise and trailing field labels from a person-name candidate."""
+    s = re.sub(r"\s+", " ", (name or "").strip().upper())
+    s = re.sub(r"[^A-Z0-9'.\- ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(
+        r"\b(OF|GRADE|GRADES|YEAR|SECTION|SCHOOL|MALE|FEMALE|THE|A|AN)\b.*$",
+        "",
+        s,
+        flags=re.I,
+    ).strip()
+    return s
+
+
+def _norm_simple_name_tokens(name: str) -> list[str]:
+    return [t for t in _sanitize_person_name_candidate(name).split() if len(t) >= 2]
+
+
+def _fuzzy_name_token_match(exp_tok: str, cand: str, cand_tokens: list[str] | None = None) -> bool:
+    """Match enrollment tokens against OCR names with mild OCR tolerance."""
+    et = (exp_tok or "").strip().upper()
+    if len(et) < 2:
+        return False
+    ctokens = cand_tokens if cand_tokens is not None else _norm_simple_name_tokens(cand)
+    cu = _sanitize_person_name_candidate(cand)
+    if et in cu or et in ctokens:
+        return True
+    if len(et) >= 4:
+        for ct in ctokens:
+            if len(ct) >= 4 and (ct.startswith(et[:4]) or et.startswith(ct[:4])):
+                return True
+            if len(et) >= 5 and len(ct) >= 5 and abs(len(et) - len(ct)) <= 1:
+                mism = sum(a != b for a, b in zip(et, ct)) + abs(len(et) - len(ct))
+                if mism <= 1:
+                    return True
+    return False
+
+
+def _name_tokens_match_robust(
+    expected_name: str,
+    candidate: str,
+    *,
+    certificate_style: bool = False,
+) -> tuple[bool, float, list[str], list[str]]:
+    """
+    Enrollment name cross-check with OCR-tolerant token matching.
+    Last-name must match the candidate's final token (not merely appear elsewhere).
+    """
+    exp_tokens = _norm_simple_name_tokens(expected_name)
+    if not exp_tokens:
+        return True, 1.0, [], []
+    cand = _sanitize_person_name_candidate(candidate)
+    if not cand:
+        return False, 0.0, exp_tokens[:6], []
+    cand_tokens = _norm_simple_name_tokens(cand)
+    hits = [t for t in exp_tokens if _fuzzy_name_token_match(t, cand, cand_tokens)]
+    ratio = len(hits) / max(1, len(exp_tokens))
+    missing = [t for t in exp_tokens if t not in hits]
+    first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
+    first_ok = _fuzzy_name_token_match(first_tok, cand, cand_tokens)
+    cand_last = cand_tokens[-1] if cand_tokens else ""
+    last_ok = _fuzzy_name_token_match(last_tok, cand_last, [cand_last] if cand_last else [])
+    if certificate_style or len(exp_tokens) <= 2:
+        ok = first_ok and last_ok
+        if ok and ratio < 0.67:
+            ratio = max(ratio, round(2.0 / max(1, len(exp_tokens)), 2))
+    else:
+        ok = first_ok and last_ok and ratio >= 0.50
+        if len(exp_tokens) >= 3 and first_ok and last_ok and ratio >= 0.67:
+            ok = True
+    return ok, float(ratio), missing[:6], hits
+
+
+_SCHOOL_TOKEN_STOP = frozenset(
+    {
+        "SCHOOL",
+        "SCHOOLS",
+        "HIGH",
+        "JUNIOR",
+        "SENIOR",
+        "ELEMENTARY",
+        "NATIONAL",
+        "INTEGRATED",
+        "ACADEMY",
+        "COLLEGE",
+        "UNIVERSITY",
+        "CITY",
+        "OF",
+        "THE",
+        "AND",
+        "DISTRICT",
+        "DIVISION",
+        "REGION",
+        "DEPARTMENT",
+        "REPUBLIC",
+        "PHILIPPINES",
+        "EDUCATION",
+        "CAPITAL",
+        "STUDENT",
+        "STUDENTS",
+        "GRADE",
+        "CERTIFY",
+        "CERTIFICATION",
+        "CERTIFICATE",
+        "THIS",
+        "THAT",
+        "CHARACTER",
+        "MORAL",
+        "GOOD",
+        "ISSUED",
+        "REQUEST",
+        "ENROLLMENT",
+        "PURPOSES",
+        "BEARS",
+        "RECORD",
+        "BEHAVIOR",
+        "STAY",
+        "DURING",
+        "HIS",
+        "HER",
+        "THEY",
+        "THEM",
+        "WITH",
+        "WITHOUT",
+        "VALID",
+        "SEAL",
+        "TEL",
+        "STREET",
+        "AVE",
+        "AVENUE",
+        "BARANGAY",
+        "BRGY",
+    }
+)
+
+
+def _norm_school_text(s: str) -> str:
+    import re
+
+    t = re.sub(r"[^A-Z0-9 ]+", " ", (s or "").upper())
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _distinctive_school_tokens(name: str) -> list[str]:
+    tokens = [t for t in _norm_school_text(name).split() if len(t) >= 3]
+    out: list[str] = []
+    for t in tokens:
+        if t in _SCHOOL_TOKEN_STOP:
+            continue
+        if t.isdigit():
+            continue
+        out.append(t)
+    return out
+
+
+def _fuzzy_school_token_match(exp_tok: str, det_tokens: list[str]) -> bool:
+    et = (exp_tok or "").strip().upper()
+    if len(et) < 3:
+        return False
+    for dt in det_tokens:
+        if et == dt:
+            return True
+        if len(et) >= 4 and len(dt) >= 4 and (et.startswith(dt[:4]) or dt.startswith(et[:4])):
+            return True
+        if len(et) >= 5 and len(dt) >= 5 and abs(len(et) - len(dt)) <= 1:
+            mism = sum(a != b for a, b in zip(et, dt)) + abs(len(et) - len(dt))
+            if mism <= 1:
+                return True
+    return False
+
+
+def _school_names_match_robust(expected: str, detected: str) -> tuple[bool, float, list[str]]:
+    """
+    Match enrollment previous-school against OCR school name.
+    Ignores generic tokens (HIGH, SCHOOL, JUNIOR, …) that appear in certificate boilerplate.
+    """
+    exp_tokens = _distinctive_school_tokens(expected)
+    if not exp_tokens:
+        return True, 1.0, []
+    det_tokens = _distinctive_school_tokens(detected)
+    if not det_tokens:
+        return False, 0.0, exp_tokens[:6]
+    hits = [t for t in exp_tokens if _fuzzy_school_token_match(t, det_tokens)]
+    ratio = len(hits) / max(1, len(exp_tokens))
+    missing = [t for t in exp_tokens if t not in hits]
+    ok = len(hits) >= 1 and ratio >= 0.50
+    if len(exp_tokens) == 1:
+        ok = len(hits) == 1
+    return ok, float(ratio), missing[:6]
+
+
+def _line_is_school_name_candidate(line: str) -> bool:
+    import re
+
+    nl = _norm_school_text(line)
+    if len(nl) < 5:
+        return False
+    reject = (
+        "DIVISION OF",
+        "SCHOOLS DIVISION",
+        "DEPARTMENT OF",
+        "NATIONAL CAPITAL",
+        "REPUBLIC OF",
+        "CERTIFY",
+        "CERTIFICATION",
+        "STUDENT OF",
+        "JUNIOR HIGH SCHOOL STUDENT",
+        "SENIOR HIGH SCHOOL STUDENT",
+        "GRADE ",
+        "THIS IS TO",
+        "BEARS A GOOD",
+        "ISSUED UPON",
+        "ENROLLMENT PURPOSE",
+        "TEL NO",
+        "STREET",
+        "NOT VALID",
+    )
+    if any(k in nl for k in reject):
+        return False
+    markers = (
+        "HIGH SCHOOL",
+        "JUNIOR HIGH",
+        "SENIOR HIGH",
+        "ELEMENTARY",
+        "ACADEMY",
+        "NATIONAL HIGH",
+        "INTEGRATED SCHOOL",
+    )
+    if any(k in nl for k in markers):
+        return True
+    return bool(re.search(r"\bSCHOOL\b", nl) and len(nl.split()) >= 2)
+
+
+def _photo_portrait_bbox(image_w: int, image_h: int) -> dict:
+    """Approximate face/portrait area for standard 2×2 ID photos."""
+    w, h = int(image_w), int(image_h)
+    pw = max(32, int(w * 0.58))
+    ph = max(32, int(h * 0.62))
+    x = max(0, (w - pw) // 2)
+    y = max(0, int(h * 0.12))
+    if y + ph > h:
+        ph = max(32, h - y)
+    return {"x": x, "y": y, "w": pw, "h": ph}
+
+
+def _photo_integrity_regions(
+    filepath: str,
+    image_w: int | None,
+    image_h: int | None,
+) -> list[dict]:
+    """
+    2×2 ID photo UI regions.
+
+    Document-style grid / ELA hotspot scans false-positive on normal portraits (hair, eyes,
+    and face edges against a white background). For photos we only return a portrait guide
+    box so registrars see which area was reviewed; headline tamper uses global checks +
+    synthetic detection instead.
+    """
+    if not image_w or not image_h:
+        return []
+
+    bb = _photo_portrait_bbox(image_w, image_h)
+    return [
+        {
+            "field": "Portrait",
+            "text": "2x2 face / photo area",
+            "risk": "info",
+            "x": bb["x"],
+            "y": bb["y"],
+            "w": bb["w"],
+            "h": bb["h"],
+            "var": 0.0,
+            "ratio": 0.0,
+        }
+    ]
+
+
+def _photo_portrait_tamper(
+    filepath: str,
+    image_w: int | None,
+    image_h: int | None,
+    diff_arr: "object|None" = None,
+) -> list[dict]:
+    """
+    Scan the portrait region of a 2×2 photo for compression / edit artifacts.
+    Always returns a portrait bounding box so the registrar UI can highlight the checked area.
+    """
+    if not image_w or not image_h:
+        return []
+    try:
+        import numpy as np
+    except Exception:
+        return []
+
+    if diff_arr is None:
+        diff_arr, _ = _compute_ela_diff(filepath)
+    if diff_arr is None:
+        diff_arr = _compute_noise_residual(filepath)
+    if diff_arr is None or not hasattr(diff_arr, "shape"):
+        bb = _photo_portrait_bbox(image_w, image_h)
+        return [
+            {
+                "field": "Portrait",
+                "text": "2×2 face / photo area",
+                "risk": "info",
+                **bb,
+                "var": 0.0,
+                "ratio": 0.0,
+            }
+        ]
+
+    arr = np.asarray(diff_arr, dtype=np.uint8)
+    h_img, w_img = int(arr.shape[0]), int(arr.shape[1])
+    bb = _photo_portrait_bbox(image_w, image_h)
+    sx = w_img / max(1, float(image_w))
+    sy = h_img / max(1, float(image_h))
+    x1 = max(0, int(bb["x"] * sx))
+    y1 = max(0, int(bb["y"] * sy))
+    x2 = min(w_img, int((bb["x"] + bb["w"]) * sx))
+    y2 = min(h_img, int((bb["y"] + bb["h"]) * sy))
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        return []
+
+    portrait = arr[y1:y2, x1:x2]
+    portrait_var = float(np.var(portrait))
+
+    # Baseline from margins outside the portrait (background / frame).
+    margin_vars: list[float] = []
+    strips = (
+        arr[0:y1, :],
+        arr[y2:h_img, :],
+        arr[y1:y2, 0:x1],
+        arr[y1:y2, x2:w_img],
+    )
+    for strip in strips:
+        if strip.size >= 16:
+            margin_vars.append(float(np.var(strip)))
+    baseline = float(np.median(np.asarray(margin_vars, dtype=np.float32))) if margin_vars else portrait_var
+    if baseline <= 1e-6:
+        baseline = portrait_var or 1.0
+    ratio = portrait_var / baseline
+
+    if ratio >= 1.42:
+        risk = "high"
+    elif ratio >= 1.22:
+        risk = "warning"
+    else:
+        risk = "info"
+
+    return [
+        {
+            "field": "Portrait",
+            "text": "2×2 face / photo area",
+            "risk": risk,
+            "x": bb["x"],
+            "y": bb["y"],
+            "w": bb["w"],
+            "h": bb["h"],
+            "var": round(portrait_var, 2),
+            "ratio": round(ratio, 2),
+        }
+    ]
+
+
+def _psa_child_name_line_noise(clean: str) -> bool:
+    nl = re.sub(r"\s+", " ", (clean or "").upper()).strip()
+    if not nl:
+        return True
+    noise = (
+        "MUNICIPAL",
+        "HUNICIPAL",
+        "FIRED",
+        "PROVINCE",
+        "REGISTRY",
+        "OCRO",
+        "QUADRUPLICATE",
+        "PHILIPPINE",
+        "STATISTICS",
+        "REPUBLIC",
+        "CERTIFICATE",
+        "CIVIL REGISTRAR",
+        "CITY/M",
+        "METRO MAN",
+        "PAGE",
+    )
+    return any(k in nl for k in noise)
+
+
+def _best_psa_child_name_line(
+    u_simple: list[str],
+    u_norm: list[str],
+    expected_name: str = "",
+) -> str:
+    """Best-effort child name line from PSA OCR (noise-filtered, OCR-tolerant)."""
+    if not u_simple or not u_norm:
+        return ""
+
+    def norm_simple(s: str) -> str:
+        return _sanitize_person_name_candidate(s)
+
+    end = len(u_norm)
+    for i, nl in enumerate(u_norm):
+        if "DATE OF BIRTH" in nl or ("SEX" in nl and re.search(r"\b2\b", nl)):
+            end = i
+            break
+    exp_tokens = _norm_simple_name_tokens(expected_name)
+    stop = frozenset(
+        {
+            "TO", "BE", "IN", "THE", "AND", "OF", "FOR", "USE", "ONLY", "NAME", "FIRST",
+            "MIDDLE", "LAST", "FORM", "ACCOMPLISHED", "QUADRUPLICATE", "CERTIFICATE", "LIVE",
+            "BIRTH", "REPUBLIC", "PHILIPPINES", "PHILIPPINE", "STATISTICS", "PSA", "OFFICE",
+            "CIVIL", "REGISTRAR", "GENERAL", "REGISTRY", "PROVINCE", "CITY", "MUNICIPALITY",
+            "OCRO", "REMARKS", "ANNOTATION", "PAGE", "FILL", "OUT", "COMPLETELY",
+            "ACCURATELY", "LEGIBLY", "INK", "TYPEWRITER", "FEGIBLY", "COMPLETELY",
+        }
+    )
+    best_ratio = -1.0
+    best_name = ""
+    for i in range(min(end, len(u_norm))):
+        nl = u_norm[i]
+        if "FATHER" in nl or "MOTHER" in nl or "MAIDEN" in nl:
+            break
+        clean_raw = (u_simple[i] if i < len(u_simple) else "").strip()
+        clean = _sanitize_person_name_candidate(clean_raw)
+        lead = clean
+        parts = [p for p in clean.split() if p.isalpha() and len(p) >= 2]
+        if len(parts) >= 2:
+            clean = " ".join(parts[:4])
+        if not clean or _psa_child_name_line_noise(clean):
+            continue
+        if len(clean) < 5:
+            continue
+        if exp_tokens:
+            hits = [t for t in exp_tokens if _fuzzy_name_token_match(t, clean)]
+            ratio = len(hits) / max(1, len(exp_tokens))
+        else:
+            words = [w for w in clean.split() if w.isalpha() and len(w) >= 2 and w not in stop]
+            if len(words) < 2:
+                continue
+            ratio = 0.15 + 0.12 * min(4, len(words))
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_name = clean
+    if best_name and (best_ratio >= 0.34 or not exp_tokens):
+        return best_name[:64]
+    return ""
+
+
+def _enrollment_mismatch_tamper_adjustment(payload: dict) -> tuple[float, list[str]]:
+    """
+    Strong identity-field mismatches (LRN / DOB / sex) can indicate substitution.
+    Name and school mismatches are shown under enrollment mismatch (MM) only — not tamper (T).
+    """
+    field_checks = payload.get("field_checks") or []
+    score = _clamp01(float(payload.get("tamper_score") or 1.0))
+    signals: list[str] = []
+    identity_fields = frozenset({"LRN", "Date of birth", "Sex"})
+    failed: list[str] = []
+    for row in field_checks:
+        if not isinstance(row, dict):
+            continue
+        field = str(row.get("field") or "")
+        if field not in identity_fields:
+            continue
+        if row.get("ok"):
+            continue
+        detected = str(row.get("detected") or "").strip()
+        if not detected:
+            continue
+        ratio = float(row.get("match_ratio") or 0.0)
+        if ratio < 0.50:
+            failed.append(field)
+    if not failed:
+        return score, signals
+    penalty = min(0.50, 0.14 * len(failed) + 0.10)
+    score = _clamp01(score - penalty)
+    signals.append(
+        "Enrollment mismatch on "
+        + ", ".join(failed)
+        + " — possible document substitution or edited identity fields"
+    )
+    return score, signals
 
 
 def _evaluate(
@@ -3891,27 +4579,26 @@ def _evaluate(
 
             def _box_looks_like_person_name_part(text: str) -> bool:
                 s = _strip_name_field_labels(text or "")
+                s = re.sub(r"[^A-Za-zñÑ'.\- ]+", " ", s).strip()
                 if not s or len(s) < 2 or len(s) > 48:
                     return False
+                s_up = s.upper()
                 if (
-                    _name_line_is_noise(s)
-                    or _looks_like_date_fragment(s)
-                    or _looks_like_school_institution_name(s)
+                    _name_line_is_noise(s_up)
+                    or _looks_like_date_fragment(s_up)
+                    or _looks_like_school_institution_name(s_up)
                 ):
                     return False
-                if re.search(r"\d", s):
+                if re.search(r"\d", s_up):
                     return False
-                if not _academic_name_part_plausible(s):
+                if not _academic_name_part_plausible(s_up):
                     return False
-                if re.fullmatch(r"[A-Z][A-Z'.\-]*", s):
-                    return True
-                parts = s.split()
+                parts = s_up.split()
                 if not parts or len(parts) > 4:
                     if len(parts) > 4:
-                        lead = _leading_name_words(s, max_parts=4)
+                        lead = _leading_name_words(s_up, max_parts=4)
                         if lead:
-                            s = lead
-                            parts = s.split()
+                            parts = lead.split()
                         else:
                             return False
                     else:
@@ -3949,11 +4636,8 @@ def _evaluate(
                 image_h: int | None,
                 bb: dict | None = None,
             ) -> bool:
-                """True when name should be discarded (wrong person / wrong vertical zone)."""
+                """True when OCR picked a parent-row / out-of-zone name (not enrollment mismatch)."""
                 if not name:
-                    return True
-                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
-                if exp_tokens and exp_tokens[0] not in norm_simple(name):
                     return True
                 if _psa_name_from_parent_section(name, normed, image_h, bb):
                     return True
@@ -3995,6 +4679,8 @@ def _evaluate(
                 def _token_hit(bt: str) -> bool:
                     if first_tok in bt:
                         return True
+                    if _fuzzy_name_token_match(first_tok, bt):
+                        return True
                     if len(first_tok) >= 4 and first_tok[:4] in bt:
                         return True
                     return False
@@ -4030,7 +4716,7 @@ def _evaluate(
                     parts.append(part)
                     picked.append(b)
                 full = _leading_name_words(" ".join(parts)) or " ".join(parts)
-                if not full or first_tok not in norm_simple(full):
+                if not full or not _fuzzy_name_token_match(first_tok, full):
                     return "", None
                 if not _candidate_name_is_plausible(full):
                     return "", None
@@ -4054,11 +4740,11 @@ def _evaluate(
                     clean = _leading_name_words(_strip_name_field_labels(u_simple[i])) or _strip_name_field_labels(
                         u_simple[i]
                     )
-                    if not clean or exp_tokens[0] not in clean:
+                    if not clean or not _fuzzy_name_token_match(exp_tokens[0], clean):
                         continue
                     if not _box_looks_like_person_name_part(clean):
                         continue
-                    hits = [t for t in exp_tokens if t in clean]
+                    hits = [t for t in exp_tokens if _fuzzy_name_token_match(t, clean)]
                     ratio = len(hits) / max(1, len(exp_tokens))
                     if ratio > best_ratio:
                         best_ratio = ratio
@@ -4755,6 +5441,52 @@ def _evaluate(
                     if _candidate_name_is_plausible(full):
                         return full[:64]
 
+                def _psa_child_name_line_noise(clean: str) -> bool:
+                    nl = normalize(clean or "")
+                    if not nl:
+                        return True
+                    noise = (
+                        "MUNICIPAL",
+                        "HUNICIPAL",
+                        "FIRED",
+                        "PROVINCE",
+                        "REGISTRY",
+                        "OCRO",
+                        "QUADRUPLICATE",
+                        "PHILIPPINE",
+                        "STATISTICS",
+                        "REPUBLIC",
+                        "CERTIFICATE",
+                        "CIVIL REGISTRAR",
+                    )
+                    return any(k in nl for k in noise)
+
+                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
+                if exp_tokens:
+                    best_ratio = -1.0
+                    best_name = ""
+                    for i in range(min(end, len(u_norm))):
+                        if _psa_is_parent_field_line(u_norm[i]):
+                            break
+                        if re.search(r"\b2\b", u_norm[i]) and "SEX" in u_norm[i]:
+                            break
+                        if "DATE OF BIRTH" in u_norm[i]:
+                            break
+                        clean = _leading_name_words(
+                            _strip_name_field_labels(u_simple[i] if i < len(u_simple) else "")
+                        ) or _strip_name_field_labels(u_simple[i] if i < len(u_simple) else "")
+                        if not clean or _psa_child_name_line_noise(clean):
+                            continue
+                        if not _box_looks_like_person_name_part(clean):
+                            continue
+                        hits = [t for t in exp_tokens if _fuzzy_name_token_match(t, clean)]
+                        ratio = len(hits) / max(1, len(exp_tokens))
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_name = clean
+                    if best_name and best_ratio >= 0.34:
+                        return best_name[:64]
+
                 early_names: list[str] = []
                 for i in range(min(end, len(u_norm))):
                     nl = u_norm[i]
@@ -4766,7 +5498,9 @@ def _evaluate(
                         break
                     clean = _strip_name_field_labels(u_simple[i] if i < len(u_simple) else "")
                     clean = _leading_name_words(clean) or clean
-                    if not clean or not _box_looks_like_person_name_part(clean):
+                    if not clean or _psa_child_name_line_noise(clean):
+                        continue
+                    if not _box_looks_like_person_name_part(clean):
                         continue
                     if clean in early_names:
                         continue
@@ -4786,7 +5520,7 @@ def _evaluate(
                         clean = _leading_name_words(_strip_name_field_labels(ln)) or _strip_name_field_labels(ln)
                         if not _box_looks_like_person_name_part(clean):
                             continue
-                        hits = [t for t in exp_tokens if t in clean]
+                        hits = [t for t in exp_tokens if _fuzzy_name_token_match(t, clean)]
                         ratio = len(hits) / max(1, len(exp_tokens))
                         if ratio > best_ratio:
                             best_ratio = ratio
@@ -4981,36 +5715,17 @@ def _evaluate(
                 return joined[:64], bb
 
             def _name_tokens_match(expected_name: str, candidate: str) -> tuple[bool, float, list[str], list[str]]:
-                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
-                if not exp_tokens:
-                    return True, 1.0, [], []
-                cand = norm_simple(candidate)
-                if not cand:
-                    return False, 0.0, exp_tokens[:6], []
-                cand_tokens = [t for t in cand.split() if len(t) >= 2]
-                hits = [t for t in exp_tokens if t in cand or t in cand_tokens]
-                ratio = len(hits) / max(1, len(exp_tokens))
-                missing = [t for t in exp_tokens if t not in hits]
-                first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
-                ok = first_tok in cand and last_tok in cand and ratio >= 0.67
-                return ok, float(ratio), missing[:6], hits
+                ok, ratio, missing, hits = _name_tokens_match_robust(
+                    expected_name, candidate, certificate_style=False
+                )
+                return ok, ratio, missing, hits
 
             def _name_tokens_match_certificate(expected_name: str, candidate: str) -> tuple[bool, float, list[str], list[str]]:
                 """Good moral / certification: first + last name match; middle may differ."""
-                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
-                if not exp_tokens:
-                    return True, 1.0, [], []
-                cand = norm_simple(candidate)
-                if not cand:
-                    return False, 0.0, exp_tokens[:6], []
-                hits = [t for t in exp_tokens if t in cand]
-                ratio = len(hits) / max(1, len(exp_tokens))
-                missing = [t for t in exp_tokens if t not in hits]
-                first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
-                core_ok = first_tok in cand and last_tok in cand
-                if core_ok and ratio < 0.67:
-                    ratio = max(ratio, round(2.0 / max(1, len(exp_tokens)), 2))
-                return core_ok, float(ratio), missing[:6], hits
+                ok, ratio, missing, hits = _name_tokens_match_robust(
+                    expected_name, candidate, certificate_style=True
+                )
+                return ok, ratio, missing, hits
 
             def _extract_good_moral_certified_name(u_simple: list[str], u_norm: list[str] | None = None) -> str:
                 """Pull student name from 'This is to certify that …' body text."""
@@ -5100,6 +5815,8 @@ def _evaluate(
                     nl = normalize(clean)
                     if any(k in nl for k in skip_header):
                         continue
+                    if not _line_is_school_name_candidate(clean):
+                        continue
                     if any(k in nl for k in institution_markers):
                         return clean[:64]
                     if re.search(r"\bSCHOOL\b", nl) and len(nl.split()) >= 2:
@@ -5107,22 +5824,22 @@ def _evaluate(
                             continue
                         return clean[:64]
 
-                exp_tokens = [
-                    t for t in norm_simple(expected_school).split(" ") if len(t) >= 4
-                ]
+                exp_tokens = _distinctive_school_tokens(expected_school)
                 if exp_tokens:
                     best_ratio = -1.0
                     best_line = ""
                     for ln in u_simple or []:
-                        nl = norm_simple(ln)
-                        if not nl or any(k in nl for k in skip_header):
+                        clean = re.sub(r"\s+", " ", (ln or "").strip())
+                        if not _line_is_school_name_candidate(clean):
                             continue
-                        hits = [t for t in exp_tokens if t in nl]
+                        nl = norm_simple(clean)
+                        det_tokens = _distinctive_school_tokens(clean)
+                        hits = [t for t in exp_tokens if _fuzzy_school_token_match(t, det_tokens)]
                         ratio = len(hits) / max(1, len(exp_tokens))
                         if ratio > best_ratio:
                             best_ratio = ratio
-                            best_line = clean if (clean := re.sub(r"\s+", " ", (ln or "").strip())) else nl
-                    if best_line and best_ratio >= 0.34:
+                            best_line = clean
+                    if best_line and best_ratio >= 0.50:
                         return best_line[:64]
                 return ""
 
@@ -5230,7 +5947,9 @@ def _evaluate(
                 if line_hit and not _psa_reject_parent_name(
                     line_hit, expected_name, normed_boxes, image_h, None
                 ):
-                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, line_hit)
+                    ok, ratio, missing, _hits = _name_tokens_match_robust(
+                        expected_name, line_hit, certificate_style=True
+                    )
                     return ok, ratio, missing, line_hit, None
 
                 token_name, token_bb = _psa_child_name_from_enrollment_tokens(
@@ -5239,7 +5958,9 @@ def _evaluate(
                 if token_name and not _psa_reject_parent_name(
                     token_name, expected_name, normed_boxes, image_h, token_bb
                 ):
-                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, token_name)
+                    ok, ratio, missing, _hits = _name_tokens_match_robust(
+                        expected_name, token_name, certificate_style=True
+                    )
                     return ok, ratio, missing, token_name, token_bb
 
                 picked_name, picked_bb = _pick_psa_child_name_for_expected(
@@ -5250,7 +5971,9 @@ def _evaluate(
                 ):
                     picked_name, picked_bb = "", None
                 if picked_name:
-                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, picked_name)
+                    ok, ratio, missing, _hits = _name_tokens_match_robust(
+                        expected_name, picked_name, certificate_style=True
+                    )
                     return ok, ratio, missing, picked_name, picked_bb
 
                 box_name, box_bb = _detect_psa_child_name_from_boxes(normed_boxes, image_h, iw)
@@ -5265,9 +5988,11 @@ def _evaluate(
                     box_name = ""
                     box_bb = None
                 if box_name and _candidate_name_is_plausible(box_name):
-                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, box_name)
+                    ok, ratio, missing, _hits = _name_tokens_match_robust(
+                        expected_name, box_name, certificate_style=True
+                    )
                     exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
-                    if exp_tokens and exp_tokens[0] not in norm_simple(box_name):
+                    if exp_tokens and not _fuzzy_name_token_match(exp_tokens[0], box_name):
                         box_name = ""
                         box_bb = None
                     else:
@@ -5278,10 +6003,12 @@ def _evaluate(
                     line_name = ""
                 if line_name and _candidate_name_is_plausible(line_name):
                     exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
-                    if exp_tokens and exp_tokens[0] not in norm_simple(line_name):
+                    if exp_tokens and not _fuzzy_name_token_match(exp_tokens[0], line_name):
                         line_name = ""
                 if line_name and _candidate_name_is_plausible(line_name):
-                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, line_name)
+                    ok, ratio, missing, _hits = _name_tokens_match_robust(
+                        expected_name, line_name, certificate_style=True
+                    )
                     return ok, ratio, missing, line_name, box_bb
 
                 exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
@@ -5300,9 +6027,11 @@ def _evaluate(
                 for ln in child_lines:
                     if _looks_like_date_fragment(ln):
                         continue
-                    if first_tok not in ln and last_tok not in ln:
+                    if not _fuzzy_name_token_match(first_tok, ln) and not _fuzzy_name_token_match(
+                        last_tok, ln
+                    ):
                         continue
-                    hits = [t for t in exp_tokens if t in ln]
+                    hits = [t for t in exp_tokens if _fuzzy_name_token_match(t, ln)]
                     ratio = len(hits) / max(1, len(exp_tokens))
                     if ratio > best_ratio:
                         best_ratio = ratio
@@ -5312,7 +6041,7 @@ def _evaluate(
                         best_parts.append(ln.strip())
 
                 detected_line = ""
-                if best_parts and best_ratio > 0 and first_tok in best_parts[0]:
+                if best_parts and best_ratio > 0 and _fuzzy_name_token_match(first_tok, best_parts[0]):
                     detected_line = " ".join(best_parts[:3])[:64]
                 elif not detected_line:
                     detected_line = _extract_psa_child_name_from_lines(
@@ -5320,18 +6049,27 @@ def _evaluate(
                     )
                 if detected_line and _psa_name_from_parent_section(detected_line, normed_boxes, image_h, None):
                     detected_line = ""
-                if detected_line and first_tok not in norm_simple(detected_line):
-                    detected_line = ""
+                if detected_line and not _fuzzy_name_token_match(first_tok, detected_line):
+                    # Keep the on-document name for mismatch UI even when enrollment differs.
+                    if not _candidate_name_is_plausible(detected_line):
+                        detected_line = ""
+                if not detected_line:
+                    detected_line = _best_psa_child_name_line(u_simple, u_norm, expected_name) or _best_psa_child_name_line(
+                        u_simple, u_norm, ""
+                    )
+                elif _psa_child_name_line_noise(detected_line):
+                    detected_line = _best_psa_child_name_line(u_simple, u_norm, expected_name) or detected_line
                 missing = [t for t in exp_tokens if t not in best_hits]
-                joined_child = " ".join(child_lines)
-                first_ok = first_tok in joined_child
-                last_ok = last_tok in joined_child
-                ok = first_ok and last_ok and best_ratio >= 0.67
-                if ok and not detected_line and best_parts:
-                    detected_line = best_parts[0][:64]
+                if detected_line:
+                    ok, ratio, missing, _hits = _name_tokens_match_robust(
+                        expected_name, detected_line, certificate_style=True
+                    )
+                else:
+                    ok = False
+                    ratio = float(best_ratio)
                 if detected_line and not _candidate_name_is_plausible(detected_line):
                     detected_line = ""
-                return ok, float(best_ratio), missing[:6], detected_line, None
+                return ok, float(ratio), missing[:6], detected_line, None
 
             def birth_place_match(
                 expected_place: str,
@@ -5781,6 +6519,15 @@ def _evaluate(
                     ok_name, ratio, missing, detected_name, name_bbox = name_match_birth_certificate(
                         exp_name, simple_lines, norm_lines, normed_boxes, img_h
                     )
+                    if not detected_name or _psa_child_name_line_noise(detected_name):
+                        fallback = _best_psa_child_name_line(simple_lines, norm_lines, exp_name)
+                        if not fallback:
+                            fallback = _best_psa_child_name_line(simple_lines, norm_lines, "")
+                        if fallback:
+                            detected_name = fallback
+                            ok_name, ratio, missing, _hits = _name_tokens_match_robust(
+                                exp_name, detected_name, certificate_style=True
+                            )
                 elif _academic_doc:
                     doc_kind = doc_type if doc_type in ("sf9", "report_card", "sf10", "form137", "form157") else "sf9"
                     box_name, name_bbox = _detect_name_from_boxes(
@@ -5862,7 +6609,6 @@ def _evaluate(
                         img_h,
                         name_bbox,
                     ):
-                        detected_name = ""
                         ok_name = False
                         exp_toks = [t for t in norm_simple(exp_name).split(" ") if len(t) >= 2]
                         missing = [t for t in exp_toks if t not in norm_simple(detected_name)]
@@ -5968,40 +6714,57 @@ def _evaluate(
                     penalize(0.12)
 
             if run_prev_school_check and exp_prev_school:
-                school_tokens = [t for t in norm_simple(exp_prev_school).split(" ") if len(t) >= 4]
                 detected_school = ""
                 if _moral_doc:
                     detected_school = _extract_good_moral_school_name(simple_lines, exp_prev_school)
-                best_hits: list[str] = []
-                best_ratio = -1.0
                 best_line = detected_school
-                if school_tokens:
-                    for ln in simple_lines or []:
-                        hits = [t for t in school_tokens if t in ln]
-                        ratio = len(hits) / max(1, len(school_tokens))
-                        if ratio > best_ratio:
-                            best_ratio = ratio
-                            best_hits = hits
-                            if not detected_school and ratio >= 0.34:
-                                best_line = ln.strip()[:64]
-                    if best_ratio < 0:
-                        best_hits = [t for t in school_tokens if t in norm_text]
-                        best_ratio = len(best_hits) / max(1, len(school_tokens))
+                ok = True
+                best_ratio = 1.0
+                missing_school: list[str] = []
+                if exp_prev_school.strip():
                     if detected_school:
-                        det_hits = [t for t in school_tokens if t in norm_simple(detected_school)]
-                        det_ratio = len(det_hits) / max(1, len(school_tokens))
-                        if det_ratio >= best_ratio:
-                            best_ratio = det_ratio
-                            best_hits = det_hits
-                            best_line = detected_school[:64]
-                    ok = best_ratio >= 0.35
+                        ok, best_ratio, missing_school = _school_names_match_robust(
+                            exp_prev_school, detected_school
+                        )
+                        best_line = detected_school[:64]
+                    else:
+                        # Fallback: scan OCR lines that look like school names (not certificate body text).
+                        best_ratio = -1.0
+                        for ln in simple_lines or []:
+                            clean = (ln or "").strip()
+                            if not _line_is_school_name_candidate(clean):
+                                continue
+                            ok_ln, ratio_ln, _ = _school_names_match_robust(exp_prev_school, clean)
+                            if ratio_ln > best_ratio:
+                                best_ratio = ratio_ln
+                                best_line = clean[:64]
+                                ok = ok_ln
+                        if best_ratio < 0:
+                            ok, best_ratio, missing_school = False, 0.0, _distinctive_school_tokens(
+                                exp_prev_school
+                            )
+                        elif not _moral_doc and best_ratio < 0.50:
+                            for ln in simple_lines or []:
+                                clean = (ln or "").strip()
+                                if len(clean) < 4:
+                                    continue
+                                ok_ln, ratio_ln, miss_ln = _school_names_match_robust(
+                                    exp_prev_school, clean
+                                )
+                                if ratio_ln > best_ratio:
+                                    best_ratio = ratio_ln
+                                    best_line = clean[:64]
+                                    ok = ok_ln
+                                    missing_school = miss_ln
                     row = {
                         "field": "Previous school",
                         "expected": exp_prev_school,
                         "detected": best_line[:64] if best_line else "",
-                        "ok": ok,
+                        "ok": bool(ok),
                         "match_ratio": round(float(best_ratio), 2),
                     }
+                    if missing_school:
+                        row["missing_tokens"] = missing_school[:6]
                     if _moral_doc and best_line:
                         school_bb = _detect_good_moral_school_bbox(normed_boxes, img_h, best_line)
                         if school_bb:
@@ -6022,8 +6785,10 @@ def _evaluate(
                         issues.append("Mismatch: Previous school name not clearly found in the document.")
                         penalize(0.08)
                     elif not ok and _moral_doc:
-                        issues.append("Mismatch: Previous school name not clearly found on the certificate.")
-                        penalize(0.06)
+                        issues.append(
+                            "Mismatch: School name on the certificate does not match the previous school entered during enrollment."
+                        )
+                        penalize(0.10)
                     elif _moral_doc and detected_school:
                         for dc in doc_checks:
                             if dc.get("field") == "School name keyword" and not dc.get("ok"):
@@ -6311,7 +7076,7 @@ def _evaluate(
 
 @app.route("/screen-quality", methods=["POST", "OPTIONS"])
 def screen_quality():
-    """Level 1 only — used when the student uploads a file (blur / quality gate)."""
+    """Student upload gate — image quality; optional full readability when mode is not quality_only."""
     if request.method == "OPTIONS":
         return _corsify(make_response("", 204))
 
@@ -6320,6 +7085,8 @@ def screen_quality():
 
     file = request.files["image"]
     doc_type = (request.form.get("doc_type") or "").strip().lower()
+    mode = (request.form.get("mode") or "").strip().lower()
+    quality_only = mode in ("quality_only", "quality-only", "quality")
     if file.filename == "":
         return jsonify({"error": "No file selected"}), 400
 
@@ -6349,6 +7116,23 @@ def screen_quality():
                     "quality": quality,
                     "security_levels": sec,
                     "message": quality.get("message"),
+                }
+            )
+
+        if quality_only:
+            sec = {
+                "levels": [quality_level],
+                "overall_pass": True,
+                "highest_level_passed": 1,
+            }
+            return jsonify(
+                {
+                    "pass": True,
+                    "level": 1,
+                    "quality": quality,
+                    "security_levels": sec,
+                    "message": "Image quality OK.",
+                    "readability_deferred": True,
                 }
             )
 
@@ -6386,6 +7170,65 @@ def screen_quality():
                 "readability": readability,
                 "security_levels": sec,
                 "message": "Image quality and document readability OK.",
+            }
+        )
+    finally:
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
+
+
+@app.route("/screen-readability", methods=["POST", "OPTIONS"])
+def screen_readability():
+    """Level 2 readability gate — run after upload while the student continues the form."""
+    if request.method == "OPTIONS":
+        return _corsify(make_response("", 204))
+
+    if "image" not in request.files:
+        return jsonify({"error": "No image"}), 400
+
+    file = request.files["image"]
+    doc_type = (request.form.get("doc_type") or "").strip().lower()
+    if file.filename == "":
+        return jsonify({"error": "No file selected"}), 400
+
+    filepath = _staging_upload_path(file)
+    file.save(filepath)
+
+    try:
+        readability = _upload_document_readability_check(filepath, doc_type)
+        readability_level = _level_pack(
+            level=2,
+            title="Document readability",
+            passed=bool(readability.get("pass")),
+            score=100 if readability.get("pass") else max(0, min(100, int((readability.get("word_count") or 0) * 4))),
+            summary=str(readability.get("message") or ""),
+            issues=list(readability.get("issues") or []),
+        )
+        sec = {
+            "levels": [readability_level],
+            "overall_pass": bool(readability.get("pass")),
+            "highest_level_passed": 2 if readability.get("pass") else 0,
+        }
+        if not readability.get("pass"):
+            return jsonify(
+                {
+                    "pass": False,
+                    "level": 2,
+                    "readability": readability,
+                    "security_levels": sec,
+                    "message": readability.get("message"),
+                }
+            )
+
+        return jsonify(
+            {
+                "pass": True,
+                "level": 2,
+                "readability": readability,
+                "security_levels": sec,
+                "message": "Document readability OK.",
             }
         )
     finally:
@@ -6552,14 +7395,22 @@ def verify_doc():
             if diff_arr is None:
                 diff_arr = _compute_noise_residual(filepath)
             fm = {
-                "NAME": ["NAME"],
-                "DATE OF BIRTH": ["DATE OF BIRTH", "BIRTH", "BIRTHDATE"],
-                "PLACE OF BIRTH": ["PLACE OF BIRTH", "PLACE"],
+                "NAME": ["NAME", "CHILD'S NAME", "CHILDS NAME"],
+                "DATE OF BIRTH": ["DATE OF BIRTH"],
+                "PLACE OF BIRTH": ["PLACE OF BIRTH"],
                 "SEX": ["SEX"],
-                "REGISTRY NO": ["REGISTRY", "REGISTRY NO", "REGISTRY NO."],
-                "PSA": ["PSA", "PHILIPPINE STATISTICS", "PHILIPPINE"],
+                "REGISTRY NO": ["REGISTRY NO", "REGISTRY NO."],
             }
-            fields = _keyword_field_tamper(diff_arr, boxes, img_w, img_h, fm, search_y_max_ratio=0.95)
+            fields = _keyword_field_tamper(
+                diff_arr,
+                boxes,
+                img_w,
+                img_h,
+                fm,
+                search_y_max_ratio=0.95,
+                min_ratio_high=1.45,
+                min_ratio_warn=1.32,
+            )
             if fields:
                 payload["tamper_fields"] = (payload.get("tamper_fields") or []) + fields
                 payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
@@ -6577,12 +7428,15 @@ def verify_doc():
             if diff_arr is None:
                 diff_arr = _compute_noise_residual(filepath)
             fm = {
-                "NAME": ["NAME"],
-                "SCHOOL": ["SCHOOL"],
-                "DATE": ["DATE"],
-                "GOOD MORAL": ["GOOD", "MORAL", "GOOD MORAL"],
+                "NAME": ["CERTIFY", "CERTIFIES"],
+                "SCHOOL": ["HIGH SCHOOL", "ACADEMY", "NATIONAL HIGH"],
+                "DATE": ["FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"],
+                "GOOD MORAL": ["GOOD MORAL", "MORAL CHARACTER"],
+                "GRADE": ["GRADE", "GR."],
             }
-            fields = _keyword_field_tamper(diff_arr, boxes, img_w, img_h, fm, search_y_max_ratio=0.95)
+            fields = _keyword_field_tamper(
+                diff_arr, boxes, img_w, img_h, fm, search_y_max_ratio=0.95, min_ratio_high=1.28, min_ratio_warn=1.14
+            )
             if fields:
                 payload["tamper_fields"] = (payload.get("tamper_fields") or []) + fields
                 payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
@@ -6593,30 +7447,75 @@ def verify_doc():
                 ]
 
         # OCR-INDEPENDENT whole-image hotspot scan (catches edits even when OCR misses the labels).
-        try:
-            tmap = _compute_tamper_map(filepath)
-            region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
-            if region_hits:
-                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
-                n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
-                payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                    f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
-                    + (f" ({n_high} high-risk)" if n_high else "")
-                ]
-                payload["issues"] = (payload.get("issues") or []) + [
-                    "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
-                ]
-        except Exception:
-            pass
+        # Skip for 2×2 photos — natural face/hair edges against white backgrounds look like outliers.
+        if not is_photo_verify:
+            try:
+                tmap = _compute_tamper_map(filepath)
+                if effective_doc_type in ("birth_certificate", "birthcert"):
+                    # PSA scans include security print / watermarks that look like outliers.
+                    region_hits = _grid_hotspot_tamper(
+                        tmap,
+                        img_w,
+                        img_h,
+                        high_z=3.55,
+                        warn_z=3.15,
+                        min_high_cells=3,
+                    )
+                else:
+                    region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
+                if region_hits:
+                    payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
+                    n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
+                    payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
+                        f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
+                        + (f" ({n_high} high-risk)" if n_high else "")
+                    ]
+                    payload["issues"] = (payload.get("issues") or []) + [
+                        "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
+                    ]
+            except Exception:
+                pass
+
+        if is_photo_verify and img_w and img_h:
+            photo_regions = _photo_integrity_regions(filepath, img_w, img_h)
+            if photo_regions:
+                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + photo_regions
 
         # Merge localized tamper hotspots into headline tamper_score (global-only check often stayed at 100%).
         cells_all = list(payload.get("tamper_cells") or [])
         fields_all = list(payload.get("tamper_fields") or [])
-        merged_score, merge_signals = _merge_localized_tamper_score(tamper_score, cells_all, fields_all)
+        mismatch_score, mismatch_signals = _enrollment_mismatch_tamper_adjustment(payload)
+        if mismatch_signals:
+            tamper_score = mismatch_score
+            payload["tamper_score"] = tamper_score
+            payload["tamper_signals"] = (payload.get("tamper_signals") or []) + mismatch_signals
+        merged_score, merge_signals = _merge_localized_tamper_score(
+            tamper_score, cells_all, fields_all, is_photo=is_photo_verify
+        )
         tamper_score = merged_score
         payload["tamper_score"] = tamper_score
         if merge_signals:
             payload["tamper_signals"] = (payload.get("tamper_signals") or []) + merge_signals
+
+        try:
+            edit_fields = [
+                f
+                for f in fields_all
+                if str(f.get("risk")) in ("high", "warning")
+                and str(f.get("field") or "") not in ("Portrait", "REGION")
+            ]
+            if edit_fields and not is_photo_verify:
+                peak = max(float(f.get("ratio") or 0) for f in edit_fields)
+                if peak >= 2.8:
+                    cap = _clamp01(0.40 - min(0.12, peak * 0.015))
+                    if cap < tamper_score:
+                        tamper_score = cap
+                        payload["tamper_score"] = tamper_score
+                        payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
+                            f"Strong local edit signal detected (peak ratio {peak:.1f})"
+                        ]
+        except Exception:
+            pass
 
         # When OCR is weak and most structural labels are missing, cap "perfect" integrity (heuristic).
         doc_checks = payload.get("doc_checks") or []

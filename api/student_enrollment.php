@@ -1035,6 +1035,28 @@ if ($method === 'POST') {
             exit;
         }
 
+        if ($action === 'submit' && columnExists($pdo, 'documents', 'ai_status')) {
+            $screenStmt = $pdo->prepare(
+                "SELECT id, type FROM documents
+                 WHERE enrollment_id = :eid AND LOWER(TRIM(ai_status)) = 'screening'
+                 LIMIT 1"
+            );
+            $screenStmt->execute([':eid' => $enrollmentId]);
+            $screeningDoc = $screenStmt->fetch(PDO::FETCH_ASSOC);
+            if (is_array($screeningDoc)) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                http_response_code(400);
+                echo json_encode([
+                    'success' => false,
+                    'error' => 'Document readability checks are still in progress. Wait a moment and try again.',
+                    'screening_document_id' => (int)($screeningDoc['id'] ?? 0),
+                ]);
+                exit;
+            }
+        }
+
         if ($pdo->inTransaction()) {
             $pdo->commit();
         }

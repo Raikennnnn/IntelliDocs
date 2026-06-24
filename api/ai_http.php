@@ -187,7 +187,8 @@ function aiScreenUploadQuality(
 ): array {
     $res = aiPostMultipart('/screen-quality', $fullPath, $downloadName, $mimeType, [
         'doc_type' => $docType,
-    ], 45);
+        'mode' => 'quality_only',
+    ], 15);
 
     if (!$res['ok'] || !is_array($res['body'])) {
         $message = sanitizeClientErrorMessage($res['error'] ?? '');
@@ -212,6 +213,53 @@ function aiScreenUploadQuality(
         $message = $level === 2
             ? 'We could not read enough text on this document. Upload a clearer photo (JPG or PNG).'
             : 'Image quality check failed. Use a clear, well-lit photo.';
+    }
+
+    return [
+        'ok' => true,
+        'pass' => $pass,
+        'level' => $level,
+        'message' => $message,
+        'body' => null,
+    ];
+}
+
+/**
+ * Level 2 readability gate (deferred after fast quality upload).
+ *
+ * @return array{ok: bool, pass: bool, level: int, message: string, body: array<string, mixed>|null, error?: string}
+ */
+function aiScreenUploadReadability(
+    string $fullPath,
+    string $downloadName,
+    string $mimeType,
+    string $docType,
+): array {
+    $res = aiPostMultipart('/screen-readability', $fullPath, $downloadName, $mimeType, [
+        'doc_type' => $docType,
+    ], 45);
+
+    if (!$res['ok'] || !is_array($res['body'])) {
+        $message = sanitizeClientErrorMessage($res['error'] ?? '');
+        if ($message === '') {
+            $message = 'Document readability check unavailable. Try again later.';
+        }
+        return [
+            'ok' => false,
+            'pass' => false,
+            'level' => 2,
+            'message' => $message,
+            'body' => null,
+            'error' => $message,
+        ];
+    }
+
+    $body = $res['body'];
+    $pass = !empty($body['pass']);
+    $level = (int)($body['level'] ?? ($pass ? 2 : 2));
+    $message = sanitizeClientErrorMessage(trim((string)($body['message'] ?? '')));
+    if ($message === '' && !$pass) {
+        $message = 'We could not read enough text on this document. Upload a clearer photo (JPG or PNG).';
     }
 
     return [

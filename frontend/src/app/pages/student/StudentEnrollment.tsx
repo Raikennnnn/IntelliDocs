@@ -322,6 +322,17 @@ function studentDocumentDisplayMeta(
     };
   }
 
+  if (aiStatus === "screening") {
+    return {
+      needsResubmit: false,
+      verified: false,
+      label: "Checking readability…",
+      badgeClass: "bg-amber-500 text-white",
+      showCarriedHint: false,
+      allowReupload: false,
+    };
+  }
+
   return {
     needsResubmit: false,
     verified: false,
@@ -628,6 +639,7 @@ export function StudentEnrollment() {
   const [missingParentParts, setMissingParentParts] = useState<string[]>([]);
   const [formData, setFormData] = useState<EnrollmentFormData>(INITIAL_ENROLLMENT_FORM_DATA);
   const submitInFlightRef = useRef(false);
+  const readabilityInFlightRef = useRef(new Set<number>());
 
   const hasOpenSchoolYear =
     enrollmentAllowedFromSettings === true ||
@@ -1266,6 +1278,82 @@ export function StudentEnrollment() {
     handleInputChange("barangay", sanitizeAddressLabelInput(barangay));
   };
 
+  const runDocumentReadabilityCheck = useCallback(async (docIndex: number, documentId: number) => {
+    if (!documentId || readabilityInFlightRef.current.has(documentId)) return;
+    readabilityInFlightRef.current.add(documentId);
+    try {
+      const res = await apiFetch('/api/documents/screen-readability', {
+        method: 'POST',
+        body: JSON.stringify({ document_id: documentId }),
+      });
+      const text = await res.text();
+      const json = JSON.parse(text) as {
+        success?: boolean;
+        error?: string;
+        ai_status?: string;
+        readability_failed?: boolean;
+        retryable?: boolean;
+        level?: number;
+      };
+      if (!res.ok || !json.success) {
+        if (json.readability_failed || res.status === 422) {
+          setDocuments((prev) => {
+            const next = [...prev];
+            next[docIndex] = {
+              ...next[docIndex],
+              status: 'missing',
+              file: undefined,
+              uploadedId: undefined,
+              uploadedAt: undefined,
+              aiStatus: undefined,
+            };
+            return next;
+          });
+          setDocumentsAuthenticityConfirmed(false);
+          toast.error(`Document not readable: ${json.error || 'Upload a clearer photo (JPG or PNG).'}`, {
+            duration: 9000,
+          });
+        } else if (json.retryable) {
+          toast.error(json.error || 'Readability check unavailable. Retrying…', {
+            duration: 6000,
+          });
+          window.setTimeout(() => {
+            void runDocumentReadabilityCheck(docIndex, documentId);
+          }, 5000);
+        } else {
+          toast.error(json.error || 'Readability check failed.');
+        }
+        return;
+      }
+      setDocuments((prev) => {
+        const next = [...prev];
+        if (next[docIndex]?.uploadedId === documentId) {
+          next[docIndex] = {
+            ...next[docIndex],
+            aiStatus: json.ai_status || 'pending',
+          };
+        }
+        return next;
+      });
+    } catch {
+      toast.error('Readability check failed. Try uploading again.');
+    } finally {
+      readabilityInFlightRef.current.delete(documentId);
+    }
+  }, []);
+
+  useEffect(() => {
+    documents.forEach((doc, index) => {
+      if (
+        doc.status === 'uploaded' &&
+        doc.uploadedId &&
+        String(doc.aiStatus || '').toLowerCase() === 'screening'
+      ) {
+        void runDocumentReadabilityCheck(index, doc.uploadedId);
+      }
+    });
+  }, [documents, runDocumentReadabilityCheck]);
+
   const handleFileUpload = async (index: number, file: File | null) => {
     if (!file) return;
     if (file.size > 5 * 1024 * 1024) {
@@ -1405,7 +1493,7 @@ export function StudentEnrollment() {
           status: 'uploaded',
           uploadedId: Number(json.document?.id ?? 0) || undefined,
           uploadedAt: json.document?.uploaded_at ?? new Date().toISOString(),
-          aiStatus: 'pending',
+          aiStatus: json.document?.ai_status ?? 'screening',
           registrarDecision: '',
           registrarRemarks: '',
           registrarReviewed: false,
@@ -1415,7 +1503,11 @@ export function StudentEnrollment() {
         return next;
       });
       setDocumentsAuthenticityConfirmed(false);
-      toast.success(`${documents[index].name} uploaded successfully`);
+      toast.success(`${documents[index].name} uploaded — checking readability…`);
+      const uploadedDocId = Number(json.document?.id ?? 0);
+      if (uploadedDocId > 0) {
+        void runDocumentReadabilityCheck(index, uploadedDocId);
+      }
     } catch {
       toast.error('Failed to upload document');
     }
@@ -1637,6 +1729,14 @@ export function StudentEnrollment() {
     
     if (missingDocs.length > 0) {
       toast.error(`Please upload all required documents: ${missingDocs.map(d => d.name).join(', ')}`);
+      return false;
+    }
+
+    const screeningDocs = requiredDocs.filter(
+      (doc) => doc.status === 'uploaded' && String(doc.aiStatus || '').toLowerCase() === 'screening',
+    );
+    if (screeningDocs.length > 0) {
+      toast.error('Document readability checks are still in progress. Please wait a moment.');
       return false;
     }
     if (!documentsAuthenticityConfirmed) {
