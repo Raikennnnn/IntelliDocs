@@ -3617,15 +3617,67 @@ def _norm_simple_name_tokens(name: str) -> list[str]:
     return [t for t in _sanitize_person_name_candidate(name).split() if len(t) >= 2]
 
 
+def _cert_name_tokens(name: str) -> list[str]:
+    """Name tokens for certificates, keeping single-letter middle initials (M.)."""
+    tokens: list[str] = []
+    for t in _sanitize_person_name_candidate(name).split():
+        tok = t.strip(".")
+        if tok.isalpha():
+            tokens.append(tok)
+    return tokens
+
+
+def _normalize_comma_person_name(name: str) -> str:
+    """LAST, FIRST [MIDDLE] → FIRST [MIDDLE] LAST."""
+    raw = (name or "").strip()
+    if "," not in raw:
+        return _sanitize_person_name_candidate(raw)
+    last_part, rest = [p.strip() for p in raw.split(",", 1)]
+    last_clean = _sanitize_person_name_candidate(last_part)
+    rest_clean = _sanitize_person_name_candidate(rest)
+    if last_clean and rest_clean:
+        return f"{rest_clean} {last_clean}".strip()
+    return _sanitize_person_name_candidate(raw)
+
+
+def _canonicalize_cert_name_for_match(candidate: str, expected_name: str = "") -> str:
+    """
+    Normalize certification names for enrollment cross-check.
+    Handles 'Reyes, Kyle Jennifer M.' and surname-first 'REYES KYLE JENNIFER M'.
+    """
+    cand = _normalize_comma_person_name(candidate)
+    cand_tokens = _cert_name_tokens(cand)
+    if not cand_tokens:
+        return cand
+    exp_tokens = _norm_simple_name_tokens(expected_name)
+    if not exp_tokens or len(cand_tokens) < 2:
+        return cand
+    last_exp = exp_tokens[-1]
+    if _fuzzy_name_token_match(last_exp, cand_tokens[0], [cand_tokens[0]]):
+        body = list(cand_tokens[1:])
+        cand = " ".join(body + [cand_tokens[0]])
+    cleaned = _cert_name_tokens(cand)
+    return " ".join(cleaned) if cleaned else cand
+
+
 def _fuzzy_name_token_match(exp_tok: str, cand: str, cand_tokens: list[str] | None = None) -> bool:
     """Match enrollment tokens against OCR names with mild OCR tolerance."""
     et = (exp_tok or "").strip().upper()
-    if len(et) < 2:
+    if len(et) < 1:
         return False
     ctokens = cand_tokens if cand_tokens is not None else _norm_simple_name_tokens(cand)
     cu = _sanitize_person_name_candidate(cand)
-    if et in cu or et in ctokens:
+    if len(et) >= 2 and (et in cu or et in ctokens):
         return True
+    # Middle initial on cert vs full middle name on enrollment (M ↔ MIRANDA).
+    if len(et) == 1 and et.isalpha():
+        for ct in ctokens:
+            if len(ct) >= 2 and ct.startswith(et):
+                return True
+    if len(et) >= 3:
+        for ct in ctokens:
+            if len(ct) == 1 and ct.isalpha() and et.startswith(ct):
+                return True
     if len(et) >= 4:
         for ct in ctokens:
             if len(ct) >= 4 and (ct.startswith(et[:4]) or et.startswith(ct[:4])):
@@ -3653,18 +3705,24 @@ def _name_tokens_match_robust(
     cand = _sanitize_person_name_candidate(candidate)
     if not cand:
         return False, 0.0, exp_tokens[:6], []
-    cand_tokens = _norm_simple_name_tokens(cand)
+    cand_tokens = _cert_name_tokens(cand) if certificate_style else _norm_simple_name_tokens(cand)
     hits = [t for t in exp_tokens if _fuzzy_name_token_match(t, cand, cand_tokens)]
     ratio = len(hits) / max(1, len(exp_tokens))
     missing = [t for t in exp_tokens if t not in hits]
     first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
     first_ok = _fuzzy_name_token_match(first_tok, cand, cand_tokens)
     cand_last = cand_tokens[-1] if cand_tokens else ""
+    cand_first = cand_tokens[0] if cand_tokens else ""
     last_ok = _fuzzy_name_token_match(last_tok, cand_last, [cand_last] if cand_last else [])
+    if certificate_style and not last_ok and cand_first:
+        # Surname-first certs: Reyes, Kyle … or REYES KYLE … before canonicalize.
+        last_ok = _fuzzy_name_token_match(last_tok, cand_first, [cand_first])
     if certificate_style or len(exp_tokens) <= 2:
         ok = first_ok and last_ok
         if ok and ratio < 0.67:
             ratio = max(ratio, round(2.0 / max(1, len(exp_tokens)), 2))
+        if certificate_style and first_ok and last_ok and ratio >= 0.50:
+            ok = True
     else:
         ok = first_ok and last_ok and ratio >= 0.50
         if len(exp_tokens) >= 3 and first_ok and last_ok and ratio >= 0.67:
@@ -5722,8 +5780,9 @@ def _evaluate(
 
             def _name_tokens_match_certificate(expected_name: str, candidate: str) -> tuple[bool, float, list[str], list[str]]:
                 """Good moral / certification: first + last name match; middle may differ."""
+                normalized = _canonicalize_cert_name_for_match(candidate, expected_name)
                 ok, ratio, missing, hits = _name_tokens_match_robust(
-                    expected_name, candidate, certificate_style=True
+                    expected_name, normalized, certificate_style=True
                 )
                 return ok, ratio, missing, hits
 
@@ -5773,6 +5832,7 @@ def _evaluate(
                     ).strip()
                     name = re.sub(r"\s+IS\s+A.*$", "", name, flags=re.I).strip()
                     name = re.sub(r"\s+OF\s+GRADE.*$", "", name, flags=re.I).strip()
+                    name = re.sub(r"\s+OF\s*$", "", name, flags=re.I).strip()
                     return name.strip(" ,.-")
 
                 blob = normalize(" ".join(u_simple or []))
@@ -6098,6 +6158,7 @@ def _evaluate(
                     normed_boxes, image_h, detected, expected_name
                 )
                 if detected:
+                    detected = _canonicalize_cert_name_for_match(detected, expected_name)
                     ok, ratio, missing, _hits = _name_tokens_match_certificate(expected_name, detected)
                     return ok, ratio, missing, detected, name_bbox
                 exp_tokens = [t for t in norm_simple(expected_name).split() if len(t) >= 2]
@@ -6116,11 +6177,13 @@ def _evaluate(
                         best_ratio = ratio
                         best_name = clean
                     if ok:
+                        best_name = _canonicalize_cert_name_for_match(best_name, expected_name)
                         bb = _detect_good_moral_name_bbox(
                             normed_boxes, image_h, best_name, expected_name
                         )
                         return ok, ratio, missing, best_name[:64], bb
                 if best_name:
+                    best_name = _canonicalize_cert_name_for_match(best_name, expected_name)
                     ok, ratio, missing, _hits = _name_tokens_match_certificate(expected_name, best_name)
                     bb = _detect_good_moral_name_bbox(
                         normed_boxes, image_h, best_name, expected_name
