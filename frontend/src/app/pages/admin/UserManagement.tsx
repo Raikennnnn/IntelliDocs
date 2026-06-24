@@ -65,7 +65,7 @@ export function UserManagement() {
   const [newUser, setNewUser] = useState({
     name: "",
     email: "",
-    role: "Student",
+    role: "Registrar",
     password: "",
   });
   const [pendingAction, setPendingAction] = useState<UserConfirmAction | null>(null);
@@ -134,7 +134,7 @@ export function UserManagement() {
       }
       toast.success(`User ${newUser.name} has been added successfully`);
       setShowAddUser(false);
-      setNewUser({ name: "", email: "", role: "Student", password: "" });
+      setNewUser({ name: "", email: "", role: "Registrar", password: "" });
       await loadUsers();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to create user');
@@ -147,14 +147,17 @@ export function UserManagement() {
   };
 
   const performSaveEdit = async (user: User) => {
+    const original = users.find((u) => u.id === user.id);
+    const payloadUser =
+      original?.role === "Student" ? { ...user, role: "Student" as const } : user;
     const res = await apiFetch('/api/admin/users', {
       method: 'PUT',
       body: JSON.stringify({
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        status: user.status,
+        id: payloadUser.id,
+        name: payloadUser.name,
+        email: payloadUser.email,
+        role: payloadUser.role,
+        status: payloadUser.status,
       }),
     });
     const text = await res.text();
@@ -302,6 +305,11 @@ export function UserManagement() {
       user.role.toLowerCase().includes(searchTerm.toLowerCase())
   ).filter(user => roleFilter === "All" || user.role === roleFilter);
 
+  const editingUserOriginalRole = editingUser
+    ? users.find((u) => u.id === editingUser.id)?.role
+    : undefined;
+  const isStudentRoleLocked = editingUserOriginalRole === "Student";
+
   const stats = {
     total: users.length,
     students: users.filter((u) => u.role === "Student").length,
@@ -333,7 +341,7 @@ export function UserManagement() {
         <Card className="border-[#8B1538]">
           <CardHeader>
             <CardTitle>Add New User</CardTitle>
-            <CardDescription>Create a new user account</CardDescription>
+            <CardDescription>Create a staff account (admin or registrar). Students register through the enrollment portal.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -370,7 +378,6 @@ export function UserManagement() {
                   }
                   className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
                 >
-                  <option value="Student">Student</option>
                   <option value="Registrar">Registrar</option>
                   <option value="Admin">Admin</option>
                 </select>
@@ -441,18 +448,26 @@ export function UserManagement() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="edit-role">Role *</Label>
-                <select
-                  id="edit-role"
-                  value={editingUser.role}
-                  onChange={(e) =>
-                    setEditingUser({ ...editingUser, role: e.target.value as "Student" | "Registrar" | "Admin" })
-                  }
-                  className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
-                >
-                  <option value="Student">Student</option>
-                  <option value="Registrar">Registrar</option>
-                  <option value="Admin">Admin</option>
-                </select>
+                {isStudentRoleLocked ? (
+                  <>
+                    <Input id="edit-role" value="Student" disabled className="bg-gray-50" />
+                    <p className="text-xs text-gray-500">
+                      Student accounts cannot be promoted to admin or registrar. Create a separate staff account if needed.
+                    </p>
+                  </>
+                ) : (
+                  <select
+                    id="edit-role"
+                    value={editingUser.role}
+                    onChange={(e) =>
+                      setEditingUser({ ...editingUser, role: e.target.value as "Student" | "Registrar" | "Admin" })
+                    }
+                    className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-blue-600 focus:border-blue-600"
+                  >
+                    <option value="Registrar">Registrar</option>
+                    <option value="Admin">Admin</option>
+                  </select>
+                )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="edit-status">Status *</Label>

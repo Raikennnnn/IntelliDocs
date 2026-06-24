@@ -186,6 +186,29 @@ function userIsAdmin(PDO $pdo, int $userId): bool
 }
 
 /**
+ * Student accounts (enrollment portal) must not be promoted to staff roles.
+ */
+function studentRolePromotionBlocked(string $currentRole, string $newRole): bool
+{
+    $current = strtolower(trim($currentRole));
+    $new = strtolower(trim($newRole));
+
+    return $current === 'student' && $new !== 'student';
+}
+
+function rejectStudentRolePromotion(): void
+{
+    http_response_code(403);
+    header('Content-Type: application/json');
+    echo json_encode([
+        'success' => false,
+        'error' => 'Student accounts cannot be promoted to admin or registrar. Create a separate staff account instead.',
+        'code' => 'student_role_locked',
+    ]);
+    exit;
+}
+
+/**
  * @param 'admin'|'registrar'|'student' $role
  */
 function setUserRole(PDO $pdo, int $userId, string $role): void

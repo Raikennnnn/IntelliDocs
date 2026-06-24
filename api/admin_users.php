@@ -177,6 +177,13 @@ try {
         }
 
         $currentRole = getUserRole($pdo, $targetUserId);
+        if (studentRolePromotionBlocked($currentRole, $role)) {
+            appLogEvent($pdo, 'admin_update_user', 'admin', 'failed', $actorId, 'user', (string)$targetUserId, [
+                'reason' => 'student_role_locked',
+                'requested_role' => $role,
+            ]);
+            rejectStudentRolePromotion();
+        }
         $updatingAdminAway = ($currentRole === 'admin' && $role !== 'admin');
         $deactivatingAdmin = ($currentRole === 'admin' && $status === 'inactive');
         if (($updatingAdminAway || $deactivatingAdmin) && $currentRole === 'admin') {

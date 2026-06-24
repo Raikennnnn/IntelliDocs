@@ -817,14 +817,25 @@ if ($action === 'create_user') {
     $email = strtolower(trim((string)($payload['email'] ?? '')));
     $password = (string)($payload['password'] ?? '');
     $fullName = trim((string)($payload['full_name'] ?? ''));
-    $role = normalizeAllowedRole((string)($payload['role'] ?? 'student'));
+    $role = normalizeAllowedRole((string)($payload['role'] ?? 'registrar'));
 
     if ($username === '' || $email === '' || $password === '' || $fullName === '' || $role === null) {
         appLogEvent($pdo, 'create_user', 'admin', 'failed', (int)$actor['id'], 'user', null, ['reason' => 'validation_error', 'email' => $email, 'role' => (string)($payload['role'] ?? '')]);
         http_response_code(422);
         echo json_encode([
             'success' => false,
-            'error' => 'username, email, full_name, password, and role (admin|registrar|student) are required',
+            'error' => 'username, email, full_name, password, and role (admin|registrar) are required',
+        ]);
+        exit;
+    }
+
+    if ($role === 'student') {
+        appLogEvent($pdo, 'create_user', 'admin', 'failed', (int)$actor['id'], 'user', null, ['reason' => 'student_create_blocked']);
+        http_response_code(422);
+        echo json_encode([
+            'success' => false,
+            'error' => 'Student accounts are created through public registration, not admin user management.',
+            'code' => 'student_role_locked',
         ]);
         exit;
     }
