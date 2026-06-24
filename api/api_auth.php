@@ -20,7 +20,28 @@ function apiRequireRoles(PDO $pdo, string $endpointLabel, array $allowedRoles, b
 {
     require_once __DIR__ . '/user_role.php';
     $actor = apiRequireActor($pdo, $endpointLabel, $touchActivity);
-    $role = getUserRole($pdo, (int)$actor['id']);
+    $userId = (int)$actor['id'];
+    $role = getUserRole($pdo, $userId);
+
+    if (roleTablesExist($pdo)) {
+        if (in_array('admin', $allowedRoles, true) && userIsAdmin($pdo, $userId)) {
+            $actor['role'] = 'admin';
+            return $actor;
+        }
+        if (in_array('registrar', $allowedRoles, true) && userIsRegistrar($pdo, $userId)) {
+            $actor['role'] = 'registrar';
+            return $actor;
+        }
+        if (in_array('student', $allowedRoles, true) && $role === 'student') {
+            $actor['role'] = 'student';
+            return $actor;
+        }
+        http_response_code(403);
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => 'Access denied', 'code' => 'forbidden']);
+        exit;
+    }
+
     $actor['role'] = $role;
     if (!in_array($role, $allowedRoles, true)) {
         http_response_code(403);

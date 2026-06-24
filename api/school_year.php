@@ -77,22 +77,28 @@ function listSchoolYearRecords(PDO $pdo, ?string $activeYear): array
 if ($method === 'GET') {
     $ongoing = getOngoingSchoolYear($pdo);
     $enrollment = getEnrollmentSchoolYear($pdo);
-    $ended = getEndedSchoolYears($pdo);
     $payload = [
         'success' => true,
         'ongoing_school_year' => $ongoing,
         'enrollment_school_year' => $enrollment,
-        'active_school_year' => $enrollment, // backward compat for older frontends
+        'active_school_year' => $enrollment,
         'enrollment_enabled' => $enrollment !== null,
-        'ended_school_years' => $ended,
     ];
+
     require_once __DIR__ . '/session_token.php';
     $actor = tryResolveActorFromRequest($pdo, 'school-year');
-    if ($actor !== null && userIsAdmin($pdo, (int)$actor['id'])) {
+    $actorId = $actor !== null ? (int)$actor['id'] : 0;
+    if ($actorId > 0 && userIsAdmin($pdo, $actorId)) {
         require_once __DIR__ . '/permission_guard.php';
         requireActorPermission($pdo, $actor, 'configureSystem', false);
+        $payload['ended_school_years'] = getEndedSchoolYears($pdo);
         $payload['school_years'] = listSchoolYearRecords($pdo, $enrollment);
+    } elseif ($actorId > 0 && getUserRole($pdo, $actorId) === 'student') {
+        // Enrollment portal only — no admin management fields.
+    } else {
+        // Anonymous / landing page: enrollment gate info only.
     }
+
     echo json_encode($payload, JSON_UNESCAPED_UNICODE);
     exit;
 }

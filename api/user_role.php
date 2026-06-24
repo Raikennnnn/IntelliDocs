@@ -126,14 +126,15 @@ function getUserRoleFromRoleTables(PDO $pdo, int $userId): ?string
     if (!$row) {
         return null;
     }
+    if (!empty($row['student_id'])) {
+        // Students must never inherit staff access from a stale admin_users row.
+        return 'student';
+    }
     if (!empty($row['admin_id'])) {
         return 'admin';
     }
     if (!empty($row['registrar_id'])) {
         return 'registrar';
-    }
-    if (!empty($row['student_id'])) {
-        return 'student';
     }
 
     return null;
@@ -150,18 +151,9 @@ function getUserRole(PDO $pdo, int $userId): string
     if (roleTablesExist($pdo)) {
         $tableRole = getUserRoleFromRoleTables($pdo, $userId);
         if ($tableRole !== null) {
-            // Role tables are authoritative — never promote via legacy users.role.
             return $tableRole;
         }
-        if (userRoleColumnExists($pdo)) {
-            $legacyStmt = $pdo->prepare('SELECT LOWER(TRIM(COALESCE(role, \'\'))) FROM users WHERE id = :id LIMIT 1');
-            $legacyStmt->execute([':id' => $userId]);
-            $legacy = strtolower(trim((string)($legacyStmt->fetchColumn() ?: '')));
-            if (in_array($legacy, ['admin', 'registrar', 'student'], true)) {
-                return $legacy;
-            }
-        }
-
+        // Role tables exist but user has no row — never elevate via legacy users.role.
         return 'student';
     }
     if (userRoleColumnExists($pdo)) {
@@ -179,10 +171,68 @@ function getUserRole(PDO $pdo, int $userId): string
     return 'student';
 }
 
+/** True when the user is listed in admin_users (strict; ignores legacy users.role). */
+function userIsInAdminTable(PDO $pdo, int $userId): bool
+{
+    if ($userId <= 0 || !roleTablesExist($pdo)) {
+        return false;
+    }
+    $stmt = $pdo->prepare('SELECT 1 FROM admin_users WHERE user_id = :id LIMIT 1');
+    $stmt->execute([':id' => $userId]);
+
+    return (bool)$stmt->fetchColumn();
+}
+
+/** True when the user is listed in registrar_users. */
+function userIsInRegistrarTable(PDO $pdo, int $userId): bool
+{
+    if ($userId <= 0 || !roleTablesExist($pdo)) {
+        return false;
+    }
+    $stmt = $pdo->prepare('SELECT 1 FROM registrar_users WHERE user_id = :id LIMIT 1');
+    $stmt->execute([':id' => $userId]);
+
+    return (bool)$stmt->fetchColumn();
+}
+
+/** True when the user is listed in student_users. */
+function userIsInStudentTable(PDO $pdo, int $userId): bool
+{
+    if ($userId <= 0 || !roleTablesExist($pdo)) {
+        return false;
+    }
+    $stmt = $pdo->prepare('SELECT 1 FROM student_users WHERE user_id = :id LIMIT 1');
+    $stmt->execute([':id' => $userId]);
+
+    return (bool)$stmt->fetchColumn();
+}
+
 /** True when the user may manage school-year settings (admin portal). */
 function userIsAdmin(PDO $pdo, int $userId): bool
 {
+    if (roleTablesExist($pdo)) {
+        if (userIsInStudentTable($pdo, $userId)) {
+            return false;
+        }
+
+        return userIsInAdminTable($pdo, $userId);
+    }
+
     return getUserRole($pdo, $userId) === 'admin';
+}
+
+/** True when the user has registrar portal access. */
+function userIsRegistrar(PDO $pdo, int $userId): bool
+{
+    if (roleTablesExist($pdo)) {
+        if (userIsInStudentTable($pdo, $userId)) {
+            return false;
+        }
+
+        return userIsInRegistrarTable($pdo, $userId);
+    }
+
+    return getUserRole($pdo, $userId) === 'registrar';
 }
 
 /**
