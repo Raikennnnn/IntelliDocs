@@ -51,6 +51,8 @@ export function Login() {
   const sessionReasonMessage =
     sessionReason === 'session_expired'
       ? 'Your session expired due to inactivity. Please sign in again.'
+      : sessionReason === 'server_restarted'
+        ? 'The server was restarted. Please sign in again.'
       : sessionReason === 'account_inactive'
         ? 'Your account has been deactivated. Please contact the administrator.'
       : sessionReason === 'session_revoked' || sessionReason === 'invalid_token'

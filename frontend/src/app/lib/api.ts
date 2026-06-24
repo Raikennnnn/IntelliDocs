@@ -64,6 +64,7 @@ export function getStoredUserId(): string | null {
 const AUTH_REDIRECT_CODES = new Set([
   'session_expired',
   'session_revoked',
+  'server_restarted',
   'invalid_token',
   'missing_token',
   'account_inactive',

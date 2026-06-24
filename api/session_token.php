@@ -10,6 +10,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/user_role.php';
 require_once __DIR__ . '/security_guard.php';
+require_once __DIR__ . '/server_boot.php';
 
 if (!function_exists('sessionsTableAvailable')) {
     function sessionsTableAvailable(PDO $pdo): bool
@@ -336,6 +337,15 @@ if (!function_exists('validateSessionToken')) {
             } catch (Throwable $e) {
             }
             authRejectJson(401, 'session_revoked', 'session_revoked');
+        }
+
+        if (sessionInvalidatedByServerRestart((string)$row['created_at'])) {
+            try {
+                $pdo->prepare('UPDATE sessions SET revoked_at = NOW() WHERE id = :id')->execute([':id' => $sessionId]);
+                appLogEvent($pdo, 'session_server_restart', 'auth', 'failed', $userId, 'session', (string)$sessionId, []);
+            } catch (Throwable $e) {
+            }
+            authRejectJson(401, 'server_restarted', 'server_restarted');
         }
 
         $expiresAt = strtotime((string)$row['expires_at']);

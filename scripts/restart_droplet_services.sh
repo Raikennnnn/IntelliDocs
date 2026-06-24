@@ -3,6 +3,9 @@
 # Run ONLY on the server (DO web console or SSH), as root:
 #   bash /var/www/intellidocs/scripts/restart_droplet_services.sh
 #
+# By default all users are logged out (server_boot_epoch bump).
+# Keep sessions: INVALIDATE_SESSIONS=0 bash scripts/restart_droplet_services.sh
+#
 # Do NOT run systemctl on your Windows PC — it will fail.
 set -euo pipefail
 
@@ -59,6 +62,18 @@ if systemctl list-unit-files intellidocs-ai.service 2>/dev/null | grep -q intell
   systemctl --no-pager --full status intellidocs-ai | head -n 6
 else
   echo "SKIP: intellidocs-ai not installed. Run: bash $APP_ROOT/scripts/deploy_droplet.sh"
+fi
+
+if [ "${INVALIDATE_SESSIONS:-1}" = "1" ]; then
+  step "Invalidate all login sessions (server restart)"
+  if command -v php >/dev/null 2>&1; then
+    php "$APP_ROOT/scripts/bump_server_boot_epoch.php"
+    echo "Users must sign in again (next API call within ~20s)."
+  else
+    echo "WARNING: php CLI not found — sessions were NOT invalidated."
+  fi
+else
+  echo "SKIP: INVALIDATE_SESSIONS=0 — existing logins kept."
 fi
 
 step "Smoke checks"

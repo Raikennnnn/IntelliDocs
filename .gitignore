@@ -160,3 +160,6 @@ _modules/*
 
 /results/
 /phpunit*.xml
+
+# Per-server session invalidation marker (bumped on restart)
+/var/server_boot_epoch

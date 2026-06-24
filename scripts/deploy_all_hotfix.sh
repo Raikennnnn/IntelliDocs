@@ -36,6 +36,11 @@ else
   echo "WARNING: Frontend bundle may be missing session/touch keepalive — hard refresh after deploy."
 fi
 
+if [ "${INVALIDATE_SESSIONS:-1}" = "1" ] && command -v php >/dev/null 2>&1; then
+  step "Invalidate all login sessions (deploy restart)"
+  php "$APP_ROOT/scripts/bump_server_boot_epoch.php"
+fi
+
 echo ""
 echo "=== All hotfixes applied ==="
 echo "  AI:      curl -s http://127.0.0.1:8080/health"

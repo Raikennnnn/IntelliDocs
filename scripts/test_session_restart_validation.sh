@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # System Restart Session Validation — run on the droplet as root.
+# Expects sessions to be invalidated after restart (server_boot_epoch).
 #
 # Usage (registrar/admin — no login OTP):
 #   bash scripts/test_session_restart_validation.sh 'registrar@school.edu' 'YourPassword'
@@ -80,7 +81,7 @@ if [ "$BEFORE_CODE" != "200" ]; then
 fi
 
 if [ "${SKIP_RESTART:-0}" != "1" ]; then
-  step "2b) Restart web stack (nginx + php-fpm)"
+  step "2b) Restart web stack + invalidate sessions"
   for svc in php8.3-fpm php8.2-fpm php-fpm; do
     if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "${svc}.service"; then
       systemctl restart "$svc"
@@ -91,6 +92,9 @@ if [ "${SKIP_RESTART:-0}" != "1" ]; then
   nginx -t
   systemctl restart nginx
   echo "Restarted nginx"
+  if command -v php >/dev/null 2>&1; then
+    php "$APP_ROOT/scripts/bump_server_boot_epoch.php"
+  fi
   sleep 2
 else
   echo "SKIP_RESTART=1 — not restarting services"
@@ -105,12 +109,13 @@ echo "GET /api/registrar/overview -> HTTP $AFTER_CODE"
 head -c 200 /tmp/id_after.json 2>/dev/null; echo
 
 step "Result"
-if [ "$AFTER_CODE" = "200" ]; then
-  echo "PASS (reusable): Session still valid after web server restart."
-  echo "Document: session IS reusable — stored in MySQL + browser token."
-elif [ "$AFTER_CODE" = "401" ]; then
+if [ "$AFTER_CODE" = "401" ]; then
   echo "PASS (invalidated): Session rejected after restart (HTTP 401)."
   php -r 'echo json_encode(json_decode(file_get_contents("/tmp/id_after.json")), JSON_PRETTY_PRINT);' 2>/dev/null || true
+elif [ "$AFTER_CODE" = "200" ]; then
+  echo "FAIL: Session still valid after restart — expected HTTP 401."
+  echo "Ensure server_boot.php is deployed and bump_server_boot_epoch.php ran."
+  exit 1
 else
   echo "FAIL: Unexpected HTTP $AFTER_CODE — site may be down or misconfigured."
   echo "Run: nginx -t && systemctl status nginx php8.3-fpm --no-pager"
