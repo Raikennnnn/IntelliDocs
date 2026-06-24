@@ -59,7 +59,17 @@ if [ -f "$APP_ROOT/scripts/verify_ai_deploy.sh" ]; then
   bash "$APP_ROOT/scripts/verify_ai_deploy.sh" || exit 1
 fi
 
+step "Reload PHP-FPM (API files updated with git pull)"
+for svc in php8.3-fpm php8.2-fpm php-fpm; do
+  if systemctl is-active --quiet "$svc" 2>/dev/null; then
+    systemctl reload "$svc" || true
+    echo "Reloaded $svc"
+    break
+  fi
+done
+
 echo ""
-echo "AI hotfix deployed. For registrar UI changes also run: bash scripts/deploy_ui_hotfix.sh"
-echo "Or deploy both: bash scripts/deploy_all_hotfix.sh"
+echo "AI hotfix deployed. Session/API-only changes need PHP reload (done above)."
+echo "For registrar UI or session keepalive also run: bash scripts/deploy_ui_hotfix.sh"
+echo "Or deploy everything: bash scripts/deploy_all_hotfix.sh"
 echo "Re-run AI verify on documents in the portal (old results are cached)."

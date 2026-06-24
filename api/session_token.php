@@ -306,8 +306,12 @@ if (!function_exists('validateSessionToken')) {
     /**
      * @return array{id: int, role: string, session_id: int}|null rejects via exit
      */
-    function validateSessionToken(PDO $pdo, string $token, string $endpointLabel): ?array
-    {
+    function validateSessionToken(
+        PDO $pdo,
+        string $token,
+        string $endpointLabel,
+        bool $touchActivity = true,
+    ): ?array {
         $row = resolveSessionRow($pdo, $token);
         if (!$row) {
             try {
@@ -382,9 +386,11 @@ if (!function_exists('validateSessionToken')) {
             rejectInactiveAccountSession($pdo, $userId, $sessionId);
         }
 
-        try {
-            $pdo->prepare('UPDATE sessions SET last_activity_at = NOW() WHERE id = :id')->execute([':id' => $sessionId]);
-        } catch (Throwable $e) {
+        if ($touchActivity) {
+            try {
+                $pdo->prepare('UPDATE sessions SET last_activity_at = NOW() WHERE id = :id')->execute([':id' => $sessionId]);
+            } catch (Throwable $e) {
+            }
         }
 
         rapidActionGuard($pdo, $userId, $endpointLabel);
@@ -437,11 +443,11 @@ if (!function_exists('requireAuthenticatedActor')) {
     /**
      * @return array{id: int, role: string, session_id: int|null}
      */
-    function requireAuthenticatedActor(PDO $pdo, string $endpointLabel): array
+    function requireAuthenticatedActor(PDO $pdo, string $endpointLabel, bool $touchActivity = true): array
     {
         $token = extractBearerToken();
         if ($token !== null && sessionsTableAvailable($pdo)) {
-            $actor = validateSessionToken($pdo, $token, $endpointLabel);
+            $actor = validateSessionToken($pdo, $token, $endpointLabel, $touchActivity);
             if ($actor !== null) {
                 return $actor;
             }

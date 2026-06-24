@@ -2,9 +2,7 @@
 declare(strict_types=1);
 
 /**
- * Lightweight session/account check for dashboard keepalive.
- * Rejects revoked tokens, expired sessions, and deactivated accounts.
- * Does NOT refresh last_activity_at — idle timeout still applies while the tab is open.
+ * Refresh session idle clock after real user interaction (typing, clicking, scrolling).
  */
 
 if (!isset($pdo) || !($pdo instanceof PDO)) {
@@ -20,7 +18,7 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'GET') {
 }
 
 require_once __DIR__ . '/api_auth.php';
-$actor = apiRequireActor($pdo, 'session/ping', false);
+$actor = apiRequireActor($pdo, 'session/touch', true);
 
 echo json_encode([
     'success' => true,

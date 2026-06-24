@@ -5728,46 +5728,234 @@ def _evaluate(
                 return ok, ratio, missing, hits
 
             def _extract_good_moral_certified_name(u_simple: list[str], u_norm: list[str] | None = None) -> str:
-                """Pull student name from 'This is to certify that …' body text."""
-                blob = " ".join(u_simple or [])
-                patterns = [
-                    r"THIS IS TO CERTIFY THAT\s+(.+?)(?:\s+OF\s+GRADE|\s*,\s*A\s+|\s+IS\s+A\s+)",
-                    r"CERTIF(?:Y|IES)\s+THAT\s+(.+?)(?:\s+OF\s+GRADE|\s+IS\s+A\s+)",
-                    r"HEREBY CERTIF(?:Y|IES)\s+THAT\s+(.+?)(?:\s+OF\s+GRADE|\s+IS\s+A\s+)",
-                ]
-                for pat in patterns:
-                    m = re.search(pat, blob, re.I)
-                    if not m:
-                        continue
-                    name = _strip_name_field_labels(m.group(1))
-                    name = re.sub(r"\s+OF\s+GRADE.*$", "", name, flags=re.I).strip()
-                    name = re.sub(r"\s+IS\s+A.*$", "", name, flags=re.I).strip()
+                """Pull student name from good-moral body text (several DepEd phrasings)."""
+
+                def _good_moral_name_is_boilerplate(text: str) -> bool:
+                    nl = norm_simple(text or "")
+                    if not nl:
+                        return True
+                    if re.search(
+                        r"\b(AS PER|RECORD OF|THIS OFFICE|CERTIF(?:Y|IES)|HEREBY)\b",
+                        nl,
+                    ):
+                        return True
+                    if "OFFICE" in nl and "RECORD" in nl:
+                        return True
+                    words = [w for w in nl.replace(",", " ").split() if w.isalpha()]
+                    if words and all(
+                        w in ("AS", "PER", "RECORD", "OF", "THIS", "OFFICE", "THE", "A", "AN")
+                        for w in words
+                    ):
+                        return True
+                    return False
+
+                def _good_moral_clean_extracted_name(raw: str) -> str:
+                    name = _strip_name_field_labels(raw or "")
                     name = re.sub(
-                        r"\s*-\s*(HUMSS|STEM|ABM|ICT|EIM|GAS|TVL|BPP|FBS).*$",
+                        r"^(?:THIS IS TO\s+)?CERTIF(?:Y|IES)\s+THAT\s+",
                         "",
                         name,
                         flags=re.I,
                     ).strip()
-                    if _candidate_name_is_plausible(name):
+                    name = re.sub(
+                        r"^(?:AS\s+)?PER\s+RECORD\s+OF\s+THIS\s+OFFICE\s*,?\s*",
+                        "",
+                        name,
+                        flags=re.I,
+                    ).strip()
+                    name = re.sub(r"\s+GRADE.*$", "", name, flags=re.I).strip()
+                    name = re.sub(r"\s+GR\.?.*$", "", name, flags=re.I).strip()
+                    name = re.sub(
+                        r"\s*-\s*(HUMSS|STEM|ABM|ICT|EIM|GAS|TVL|BPP|FBS|HUMANITY|HUMSS|GENERAL).*$",
+                        "",
+                        name,
+                        flags=re.I,
+                    ).strip()
+                    name = re.sub(r"\s+IS\s+A.*$", "", name, flags=re.I).strip()
+                    name = re.sub(r"\s+OF\s+GRADE.*$", "", name, flags=re.I).strip()
+                    return name.strip(" ,.-")
+
+                blob = normalize(" ".join(u_simple or []))
+                patterns = (
+                    # "… as per record of this office, Reyes, Kyle Jennifer M. Grade 10…"
+                    r"AS\s+PER\s+RECORD\s+OF\s+THIS\s+OFFICE\s*,\s*(.+?)(?:\s+GRADE\s|\s+GR\.?\s|\s+-\s*[A-Z]|\s+IS\s+A\s+)",
+                    r"THIS\s+IS\s+TO\s+CERTIFY\s+THAT\s+(?:AS\s+PER\s+RECORD\s+OF\s+THIS\s+OFFICE\s*,\s*)?(.+?)(?:\s+GRADE\s|\s+GR\.?\s|\s+-\s*(?:HUMSS|STEM|ABM|ICT|HUMANITY)|\s+IS\s+A\s+)",
+                    r"CERTIF(?:Y|IES)\s+THAT\s+(?:AS\s+PER\s+RECORD\s+OF\s+THIS\s+OFFICE\s*,\s*)?(.+?)(?:\s+GRADE\s|\s+GR\.?\s|\s+-\s*(?:HUMSS|STEM|ABM|ICT|HUMANITY)|\s+IS\s+A\s+)",
+                    r"THIS\s+IS\s+TO\s+CERTIFY\s+THAT\s+(.+?)(?:\s+OF\s+GRADE|\s*,\s*A\s+|\s+IS\s+A\s+)",
+                    r"CERTIF(?:Y|IES)\s+THAT\s+(.+?)(?:\s+OF\s+GRADE|\s+IS\s+A\s+)",
+                    r"HEREBY\s+CERTIF(?:Y|IES)\s+THAT\s+(.+?)(?:\s+OF\s+GRADE|\s+IS\s+A\s+)",
+                )
+                for pat in patterns:
+                    m = re.search(pat, blob, re.I)
+                    if not m:
+                        continue
+                    name = _good_moral_clean_extracted_name(m.group(1))
+                    if name and not _good_moral_name_is_boilerplate(name) and _candidate_name_is_plausible(name):
                         return name[:64]
+
+                # Surname-first before GRADE: "Reyes, Kyle Jennifer M. Grade 10"
+                m = re.search(
+                    r"\b([A-Z][A-Za-z'.\-]{1,24},\s*[A-Z][A-Za-z'.\-]+(?:\s+[A-Z][A-Za-z'.\-]{0,24}){0,4})\s+GRADE\b",
+                    " ".join(u_simple or []),
+                    re.I,
+                )
+                if m:
+                    name = _good_moral_clean_extracted_name(m.group(1))
+                    if name and not _good_moral_name_is_boilerplate(name) and _candidate_name_is_plausible(name):
+                        return name[:64]
+
                 for ln in u_simple or []:
                     ul = (ln or "").upper()
-                    if "CERTIFY" not in ul and "CERTIFIES" not in ul:
+                    if "CERTIFY" not in ul and "CERTIFIES" not in ul and "RECORD OF THIS OFFICE" not in ul:
                         continue
-                    m = re.search(r"CERTIF(?:Y|IES)\s+THAT\s+(.+)", ln, re.I)
+                    m = re.search(
+                        r"(?:CERTIF(?:Y|IES)\s+THAT|RECORD OF THIS OFFICE)\s*,?\s*(.+)",
+                        ln,
+                        re.I,
+                    )
                     if not m:
                         continue
                     tail = m.group(1)
                     name = re.split(
-                        r"\s+OF\s+GRADE|\s+IS\s+A\s+|\s*,\s*A\s+",
+                        r"\s+GRADE\s|\s+GR\.?\s|\s+OF\s+GRADE|\s+IS\s+A\s+|\s*,\s*A\s+",
                         tail,
                         maxsplit=1,
                         flags=re.I,
                     )[0]
-                    name = _strip_name_field_labels(name).strip()
-                    if _candidate_name_is_plausible(name):
+                    name = _good_moral_clean_extracted_name(name)
+                    if name and not _good_moral_name_is_boilerplate(name) and _candidate_name_is_plausible(name):
                         return name[:64]
                 return ""
+
+            def _extract_good_moral_name_by_enrollment(blob: str, expected_name: str) -> str:
+                """Fallback: locate enrollment name tokens inside certification body."""
+                exp_tokens = _norm_simple_name_tokens(expected_name)
+                if len(exp_tokens) < 2:
+                    return ""
+                first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
+                text = normalize(blob or "")
+                if first_tok not in text or last_tok not in text:
+                    return ""
+                # Comma form: Reyes, Kyle Jennifer M.
+                m = re.search(
+                    rf"\b({re.escape(last_tok)}\s*,\s*[A-Za-z][A-Za-z'.\-]+(?:\s+[A-Za-z][A-Za-z'.\-]+){{0,4}})\b",
+                    text,
+                    re.I,
+                )
+                if m:
+                    cand = _normalize_person_name_display(m.group(1).replace(",", " "))
+                    if _candidate_name_is_plausible(cand):
+                        return cand[:64]
+                # Western order snippet around matched tokens
+                m = re.search(
+                    rf"({re.escape(first_tok)}(?:\s+[A-Za-z][A-Za-z'.\-]+){{0,4}}\s+{re.escape(last_tok)})",
+                    text,
+                    re.I,
+                )
+                if m:
+                    cand = _normalize_person_name_display(m.group(1))
+                    if _candidate_name_is_plausible(cand):
+                        return cand[:64]
+                return ""
+
+            def _detect_good_moral_name_bbox(
+                normed: list[dict],
+                image_h: int | None,
+                name: str,
+                expected_name: str = "",
+            ) -> dict | None:
+                if not normed:
+                    return None
+                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
+                y_min = ih * 0.20
+                y_max = ih * 0.75
+                skip_tok = frozenset(
+                    {
+                        "AS",
+                        "PER",
+                        "RECORD",
+                        "OF",
+                        "THIS",
+                        "OFFICE",
+                        "CERTIFY",
+                        "CERTIFIES",
+                        "THAT",
+                        "THE",
+                        "IS",
+                        "TO",
+                        "A",
+                        "AN",
+                        "GRADE",
+                        "GR",
+                        "SCHOOL",
+                        "STUDENT",
+                        "JUNIOR",
+                        "SENIOR",
+                        "HIGH",
+                    }
+                )
+                tokens: list[str] = []
+                for src in (name, expected_name):
+                    for t in re.split(r"[\s,]+", norm_simple(src or "")):
+                        if len(t) >= 3 and t not in skip_tok:
+                            tokens.append(t)
+                tokens = list(dict.fromkeys(tokens))
+                if not tokens:
+                    return None
+                hits: list[dict] = []
+                for b in normed:
+                    y = float(b["y"])
+                    if y < y_min or y > y_max:
+                        continue
+                    bt = str(b.get("t") or "")
+                    if any(
+                        k in bt
+                        for k in ("RECORD OF", "THIS OFFICE", "CERTIFY", "CERTIFIES", "SCHOOL YEAR")
+                    ):
+                        continue
+                    if any(t in bt for t in tokens if len(t) >= 4) or any(
+                        t in bt for t in tokens if len(t) == 3
+                    ):
+                        hits.append(b)
+                if not hits:
+                    return None
+                # Names may wrap across OCR rows ("Kyle Jennifer Miranda" then "Reyes" on next line).
+                anchor = tokens[-1] if tokens else ""
+                anchor_hits = [b for b in hits if anchor and anchor in str(b.get("t") or "")]
+                seed_anchors = anchor_hits if anchor_hits else hits[:6]
+
+                def _cluster_score(cluster: list[dict]) -> int:
+                    matched: set[str] = set()
+                    for b in cluster:
+                        bt = str(b.get("t") or "")
+                        for t in tokens:
+                            if t in bt:
+                                matched.add(t)
+                    return len(matched)
+
+                best_cluster: list[dict] = []
+                best_score = -1
+                seen_anchor_y: set[int] = set()
+                for ah in sorted(seed_anchors, key=lambda b: (b["y"], b["x"])):
+                    ay = int(round(float(ah["y"])))
+                    if ay in seen_anchor_y:
+                        continue
+                    seen_anchor_y.add(ay)
+                    line_y = ah["y"] + ah["h"] / 2.0
+                    band = max(28.0, float(ah.get("h") or 14) * 2.75)
+                    cluster = [
+                        b
+                        for b in hits
+                        if abs((b["y"] + b["h"] / 2.0) - line_y) <= band
+                    ]
+                    score = _cluster_score(cluster)
+                    if score > best_score:
+                        best_score = score
+                        best_cluster = cluster
+
+                pool = best_cluster if best_cluster else hits
+                pool.sort(key=lambda b: (b["y"], b["x"]))
+                return _union_bbox(pool[:14])
 
             def _extract_good_moral_school_name(
                 u_simple: list[str],
@@ -5899,9 +6087,16 @@ def _evaluate(
                 u_simple: list[str],
                 u_norm: list[str],
                 normed_boxes: list[dict],
+                image_h: int | None = None,
             ) -> tuple[bool, float, list[str], str, dict | None]:
                 detected = _extract_good_moral_certified_name(u_simple, u_norm)
-                name_bbox = _value_area_for_label(normed_boxes, ["CERTIFY", "CERTIFIES", "THAT"])
+                if not detected and expected_name:
+                    detected = _extract_good_moral_name_by_enrollment(
+                        " ".join(u_simple or []), expected_name
+                    )
+                name_bbox = _detect_good_moral_name_bbox(
+                    normed_boxes, image_h, detected, expected_name
+                )
                 if detected:
                     ok, ratio, missing, _hits = _name_tokens_match_certificate(expected_name, detected)
                     return ok, ratio, missing, detected, name_bbox
@@ -5909,7 +6104,7 @@ def _evaluate(
                 best_ratio = -1.0
                 best_name = ""
                 for ln in u_simple or []:
-                    if "CERTIFY" not in (ln or "").upper():
+                    if "CERTIFY" not in (ln or "").upper() and "RECORD OF THIS OFFICE" not in (ln or "").upper():
                         continue
                     clean = _extract_good_moral_certified_name([ln], [ln])
                     if not clean:
@@ -5921,14 +6116,21 @@ def _evaluate(
                         best_ratio = ratio
                         best_name = clean
                     if ok:
-                        return ok, ratio, missing, best_name[:64], name_bbox
+                        bb = _detect_good_moral_name_bbox(
+                            normed_boxes, image_h, best_name, expected_name
+                        )
+                        return ok, ratio, missing, best_name[:64], bb
                 if best_name:
                     ok, ratio, missing, _hits = _name_tokens_match_certificate(expected_name, best_name)
-                    return ok, ratio, missing, best_name[:64], name_bbox
+                    bb = _detect_good_moral_name_bbox(
+                        normed_boxes, image_h, best_name, expected_name
+                    )
+                    return ok, ratio, missing, best_name[:64], bb
                 ok, ratio, missing = name_match(expected_name, " ".join(u_simple or []), u_simple)
+                bb = _detect_good_moral_name_bbox(normed_boxes, image_h, "", expected_name)
                 if ok:
-                    return ok, ratio, missing, "", name_bbox
-                return False, ratio, missing, "", name_bbox
+                    return ok, ratio, missing, "", bb
+                return False, ratio, missing, "", bb
 
             def name_match_birth_certificate(
                 expected_name: str,
@@ -6576,7 +6778,7 @@ def _evaluate(
                                         break
                 elif _moral_doc:
                     ok_name, ratio, missing, detected_name, name_bbox = name_match_good_moral(
-                        exp_name, simple_lines, norm_lines, normed_boxes
+                        exp_name, simple_lines, norm_lines, normed_boxes, img_h
                     )
                 else:
                     ok_name, ratio, missing = name_match(exp_name, norm_text, simple_lines)
@@ -6632,7 +6834,15 @@ def _evaluate(
                         _attach_bbox(
                             row,
                             name_bbox
-                            or _value_area_for_label(normed_boxes, ["CERTIFY", "CERTIFIES", "THAT"]),
+                            or _detect_good_moral_name_bbox(
+                                normed_boxes, img_h, detected_name, exp_name
+                            )
+                            or _value_area_for_label(
+                                normed_boxes,
+                                ["CERTIFY", "CERTIFIES", "THAT", "RECORD OF THIS OFFICE"],
+                                y_min=(float(img_h) * 0.20) if img_h else None,
+                                y_max=(float(img_h) * 0.75) if img_h else None,
+                            ),
                         )
                     else:
                         _attach_bbox(row, _value_area_for_label(normed_boxes, ["NAME"]))
