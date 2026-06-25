@@ -252,11 +252,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     : null;
                 $parsedEnvelope = parseStoredAiVerifyEnvelope($aiSecurityRaw);
                 $aiVerify = null;
-                if ($parsedEnvelope !== null) {
+                if ($parsedEnvelope !== null && !aiPersistedEnvelopeIsStale($parsedEnvelope)) {
                     $aiVerify = reconstructAiVerifyApiResult($parsedEnvelope, $scoreFloat, $aiStatusRaw);
+                } elseif ($scoreFloat !== null && ($parsedEnvelope === null || aiPersistedEnvelopeIsStale($parsedEnvelope))) {
+                    // Legacy score-only rows or stale envelopes — UI will re-run AI.
+                    $aiVerify = null;
                 } elseif ($scoreFloat !== null) {
                     $aiVerify = reconstructAiVerifyFromScoreOnly($aiStatusRaw, $scoreFloat);
-                } elseif (documentAiVerificationLocked($aiStatusRaw)) {
+                } elseif (documentAiVerificationLocked($aiStatusRaw) && ($parsedEnvelope === null || !aiPersistedEnvelopeIsStale($parsedEnvelope))) {
                     $aiVerify = reconstructAiVerifyFromLockedRow($aiStatusRaw, null, null);
                 }
 

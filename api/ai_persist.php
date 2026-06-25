@@ -5,7 +5,40 @@ declare(strict_types=1);
  * Persist AI verification results on the documents row.
  */
 
-const AI_VERIFY_PAYLOAD_VERSION = 30;
+const AI_VERIFY_PAYLOAD_VERSION = 39;
+
+/**
+ * Cached AI envelopes below the current version must be re-verified (signature/seal fixes, etc.).
+ */
+function aiPersistedEnvelopeIsStale(?array $envelope): bool
+{
+    if (!is_array($envelope)) {
+        return true;
+    }
+    $v = (int)($envelope['v'] ?? 0);
+    if ($v <= 0) {
+        return true;
+    }
+
+    if ($v < AI_VERIFY_PAYLOAD_VERSION) {
+        return true;
+    }
+
+    $checks = is_array($envelope['field_checks'] ?? null) ? $envelope['field_checks'] : [];
+    foreach ($checks as $check) {
+        if (!is_array($check)) {
+            continue;
+        }
+        if (strtolower(trim((string)($check['field'] ?? ''))) !== 'signature') {
+            continue;
+        }
+        if (strtolower(trim((string)($check['scan_method'] ?? ''))) !== 'visual') {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 function aiPersistColumnExists(PDO $pdo, string $column): bool
 {
@@ -145,6 +178,8 @@ function buildPersistedAiVerifyEnvelope(array $result, ?string $fileFingerprint 
         'security_levels' => $result['security_levels'] ?? null,
         'field_checks' => is_array($result['field_checks'] ?? null) ? $result['field_checks'] : [],
         'doc_checks' => is_array($result['doc_checks'] ?? null) ? $result['doc_checks'] : [],
+        'seal_scan' => is_array($result['seal_scan'] ?? null) ? $result['seal_scan'] : null,
+        'signature_scan' => is_array($result['signature_scan'] ?? null) ? $result['signature_scan'] : null,
         'confidence' => $result['confidence'] ?? null,
         'match_score' => $result['match_score'] ?? null,
         'ocr_confidence' => $result['ocr_confidence'] ?? null,
@@ -365,6 +400,8 @@ function reconstructAiVerifyApiResult(array $envelope, ?float $aiScorePct, strin
         'security_levels' => $envelope['security_levels'] ?? null,
         'field_checks' => is_array($envelope['field_checks'] ?? null) ? $envelope['field_checks'] : [],
         'doc_checks' => is_array($envelope['doc_checks'] ?? null) ? $envelope['doc_checks'] : [],
+        'seal_scan' => is_array($envelope['seal_scan'] ?? null) ? $envelope['seal_scan'] : null,
+        'signature_scan' => is_array($envelope['signature_scan'] ?? null) ? $envelope['signature_scan'] : null,
         'issues' => is_array($envelope['issues'] ?? null) ? $envelope['issues'] : [],
         'image_width' => $envelope['image_width'] ?? null,
         'image_height' => $envelope['image_height'] ?? null,

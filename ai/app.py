@@ -14,6 +14,9 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+# Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
+AI_VERIFY_PAYLOAD_VERSION = 39
+
 
 def _staging_upload_path(file) -> str:
     """Randomized temp path — never use client filenames on disk."""
@@ -209,8 +212,6 @@ def _clamp01(x: float) -> float:
 
 
 PHOTO_DOC_TYPES = {"photo_2x2", "2x2", "id_photo", "photo"}
-# Enrollment-critical forms: always run enhanced Tesseract (PSM 6/11/4), not only on weak reads.
-OCR_PRIORITY_DOC_TYPES = frozenset({"birth_certificate", "sf9", "form137", "good_moral"})
 
 
 def _looks_like_psa_birth_cert(norm_text: str) -> bool:
@@ -248,8 +249,13 @@ def _normalize_doc_type_key(doc_type: str) -> str:
 
 
 def _ocr_priority_doc(doc_type: str) -> bool:
-    """PSA, SF9, SF10/137, good moral — always use enhanced multi-pass Tesseract."""
-    return _normalize_doc_type_key(doc_type) in OCR_PRIORITY_DOC_TYPES
+    """All document scans except ID photos use multi-pass OCR + merge."""
+    return _normalize_doc_type_key(doc_type) not in PHOTO_DOC_TYPES
+
+
+def _ocr_merge_results(doc_type: str) -> bool:
+    """Merge OCR passes for stable field reads (not used on 2×2 photos)."""
+    return _normalize_doc_type_key(doc_type) not in PHOTO_DOC_TYPES
 
 
 def _doc_type_display_label(doc_type: str) -> str:
@@ -318,12 +324,21 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
 
         score = _clamp01(lap_var / (min_lap * 2.2))
         passed = len(issues) == 0
+        warnings: list[str] = []
+        if passed:
+            if min_lap * 0.82 <= lap_var < min_lap:
+                warnings.append(
+                    "Slightly soft focus — text may still be readable; retake if the registrar requests a sharper copy."
+                )
+            if (400 <= w < 520) or (400 <= h < 520):
+                warnings.append("Resolution is on the low side. Move closer for a sharper scan.")
         return {
             "pass": passed,
             "score": int(round(score * 100)),
             "blur_variance": round(lap_var, 2),
             "message": "Image quality OK." if passed else issues[0],
             "issues": issues,
+            "warnings": warnings,
         }
     except Exception as e:
         return {
@@ -332,6 +347,7 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             "blur_variance": 0.0,
             "message": "Quality check skipped (engine unavailable).",
             "issues": [f"Quality check warning: {type(e).__name__}"],
+            "warnings": [],
         }
 
 
@@ -358,27 +374,40 @@ def _upload_doc_type_keywords(doc_type: str) -> list[str]:
 
 
 def _quick_ocr_for_upload_screen(filepath: str, doc_type: str) -> tuple[str, float]:
-    """Fast OCR for student upload gate — one or two passes, not full verification."""
-    text, conf, _ = _ocr_tesseract(filepath)
+    """Fast OCR for student upload gate — oriented, upscaled, merged when helpful."""
     dt = _normalize_doc_type_key(doc_type)
-    if dt in ("birth_certificate", "birthcert"):
-        extra = _ocr_birth_cert_header_text(filepath)
-        if extra:
-            text = f"{text}\n{extra}".strip()
-    if _ocr_priority_doc(doc_type) or _ocr_needs_fallback(text, conf, doc_type):
-        try:
-            from PIL import Image
+    if dt in PHOTO_DOC_TYPES:
+        text, conf, _ = _ocr_tesseract(filepath)
+        return text, conf
 
-            t2, c2, _ = _ocr_tesseract_image(Image.open(filepath), psm=6, enhanced=True)
-            if _ocr_candidate_score(t2, c2, doc_type) > _ocr_candidate_score(text, conf, doc_type):
-                text, conf = t2, c2
-            if dt in ("birth_certificate", "birthcert"):
-                extra = _ocr_birth_cert_header_text(filepath)
-                if extra and extra not in text:
-                    text = f"{text}\n{extra}".strip()
-        except Exception:
-            pass
-    return text, conf
+    ocr_path, _scale, _ow, _oh, ocr_temp = _ocr_prepare_document_source(filepath, doc_type)
+    candidates: list[tuple[str, str, str, float, list[dict]]] = []
+    try:
+        text, conf, boxes = _ocr_tesseract(ocr_path)
+        candidates.append(("tesseract", "tesseract", text, conf, boxes))
+        if _ocr_priority_doc(doc_type):
+            try:
+                from PIL import Image
+
+                base = Image.open(ocr_path)
+                for psm, tag in ((6, "tesseract_enhanced_psm6"), (11, "tesseract_enhanced_psm11")):
+                    t2, c2, b2 = _ocr_tesseract_image(base, psm=psm, enhanced=True)
+                    candidates.append(("tesseract", tag, t2, c2, b2))
+            except Exception:
+                pass
+        if len(candidates) > 1:
+            text, conf, _boxes, _label = _ocr_merge_candidates(candidates, doc_type)
+        if dt in ("birth_certificate", "birthcert"):
+            extra = _ocr_birth_cert_header_text(ocr_path)
+            if extra and extra not in text:
+                text = f"{text}\n{extra}".strip()
+        return text, conf
+    finally:
+        if ocr_temp:
+            try:
+                os.remove(ocr_path)
+            except OSError:
+                pass
 
 
 def _upload_document_readability_check(filepath: str, doc_type: str) -> dict:
@@ -392,6 +421,7 @@ def _upload_document_readability_check(filepath: str, doc_type: str) -> dict:
             "pass": True,
             "message": "Photo upload accepted.",
             "issues": [],
+            "warnings": [],
             "word_count": 0,
             "ocr_confidence": None,
         }
@@ -444,17 +474,198 @@ def _upload_document_readability_check(filepath: str, doc_type: str) -> dict:
     if conf_val < 0.22 and word_count < min_words + 4:
         issues.append("Text is too faint or blurry to read. Avoid shadows, glare, and camera shake.")
 
+    try:
+        conf_val = float(avg_conf)
+    except (TypeError, ValueError):
+        conf_val = 0.0
+    if conf_val < 0.22 and word_count < min_words + 4:
+        issues.append("Text is too faint or blurry to read. Avoid shadows, glare, and camera shake.")
+
+    img_w = img_h = None
+    try:
+        from PIL import Image
+
+        _im = Image.open(filepath)
+        img_w, img_h = int(_im.size[0]), int(_im.size[1])
+    except Exception:
+        pass
+    layout = _document_layout_quality_signals(doc_type, text, img_w=img_w, img_h=img_h, filepath=filepath)
+    warnings = list(layout.get("warnings") or [])
+    if layout.get("severe_crop"):
+        issues.append(
+            "The document looks partially cropped. Include the full page with all headers and margins visible."
+        )
+
     passed = len(issues) == 0
     return {
         "pass": passed,
         "message": "Document text is readable." if passed else issues[0],
         "issues": issues,
+        "warnings": warnings,
         "word_count": word_count,
         "ocr_confidence": round(conf_val, 3),
+        "layout": layout,
     }
 
 
+def _oriented_document_work_path(filepath: str) -> tuple[str, str | None]:
+    """
+    Return a work copy with EXIF orientation applied when needed.
+    Keeps stored uploads unchanged; only affects in-request OCR / vision scans.
+    """
+    try:
+        import tempfile
+
+        from PIL import Image, ImageOps
+
+        raw = Image.open(filepath)
+        exif = getattr(raw, "getexif", lambda: None)()
+        orientation = 1
+        if exif:
+            try:
+                orientation = int(exif.get(274, 1) or 1)
+            except (TypeError, ValueError):
+                orientation = 1
+        oriented = ImageOps.exif_transpose(raw)
+        if orientation in (1, 0) and oriented.size == raw.size:
+            return filepath, None
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        tmp_path = tmp.name
+        tmp.close()
+        oriented.convert("RGB").save(tmp_path, "JPEG", quality=92)
+        return tmp_path, tmp_path
+    except Exception:
+        return filepath, None
+
+
+def _document_layout_quality_signals(
+    doc_type: str,
+    text: str,
+    *,
+    img_w: int | None = None,
+    img_h: int | None = None,
+    boxes: list[dict] | None = None,
+    filepath: str | None = None,
+) -> dict:
+    """
+    Additive layout checks for crop / missing header area.
+    Does not change headline verification scores — only supplies warnings or severe_crop.
+    """
+    dt = _normalize_doc_type_key(doc_type)
+    warnings: list[str] = []
+    severe_crop = False
+
+    if filepath and (not img_w or not img_h):
+        try:
+            from PIL import Image
+
+            _im = Image.open(filepath)
+            img_w, img_h = int(_im.size[0]), int(_im.size[1])
+        except Exception:
+            pass
+
+    if img_w and img_h and img_w > 0 and img_h > 0:
+        if img_w > img_h * 2.2 or img_h > img_w * 2.2:
+            warnings.append("Image framing looks heavily cropped or panoramic.")
+            severe_crop = True
+
+    header_needles: dict[str, list[str]] = {
+        "birth_certificate": ["LIVE BIRTH", "PSA", "PHILIPPINE STATISTICS", "REPUBLIC"],
+        "birthcert": ["LIVE BIRTH", "PSA", "PHILIPPINE STATISTICS", "REPUBLIC"],
+        "sf9": ["LEARNER", "GRADE", "SCHOOL YEAR", "LRN"],
+        "report_card": ["LEARNER", "GRADE", "SCHOOL YEAR", "LRN"],
+        "good_moral": ["CERTIFICATION", "CERTIFICATE", "GOOD MORAL", "MORAL CHARACTER"],
+        "goodmoral": ["CERTIFICATION", "CERTIFICATE", "GOOD MORAL", "MORAL CHARACTER"],
+        "sf10": ["SF10", "FORM 137", "SCHOOL"],
+        "form137": ["SF10", "FORM 137", "SCHOOL"],
+        "form157": ["FORM 157", "SCHOOL"],
+    }
+    needles = header_needles.get(dt, [])
+    if needles and text:
+        lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+        head_lines = lines[: max(4, min(12, len(lines) // 3 or 4))]
+        head_blob = _normalize_upload_ocr_text("\n".join(head_lines))
+        full_blob = _normalize_upload_ocr_text(text)
+        if not any(n in head_blob for n in needles) and sum(1 for n in needles if n in full_blob) < 2:
+            warnings.append("Expected header area may be missing — top of the document might be cropped.")
+            severe_crop = True
+
+    if boxes and img_w and img_h:
+        try:
+            xs = [float(b.get("x", 0)) for b in boxes]
+            ys = [float(b.get("y", 0)) for b in boxes]
+            x2 = [float(b.get("x", 0)) + float(b.get("w", 0)) for b in boxes]
+            y2 = [float(b.get("y", 0)) + float(b.get("h", 0)) for b in boxes]
+            if xs and ys:
+                margin_left = min(xs) / float(img_w)
+                margin_right = 1.0 - (max(x2) / float(img_w))
+                margin_top = min(ys) / float(img_h)
+                if margin_left > 0.16 and margin_right > 0.16:
+                    warnings.append("Readable text is confined to the center — side margins may be cropped.")
+                    severe_crop = True
+                if margin_top > 0.20:
+                    warnings.append("Readable text starts low on the page — header area may be cropped.")
+                    severe_crop = True
+        except Exception:
+            pass
+
+    return {
+        "warnings": warnings,
+        "severe_crop": bool(severe_crop),
+    }
+
+
+def _append_layout_quality_to_payload(payload: dict, doc_type: str, text: str, boxes, img_w, img_h, filepath: str) -> None:
+    """Attach layout warnings to verify payload without changing existing scores."""
+    layout = _document_layout_quality_signals(
+        doc_type,
+        text,
+        img_w=img_w,
+        img_h=img_h,
+        boxes=boxes,
+        filepath=filepath,
+    )
+    warnings = list(layout.get("warnings") or [])
+    if warnings:
+        payload["quality_warnings"] = (payload.get("quality_warnings") or []) + warnings
+    if layout.get("severe_crop"):
+        payload["issues"] = (payload.get("issues") or []) + [
+            "Document layout: scan appears partially cropped — include full page margins."
+        ]
+
+
 _ENROLLMENT_MM_EXCLUDE_FIELDS = frozenset({"signature"})
+
+
+def _load_bgr_image_for_scan(filepath: str):
+    """Load image as OpenCV BGR using the same pixel layout as OCR bounding boxes."""
+    try:
+        import cv2
+
+        img = cv2.imread(filepath)
+        if img is None:
+            return None, 0, 0
+        h, w = img.shape[:2]
+        return img, int(w), int(h)
+    except Exception:
+        return None, 0, 0
+
+
+def _bgr_image_from_path(filepath: str):
+    """OpenCV BGR image with PIL fallback when cv2.imread fails (some server JPEG paths)."""
+    img, _w, _h = _load_bgr_image_for_scan(filepath)
+    if img is not None:
+        return img
+    try:
+        import cv2
+        import numpy as np
+        from PIL import Image
+
+        im = Image.open(filepath).convert("RGB")
+        rgb = np.array(im)
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
 
 
 def _clamp_signature_region(
@@ -496,10 +707,18 @@ def _signature_candidate_regions(
 
     lower_start = int(img_h * 0.45)
     sig_h = max(28, int(img_h * 0.11))
-    sig_w = max(int(img_w * 0.38), int(img_w * 0.45))
+    sig_w = max(int(img_w * 0.34), int(img_w * 0.42))
 
-    authority_kw = ("PRINCIPAL", "REGISTRAR", "HEAD", "ADMINISTRATOR", "SCHOOL PRINCIPAL")
-    name_prefix = ("MR.", "MR ", "MRS.", "MS.", "DR.")
+    authority_kw = (
+        "PRINCIPAL",
+        "REGISTRAR",
+        "HEAD",
+        "SCHOOL HEAD",
+        "ADMINISTRATOR",
+        "SCHOOL PRINCIPAL",
+        "DIRECTOR",
+    )
+    name_prefix = ("MR.", "MR ", "MRS.", "MS.", "DR.", "DR ")
     authority_boxes: list[dict] = []
     body_boxes: list[dict] = []
     body_kw = ("CERTIFY", "CERTIFIES", "MORAL", "CHARACTER", "GRADE", "STUDENT", "SCHOOL", "HEREBY")
@@ -524,59 +743,133 @@ def _signature_candidate_regions(
         last = body_boxes[0]
         last_bottom = int(float(last.get("y", 0)) + float(last.get("h", 0)))
         y_below_text = last_bottom + max(4, int(sig_h * 0.15))
-        _add(int(img_w * 0.08), y_below_text, sig_w, sig_h)
-        _add(int(img_w * 0.32), y_below_text, sig_w, sig_h)
+        _add(int(img_w * 0.06), y_below_text, sig_w, sig_h)
+        _add(int(img_w * 0.30), y_below_text, sig_w, sig_h)
+        _add(int(img_w * 0.52), y_below_text, sig_w, sig_h)
 
-    # 2) Above printed principal / registrar name in the lower block.
+    # 2) Above printed principal / registrar / school-head name in the lower block.
     if authority_boxes:
-        authority_boxes.sort(key=lambda b: float(b.get("y", 0)))
+        authority_boxes.sort(key=lambda b: float(b.get("y", 0)), reverse=True)
         anchor = authority_boxes[0]
         ax = int(float(anchor.get("x", 0)))
         ay = int(float(anchor.get("y", 0)))
         aw = max(20, int(float(anchor.get("w", 40))))
-        y_above_name = max(0, ay - sig_h - max(6, int(sig_h * 0.2)))
-        _add(max(0, ax - int(aw * 0.2)), y_above_name, sig_w, sig_h)
-        _add(int(img_w * 0.30), y_above_name, sig_w, sig_h)
+        ah = max(8, int(float(anchor.get("h", 12))))
+        anchor_cx = ax + aw // 2
+        y_above_name = max(0, ay - sig_h - max(6, int(sig_h * 0.15)))
+        anchor_x = max(0, min(anchor_cx - sig_w // 2, img_w - sig_w))
+        _add(anchor_x, y_above_name, sig_w, sig_h)
+        _add(max(0, ax - int(aw * 0.15)), y_above_name, sig_w, sig_h)
+        # Signatures often overlap the printed signatory line (ink on top of the name).
+        overlap_y = max(0, ay - int(sig_h * 0.42))
+        overlap_h = min(img_h - overlap_y, max(sig_h, int(sig_h * 0.55)))
+        overlap_w = max(int(img_w * 0.22), min(sig_w, int(aw * 4)))
+        overlap_x = max(0, min(anchor_cx - overlap_w // 2, img_w - overlap_w))
+        _add(overlap_x, overlap_y, overlap_w, overlap_h)
+        if anchor_cx > int(img_w * 0.48):
+            _add(int(img_w * 0.50), y_above_name, sig_w, sig_h)
+            _add(int(img_w * 0.58), max(0, ay - sig_h - ah), sig_w, sig_h)
+        else:
+            _add(int(img_w * 0.28), y_above_name, sig_w, sig_h)
 
-    # 3) Lower-middle band fallback (avoid empty bottom margin).
-    _add(int(img_w * 0.10), int(img_h * 0.58), sig_w, sig_h)
+    # 3) Lower band fallbacks — signatures often sit bottom-left or bottom-right.
+    band_y = int(img_h * 0.58)
+    _add(int(img_w * 0.06), band_y, sig_w, sig_h)
     _add(int(img_w * 0.28), int(img_h * 0.62), sig_w, sig_h)
+    _add(int(img_w * 0.50), int(img_h * 0.60), sig_w, sig_h)
+    _add(int(img_w * 0.58), int(img_h * 0.64), sig_w, sig_h)
+
+    # 4) Full lower-third sweep when OCR anchors are weak (phone photos, cropped scans).
+    sweep_top = int(img_h * 0.62)
+    sweep_h = max(sig_h, int(img_h * 0.22))
+    col_w = max(sig_w, int(img_w * 0.36))
+    for x_frac in (0.04, 0.30, 0.54):
+        _add(int(img_w * x_frac), sweep_top, col_w, sweep_h)
+    # 5) Bottom-right strip — common for school-head signatures (e.g. MR. … / School Head).
+    foot_h = max(sig_h, int(img_h * 0.20))
+    foot_y = max(0, img_h - foot_h - max(4, int(img_h * 0.015)))
+    foot_w = max(int(img_w * 0.24), int(img_w * 0.30))
+    for x_frac in (0.48, 0.62, 0.72):
+        _add(int(img_w * x_frac), foot_y, foot_w, foot_h)
 
     return candidates
 
 
+def _gray_image_for_scan(filepath: str) -> tuple["object|None", int, int]:
+    """Grayscale numpy array plus width/height — OpenCV with PIL fallback."""
+    try:
+        import cv2
+    except ImportError:
+        cv2 = None  # type: ignore
+
+    bgr = _bgr_image_from_path(filepath)
+    if bgr is not None and cv2 is not None:
+        h, w = bgr.shape[:2]
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), int(w), int(h)
+
+    try:
+        import numpy as np
+        from PIL import Image
+
+        im = Image.open(filepath).convert("L")
+        return np.asarray(im, dtype=np.uint8), int(im.size[0]), int(im.size[1])
+    except Exception:
+        return None, 0, 0
+
+
 def _score_signature_roi(gray_roi, roi_w: int, roi_h: int) -> tuple[float, bool, float, int]:
     """Return confidence, detected, ink_ratio, stroke_components for a grayscale ROI."""
-    import cv2
-    import numpy as np
+    try:
+        import cv2
+        import numpy as np
 
-    gray = cv2.GaussianBlur(gray_roi, (3, 3), 0)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    ink_ratio = float(np.count_nonzero(binary)) / float(binary.size)
-    edges = cv2.Canny(gray, 40, 120)
-    edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
-    variance = float(np.var(gray))
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    stroke_components = sum(
-        1
-        for c in contours
-        if 12 <= cv2.contourArea(c) <= max(800, (roi_w * roi_h) * 0.35)
-    )
+        gray = np.asarray(gray_roi, dtype=np.uint8)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        ink_ratio = float(np.count_nonzero(binary)) / float(binary.size)
+        edges = cv2.Canny(gray, 40, 120)
+        edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
+        variance = float(np.var(gray))
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        stroke_components = sum(
+            1
+            for c in contours
+            if 8 <= cv2.contourArea(c) <= max(800, (roi_w * roi_h) * 0.35)
+        )
+    except Exception:
+        try:
+            import numpy as np
+
+            gray = np.asarray(gray_roi, dtype=np.float32)
+            thresh = float(np.median(gray)) * 0.92
+            binary = (gray < thresh).astype(np.uint8)
+            ink_ratio = float(binary.mean())
+            gy, gx = np.gradient(gray)
+            edge_ratio = float((np.hypot(gx, gy) > 22.0).mean())
+            variance = float(gray.var())
+            stroke_components = 2 if ink_ratio >= 0.004 else (1 if ink_ratio >= 0.0025 else 0)
+        except Exception:
+            return 0.0, False, 0.0, 0
+
     score = 0.0
+    if ink_ratio >= 0.0025:
+        score += 0.22
     if ink_ratio >= 0.004:
-        score += 0.28
-    if ink_ratio >= 0.012:
-        score += 0.18
-    if edge_ratio >= 0.02:
-        score += 0.2
-    if variance >= 180:
-        score += 0.14
+        score += 0.12
+    if ink_ratio >= 0.010:
+        score += 0.16
+    if edge_ratio >= 0.015:
+        score += 0.16
+    if edge_ratio >= 0.025:
+        score += 0.08
+    if variance >= 140:
+        score += 0.12
     if stroke_components >= 2:
         score += 0.2
     elif stroke_components >= 1:
-        score += 0.1
+        score += 0.12
     confidence = max(0.0, min(1.0, score))
-    detected = confidence >= 0.45 and ink_ratio >= 0.003 and stroke_components >= 1
+    detected = confidence >= 0.34 and ink_ratio >= 0.0018 and stroke_components >= 1
     return confidence, detected, ink_ratio, stroke_components
 
 
@@ -595,17 +888,15 @@ def _scan_handwritten_signature(
         "confidence": 0.0,
         "bbox": None,
         "note": "Could not scan signature area.",
+        "scan_method": "visual",
     }
-    try:
-        import cv2
-    except ImportError:
-        fallback["note"] = "OpenCV unavailable for signature scan."
-        return fallback
 
     try:
-        img = cv2.imread(filepath)
-        if img is None:
+        gray_full, actual_w, actual_h = _gray_image_for_scan(filepath)
+        if gray_full is None or actual_w < 8 or actual_h < 8:
             return fallback
+        if img_w > 0 and img_h > 0 and (actual_w != int(img_w) or actual_h != int(img_h)):
+            img_w, img_h = actual_w, actual_h
 
         best = {
             "detected": False,
@@ -615,12 +906,17 @@ def _scan_handwritten_signature(
             "ink_ratio": 0.0,
             "stroke_components": 0,
         }
-        for x, y, w, h in _signature_candidate_regions(boxes, img_w, img_h):
-            roi = img[y : y + h, x : x + w]
+
+        def _try_region(x: int, y: int, w: int, h: int) -> None:
+            nonlocal best
+            x = max(0, min(x, img_w - 1))
+            y = max(0, min(y, img_h - 1))
+            w = max(8, min(w, img_w - x))
+            h = max(8, min(h, img_h - y))
+            roi = gray_full[y : y + h, x : x + w]
             if roi.size == 0:
-                continue
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            confidence, detected, ink_ratio, stroke_components = _score_signature_roi(gray, w, h)
+                return
+            confidence, detected, ink_ratio, stroke_components = _score_signature_roi(roi, w, h)
             if confidence > best["confidence"] or (detected and not best["detected"]):
                 best = {
                     "detected": detected,
@@ -635,6 +931,24 @@ def _scan_handwritten_signature(
                     "stroke_components": stroke_components,
                 }
 
+        for x, y, w, h in _signature_candidate_regions(boxes, img_w, img_h):
+            _try_region(x, y, w, h)
+
+        if not best["detected"] and img_w > 0 and img_h > 0:
+            foot_h = max(36, int(img_h * 0.20))
+            foot_y = max(0, img_h - foot_h - max(4, int(img_h * 0.02)))
+            foot_w = max(48, int(img_w * 0.28))
+            for x_frac in (0.04, 0.22, 0.40, 0.58, 0.72):
+                x = int(img_w * x_frac)
+                x = min(x, max(0, img_w - foot_w))
+                _try_region(x, foot_y, foot_w, foot_h)
+            # Full lower band — large school-head signatures (e.g. stylized initials).
+            band_y = int(img_h * 0.70)
+            band_h = max(40, int(img_h * 0.28))
+            col_w = max(int(img_w * 0.30), int(img_w * 0.36))
+            for x_frac in (0.04, 0.34, 0.58):
+                _try_region(int(img_w * x_frac), band_y, col_w, band_h)
+
         if best["bbox"] is None:
             return fallback
         return {
@@ -642,6 +956,7 @@ def _scan_handwritten_signature(
             "confidence": round(float(best["confidence"]), 2),
             "bbox": best["bbox"],
             "note": str(best["note"]),
+            "scan_method": "visual",
         }
     except Exception:
         return fallback
@@ -678,8 +993,9 @@ def _append_good_moral_signature_field_check(
                 row[k] = float(bb[k])
     checks = list(payload.get("field_checks") or [])
     checks = [c for c in checks if str(c.get("field") or "").strip().lower() != "signature"]
-    checks.append(row)
+    checks.append(_finalize_field_check_concern(row))
     payload["field_checks"] = checks
+    payload["signature_scan"] = sig
     if not detected:
         payload["issues"] = (payload.get("issues") or []) + [
             "Signature scan: no handwritten signature detected in the signature area."
@@ -1448,19 +1764,22 @@ def _orb_template_match_score(roi_bgr, template_gray) -> float:
         import cv2
     except ImportError:
         return 0.0
-    if roi_bgr is None or template_gray is None or roi_bgr.size == 0 or template_gray.size == 0:
+    try:
+        if roi_bgr is None or template_gray is None or roi_bgr.size == 0 or template_gray.size == 0:
+            return 0.0
+        gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY) if len(roi_bgr.shape) == 3 else roi_bgr
+        orb = cv2.ORB_create(500)
+        kp1, des1 = orb.detectAndCompute(gray, None)
+        kp2, des2 = orb.detectAndCompute(template_gray, None)
+        if des1 is None or des2 is None or len(kp1) < 8 or len(kp2) < 8:
+            return 0.0
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matches = bf.match(des1, des2)
+        if not matches:
+            return 0.0
+        return min(1.0, len(matches) / max(12.0, len(kp2) * 0.35))
+    except Exception:
         return 0.0
-    gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY) if len(roi_bgr.shape) == 3 else roi_bgr
-    orb = cv2.ORB_create(500)
-    kp1, des1 = orb.detectAndCompute(gray, None)
-    kp2, des2 = orb.detectAndCompute(template_gray, None)
-    if des1 is None or des2 is None or len(kp1) < 8 or len(kp2) < 8:
-        return 0.0
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    matches = bf.match(des1, des2)
-    if not matches:
-        return 0.0
-    return min(1.0, len(matches) / max(12.0, len(kp2) * 0.35))
 
 
 def _header_circle_emblem_score(roi_bgr) -> float:
@@ -1476,19 +1795,25 @@ def _header_circle_emblem_score(roi_bgr) -> float:
     h, w = gray.shape[:2]
     min_r = max(10, min(h, w) // 18)
     max_r = min(h, w) // 2
-    circles = cv2.HoughCircles(
-        gray,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=max(min_r * 2, 24),
-        param1=80,
-        param2=34,
-        minRadius=min_r,
-        maxRadius=max_r,
-    )
+    try:
+        circles = cv2.HoughCircles(
+            gray,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=max(min_r * 2, 24),
+            param1=80,
+            param2=34,
+            minRadius=min_r,
+            maxRadius=max_r,
+        )
+    except Exception:
+        return 0.0
     if circles is None:
         return 0.0
-    return min(1.0, len(circles[0]) * 0.22)
+    try:
+        return min(1.0, len(circles[0]) * 0.22)
+    except Exception:
+        return 0.0
 
 
 def _ocr_seal_keyword_boost(ocr_text: str, doc_type: str) -> tuple[float, list[str]]:
@@ -1549,15 +1874,23 @@ def _scan_seal_or_logo(filepath: str, doc_type: str, *, ocr_text: str = "") -> d
     if dt not in ("birth_certificate", "birthcert", "good_moral"):
         return fallback
 
+    label = (
+        "PSA seal/logo (visual)"
+        if dt in ("birth_certificate", "birthcert")
+        else "Official seal/logo (DepEd or school emblem)"
+    )
+
     try:
         import cv2
     except ImportError:
+        fallback["label"] = label
         fallback["signals"] = ["OpenCV unavailable for seal/logo scan."]
         return fallback
 
     try:
-        img = cv2.imread(filepath)
+        img = _bgr_image_from_path(filepath)
         if img is None:
+            fallback["label"] = label
             fallback["signals"] = ["Could not read image for seal/logo scan."]
             return fallback
 
@@ -1565,10 +1898,9 @@ def _scan_seal_or_logo(filepath: str, doc_type: str, *, ocr_text: str = "") -> d
         signals: list[str] = []
 
         if dt in ("birth_certificate", "birthcert"):
-            label = "PSA seal/logo (visual)"
             tpl = _load_seal_template("psa_logo.png")
-            search = img[0 : int(h * 0.26), 0 : int(w * 0.34)]
-            tl = img[0 : int(h * 0.24), 0 : int(w * 0.30)]
+            search = img[0 : int(h * 0.30), 0 : int(w * 0.40)]
+            tl = img[0 : int(h * 0.28), 0 : int(w * 0.34)]
             blue = _blue_pixel_ratio(tl)
             match = 0.0
             orb = 0.0
@@ -1599,7 +1931,6 @@ def _scan_seal_or_logo(filepath: str, doc_type: str, *, ocr_text: str = "") -> d
             if not detected:
                 signals.append("No PSA round seal or logo detected in the document header.")
         else:
-            label = "Official seal/logo (DepEd or school emblem)"
             deped = _load_seal_template("deped_logo.png")
             deped_ncr = _load_seal_template("deped_ncr_logo.png")
             regions = [
@@ -1668,8 +1999,21 @@ def _scan_seal_or_logo(filepath: str, doc_type: str, *, ocr_text: str = "") -> d
         if seal_bb:
             result["bbox"] = seal_bb
         return result
-    except Exception:
-        fallback["signals"] = ["Seal/logo scan failed unexpectedly."]
+    except Exception as exc:
+        text_boost, text_signals = _ocr_seal_keyword_boost(ocr_text, dt)
+        if text_boost >= 0.34:
+            return {
+                "detected": True,
+                "confidence": round(float(text_boost), 2),
+                "label": label,
+                "signals": (text_signals or ["Seal/logo inferred from document header text."])[:6],
+                "scan_method": "visual",
+            }
+        fallback["label"] = label
+        fallback["signals"] = [
+            f"Seal/logo scan error ({type(exc).__name__}).",
+            *(text_signals or []),
+        ]
         return fallback
 
 
@@ -1798,7 +2142,10 @@ def _concern_display_score(passed: bool, confidence_pct: int) -> int:
 
 
 def _single_field_check_concern_pct(check: dict) -> int:
-    if check.get("ok"):
+    ok = check.get("ok")
+    if ok is True:
+        return 0
+    if ok is None:
         return 0
     mr = check.get("match_ratio")
     if isinstance(mr, (int, float)) and float(mr) >= 0.0:
@@ -1810,7 +2157,7 @@ def _field_check_concern_pct(field_checks: list[dict]) -> int:
     """Average concern across failed enrollment cross-checks (all mismatches count)."""
     failed = [
         c for c in field_checks
-        if not c.get("ok")
+        if c.get("ok") is False
         and str(c.get("field") or "").strip().lower() not in _ENROLLMENT_MM_EXCLUDE_FIELDS
     ]
     if not failed:
@@ -1824,7 +2171,7 @@ def _mismatch_summary_fields(_doc_checks: list[dict], field_checks: list[dict], 
     return [
         str(c.get("field"))
         for c in field_checks
-        if not c.get("ok")
+        if c.get("ok") is False
         and str(c.get("field") or "").strip().lower() not in _ENROLLMENT_MM_EXCLUDE_FIELDS
     ][:limit]
 
@@ -2102,6 +2449,16 @@ def add_cors_headers(response):
 
 @app.route("/health", methods=["GET"])
 def health():
+    opencv_ok = False
+    seal_assets_ok = False
+    try:
+        import cv2
+
+        opencv_ok = hasattr(cv2, "imread") and hasattr(cv2, "matchTemplate")
+        _bootstrap_seal_templates()
+        seal_assets_ok = os.path.isfile(os.path.join(_SEAL_ASSETS_DIR, "psa_logo.png"))
+    except Exception:
+        pass
     payload = {
         "ok": _ocr_any_available(),
         "ocr_engine": _ocr_primary,
@@ -2109,6 +2466,9 @@ def health():
         "tesseract_available": _tesseract_available,
         "easyocr_available": _easyocr_available,
         "ocr_fallback_enabled": not _env_flag("DISABLE_OCR_FALLBACK"),
+        "opencv_available": opencv_ok,
+        "seal_assets_ready": seal_assets_ok,
+        "verify_payload_version": AI_VERIFY_PAYLOAD_VERSION,
     }
     if _tesseract_available and _tesseract_exe:
         payload["tesseract"] = _tesseract_exe
@@ -2157,23 +2517,29 @@ def _ocr_prepare_document_source(
     if key in PHOTO_DOC_TYPES:
         return filepath, 1.0, 0, 0, False
 
+    work_path, orient_tmp = _oriented_document_work_path(filepath)
+
     try:
-        im = Image.open(filepath)
+        im = Image.open(work_path)
         orig_w, orig_h = im.size
     except Exception:
+        if orient_tmp:
+            try:
+                os.remove(orient_tmp)
+            except OSError:
+                pass
         return filepath, 1.0, 0, 0, False
 
-    if key not in _ocr_document_types_needing_upscale():
-        return filepath, 1.0, orig_w, orig_h, False
-
     long_edge = max(orig_w, orig_h)
-    pixels = orig_w * orig_h
     target_long = 2000
     scale = 1.0
-    if long_edge < 1600 or pixels < 900_000:
+    # Normalize every document scan (not photos) to the same long edge before OCR.
+    if long_edge < target_long:
         scale = min(4.0, max(1.0, target_long / float(long_edge)))
 
     if scale <= 1.01:
+        if orient_tmp:
+            return work_path, 1.0, orig_w, orig_h, True
         return filepath, 1.0, orig_w, orig_h, False
 
     try:
@@ -2188,6 +2554,11 @@ def _ocr_prepare_document_source(
     tmp_path = tmp.name
     tmp.close()
     prepared.save(tmp_path, "PNG")
+    if orient_tmp:
+        try:
+            os.remove(orient_tmp)
+        except OSError:
+            pass
     print(
         f"[IntelliDocs AI] Upscaled OCR source {orig_w}x{orig_h} -> {new_w}x{new_h} ({scale:.2f}x)",
         flush=True,
@@ -2352,11 +2723,152 @@ def _ocr_psa_form_score(text: str) -> float:
     return score
 
 
+def _ocr_academic_form_score(text: str, doc_type: str) -> float:
+    """Boost OCR passes that capture typical PH school form labels."""
+    key = _normalize_doc_type_key(doc_type)
+    u = re.sub(r"\s+", " ", (text or "").upper())
+    score = 0.0
+    if key in ("sf9", "report_card"):
+        for kw, pts in (
+            ("LEARNER", 2.0),
+            ("LRN", 2.5),
+            ("SCHOOL YEAR", 2.0),
+            ("REPORT CARD", 2.5),
+            ("GENDER", 1.5),
+            ("SEX", 1.5),
+        ):
+            if kw in u:
+                score += pts
+    elif key in ("form137", "sf10", "form157"):
+        for kw, pts in (
+            ("LEARNER", 2.0),
+            ("LRN", 2.5),
+            ("SCHOOL YEAR", 2.0),
+            ("PERMANENT RECORD", 2.5),
+            ("SCHOLASTIC", 1.5),
+        ):
+            if kw in u:
+                score += pts
+    elif key == "good_moral":
+        for kw, pts in (
+            ("CERTIF", 2.5),
+            ("MORAL", 2.0),
+            ("HIGH SCHOOL", 2.0),
+            ("SCHOOL YEAR", 1.5),
+            ("DEPARTMENT OF EDUCATION", 1.5),
+        ):
+            if kw in u:
+                score += pts
+    else:
+        for kw, pts in (
+            ("NAME", 1.5),
+            ("SCHOOL", 1.5),
+            ("CERTIF", 1.0),
+            ("GRADE", 1.0),
+            ("DATE", 0.5),
+        ):
+            if kw in u:
+                score += pts
+    return score
+
+
 def _ocr_candidate_score(text: str, avg_conf: float, doc_type: str) -> float:
     score = _ocr_read_quality_score(text, avg_conf)
-    if _normalize_doc_type_key(doc_type) in ("birth_certificate", "birthcert"):
+    key = _normalize_doc_type_key(doc_type)
+    if key in ("birth_certificate", "birthcert"):
         score += _ocr_psa_form_score(text) * 12.0
+    elif key not in PHOTO_DOC_TYPES:
+        score += _ocr_academic_form_score(text, doc_type) * 8.0
     return score
+
+
+def _ocr_line_key(line: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", (line or "").upper())[:64]
+
+
+def _ocr_merge_candidates(
+    candidates: list[tuple[str, str, str, float, list[dict]]],
+    doc_type: str,
+) -> tuple[str, float, list[dict], str]:
+    """
+    Merge multi-pass OCR into one text + box pool so the same form content reads
+    consistently regardless of which single pass would have "won".
+    """
+    if not candidates:
+        return "", 0.0, [], "none"
+    if len(candidates) == 1:
+        eng, label, text, conf, boxes = candidates[0]
+        return text, conf, boxes or [], label
+
+    ranked = sorted(
+        candidates,
+        key=lambda row: _ocr_candidate_score(row[2], row[3], doc_type),
+        reverse=True,
+    )
+
+    # Prefer PSM6 enhanced block layout for line ordering when present.
+    anchor_text = ranked[0][2]
+    for _eng, label, text, _conf, _boxes in ranked:
+        if label == "tesseract_enhanced_psm6" and (text or "").strip():
+            anchor_text = text
+            break
+
+    seen_lines: set[str] = set()
+    merged_lines: list[str] = []
+    for _eng, _label, text, _conf, _boxes in ranked:
+        for ln in (text or "").splitlines():
+            clean = re.sub(r"\s+", " ", (ln or "")).strip()
+            if len(clean) < 2:
+                continue
+            key = _ocr_line_key(clean)
+            if not key or key in seen_lines:
+                continue
+            seen_lines.add(key)
+            merged_lines.append(clean)
+
+    if not merged_lines:
+        merged_text = (anchor_text or "").strip()
+    else:
+        anchor_keys = {_ocr_line_key(ln) for ln in anchor_text.splitlines() if _ocr_line_key(ln)}
+        ordered: list[str] = []
+        seen_out: set[str] = set()
+        for ln in anchor_text.splitlines():
+            clean = re.sub(r"\s+", " ", (ln or "")).strip()
+            key = _ocr_line_key(clean)
+            if key and key not in seen_out:
+                ordered.append(clean)
+                seen_out.add(key)
+        for ln in merged_lines:
+            key = _ocr_line_key(ln)
+            if key and key not in seen_out:
+                ordered.append(ln)
+                seen_out.add(key)
+        merged_text = "\n".join(ordered).strip()
+
+    merged_boxes: list[dict] = []
+    seen_box: set[tuple] = set()
+    for _eng, _label, _text, _conf, boxes in sorted(
+        candidates, key=lambda row: len(row[4] or []), reverse=True
+    ):
+        for b in boxes or []:
+            t = str(b.get("text") or "").strip()
+            if not t:
+                continue
+            bx = int(float(b.get("x", 0)) // 6)
+            by = int(float(b.get("y", 0)) // 6)
+            sig = (t.upper()[:32], bx, by)
+            if sig in seen_box:
+                continue
+            seen_box.add(sig)
+            merged_boxes.append(b)
+
+    best_label = ranked[0][1]
+    for _eng, label, _text, _conf, _boxes in ranked:
+        if label == "tesseract_enhanced_psm6":
+            best_label = label
+            break
+    avg_conf = sum(float(c[3]) for c in candidates) / max(1, len(candidates))
+    return merged_text, max(0.0, min(1.0, avg_conf)), merged_boxes, best_label
 
 
 def _ocr_needs_fallback(text: str, avg_conf: float, doc_type: str) -> bool:
@@ -2463,15 +2975,20 @@ def _ocr_read_document(
             if (header_extra or "").strip():
                 best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
 
+        if _ocr_merge_results(doc_type) and len(candidates) > 1:
+            best_text, best_conf, best_boxes, best_label = _ocr_merge_candidates(candidates, doc_type)
+
         best_boxes = _ocr_scale_boxes_to_original(best_boxes, ocr_scale)
 
         primary_pass = passes[0] if passes else {}
         fallback_used = best_label != str(primary_pass.get("engine") or best_label)
+        merged_pass = len(candidates) > 1 and _ocr_merge_results(doc_type)
 
         meta = {
             "engine": best_label,
             "primary_engine": _ocr_primary,
             "fallback_used": fallback_used,
+            "ocr_merged": merged_pass,
             "passes": passes,
             "ocr_scale": round(float(ocr_scale), 4),
             "original_width": orig_w or None,
@@ -2987,6 +3504,22 @@ def _grid_hotspot_tamper(
     return suspects[:6]
 
 
+def _sex_flags_in_text(t: str) -> tuple[bool, bool]:
+    """
+    Return (has_male, has_female) without treating the MALE substring inside FEMALE as male.
+    """
+    u = (t or "").upper()
+    has_f = bool(re.search(r"\bFEMALE\b", u))
+    has_m = bool(re.search(r"\bMALE\b", u)) and not has_f
+    if not has_f and not has_m:
+        compact = re.sub(r"[^A-Z]", "", u)
+        if compact in {"F", "FEMALE"}:
+            has_f = True
+        elif compact in {"M", "MALE"}:
+            has_m = True
+    return has_m, has_f
+
+
 def _sf9_cell_tamper(diff_arr: "object|None", boxes: list[dict]) -> list[dict]:
     """
     For SF9/report card: flag suspicious numeric cells using local ELA variance near OCR boxes.
@@ -3053,11 +3586,18 @@ def _sf9_cell_tamper(diff_arr: "object|None", boxes: list[dict]) -> list[dict]:
     # Flag outliers relative to baseline to reduce false positives across different scans.
     for cell, v in candidates:
         ratio = v / baseline
-        if ratio >= 1.30:
+        if ratio >= 1.55:
             suspects.append({**cell, "ela_var": round(v, 2), "ratio": round(ratio, 2), "risk": "high"})
-        elif ratio >= 1.18:
+        elif ratio >= 1.42:
             suspects.append({**cell, "ela_var": round(v, 2), "ratio": round(ratio, 2), "risk": "warning"})
-    return suspects
+    # Single warning-level cells are often scan noise — keep only high-risk or 2+ warnings.
+    highs = [s for s in suspects if s.get("risk") == "high"]
+    warnings = [s for s in suspects if s.get("risk") == "warning"]
+    if highs:
+        return highs[:6]
+    if len(warnings) >= 2:
+        return warnings[:4]
+    return []
 
 
 def _sf9_field_tamper(diff_arr: "object|None", boxes: list[dict], image_w: int | None, image_h: int | None) -> list[dict]:
@@ -3357,6 +3897,12 @@ def _tamper_value_text_plausible(field: str, value_text: str) -> bool:
     if field == "NAME":
         letters = re.sub(r"[^A-Z]", "", t)
         if len(letters) < 4:
+            return False
+    if field in ("FATHER NAME", "MOTHER NAME"):
+        letters = re.sub(r"[^A-Z]", "", t)
+        if len(letters) < 4:
+            return False
+        if t in ("FATHER", "MOTHER", "MAIDEN", "NAME"):
             return False
     if field == "DATE OF BIRTH":
         if not (
@@ -3674,10 +4220,6 @@ def _fuzzy_name_token_match(exp_tok: str, cand: str, cand_tokens: list[str] | No
         for ct in ctokens:
             if len(ct) >= 2 and ct.startswith(et):
                 return True
-    if len(et) >= 3:
-        for ct in ctokens:
-            if len(ct) == 1 and ct.isalpha() and et.startswith(ct):
-                return True
     if len(et) >= 4:
         for ct in ctokens:
             if len(ct) >= 4 and (ct.startswith(et[:4]) or et.startswith(ct[:4])):
@@ -3727,6 +4269,12 @@ def _name_tokens_match_robust(
         ok = first_ok and last_ok and ratio >= 0.50
         if len(exp_tokens) >= 3 and first_ok and last_ok and ratio >= 0.67:
             ok = True
+    if not first_ok or not last_ok:
+        ok = False
+        if not first_ok and not last_ok:
+            ratio = 0.0
+        elif not first_ok or not last_ok:
+            ratio = min(float(ratio), 0.33)
     return ok, float(ratio), missing[:6], hits
 
 
@@ -3735,6 +4283,8 @@ _SCHOOL_TOKEN_STOP = frozenset(
         "SCHOOL",
         "SCHOOLS",
         "HIGH",
+        "HIGHSCHOOL",
+        "HIGHSCHOOLS",
         "JUNIOR",
         "SENIOR",
         "ELEMENTARY",
@@ -3797,6 +4347,8 @@ def _norm_school_text(s: str) -> str:
     import re
 
     t = re.sub(r"[^A-Z0-9 ]+", " ", (s or "").upper())
+    t = re.sub(r"\bHIGHSCHOOLS?\b", "HIGH SCHOOL", t)
+    t = re.sub(r"\bELEMENTARYSCHOOL\b", "ELEMENTARY SCHOOL", t)
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -3812,17 +4364,37 @@ def _distinctive_school_tokens(name: str) -> list[str]:
     return out
 
 
-def _field_row_concern_pct(ok: bool, match_ratio: float | int | None) -> int:
+def _field_row_concern_pct(
+    ok: bool | None,
+    match_ratio: float | int | None,
+    *,
+    field: str = "",
+) -> int:
     """0 = clear match; higher = worse mismatch."""
-    if ok:
+    if ok is True:
         return 0
+    if ok is None:
+        return 0
+    fl = (field or "").strip().lower()
     if isinstance(match_ratio, (int, float)) and float(match_ratio) >= 0.0:
-        return max(1, min(100, 100 - int(round(float(match_ratio) * 100))))
+        concern = max(1, min(100, 100 - int(round(float(match_ratio) * 100))))
+        # Partial token overlap on unrelated names should not read as moderate concern.
+        if fl == "name" and float(match_ratio) <= 0.34:
+            return 100
+        if fl == "previous school" and float(match_ratio) >= 0.85:
+            return max(1, min(15, concern))
+        return concern
     return 100
 
 
 def _finalize_field_check_concern(row: dict) -> dict:
-    row["concern_pct"] = _field_row_concern_pct(bool(row.get("ok")), row.get("match_ratio"))
+    ok = row.get("ok")
+    ok_flag = ok if ok is None or isinstance(ok, bool) else bool(ok)
+    row["concern_pct"] = _field_row_concern_pct(
+        ok_flag,
+        row.get("match_ratio"),
+        field=str(row.get("field") or ""),
+    )
     return row
 
 
@@ -4323,6 +4895,14 @@ def _evaluate(
                     ["REGISTRY", "REGISTRY NO", "REGISTRY NO.", "REGISTRY NUMBER"],
                     source=check_text,
                 )
+                father_kw = has_any(
+                    ["NAME OF FATHER", "FATHERS NAME", "FATHER S NAME", "FATHER"],
+                    source=check_text,
+                )
+                mother_kw = has_any(
+                    ["NAME OF MOTHER", "MAIDEN NAME OF MOTHER", "MOTHERS NAME", "MOTHER", "MAIDEN"],
+                    source=check_text,
+                )
                 date_like = has_date_like()
 
                 doc_checks = [
@@ -4334,6 +4914,8 @@ def _evaluate(
                     {"field": "Place of birth label", "ok": bool(pob_kw)},
                     {"field": "Sex label/value", "ok": bool(sex_kw)},
                     {"field": "Registry number label", "ok": bool(reg_kw)},
+                    {"field": "Father's name label", "ok": bool(father_kw)},
+                    {"field": "Mother's name label", "ok": bool(mother_kw)},
                     {"field": "Any date-like text found", "ok": bool(date_like)},
                 ]
             elif doc_type in ("good_moral", "goodmoral"):
@@ -6456,8 +7038,7 @@ def _evaluate(
                         continue
 
                     # Case A: label + value on same line (common: "GENDER: FEMALE")
-                    has_m = ("MALE" in ln) or bool(re.search(r"\bM\b", ln))
-                    has_f = ("FEMALE" in ln) or bool(re.search(r"\bF\b", ln))
+                    has_m, has_f = _sex_flags_in_text(ln)
                     if has_m and not has_f:
                         return "MALE"
                     if has_f and not has_m:
@@ -6469,8 +7050,7 @@ def _evaluate(
                     #   "FEMALE"
                     nxt = lines[i + 1] if i + 1 < len(lines) else ""
                     if nxt:
-                        has_m2 = ("MALE" in nxt) or bool(re.search(r"\bM\b", nxt))
-                        has_f2 = ("FEMALE" in nxt) or bool(re.search(r"\bF\b", nxt))
+                        has_m2, has_f2 = _sex_flags_in_text(nxt)
                         if has_m2 and not has_f2:
                             return "MALE"
                         if has_f2 and not has_m2:
@@ -6550,8 +7130,7 @@ def _evaluate(
                     lb = labels[0]
 
                     # Sometimes OCR puts "GENDER: FEMALE" inside ONE box.
-                    has_m0 = ("MALE" in lb["t"]) or bool(re.search(r"\bM\b", lb["t"]))
-                    has_f0 = ("FEMALE" in lb["t"]) or bool(re.search(r"\bF\b", lb["t"]))
+                    has_m0, has_f0 = _sex_flags_in_text(lb["t"])
                     if has_m0 and not has_f0:
                         return "MALE", {"x": lb["x"], "y": lb["y"], "w": lb["w"], "h": lb["h"]}
                     if has_f0 and not has_m0:
@@ -6570,11 +7149,17 @@ def _evaluate(
                     if not candidates:
                         return None, None
                     candidates.sort(key=lambda b: b["x"])
-                    # Look at the closest few boxes; OCR may split 'FEMALE' into 'FE' 'MALE', etc.
+                    # Prefer the nearest value box; distant same-row text causes false MALE picks.
+                    for b in candidates[:3]:
+                        hm, hf = _sex_flags_in_text(b["t"])
+                        if hm and not hf:
+                            return "MALE", {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
+                        if hf and not hm:
+                            return "FEMALE", {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
+                    # OCR may split 'FEMALE' across multiple boxes.
                     picked = candidates[:4]
                     joined = " ".join(b["t"] for b in picked)
-                    has_m = ("MALE" in joined) or bool(re.search(r"\bM\b", joined))
-                    has_f = ("FEMALE" in joined) or bool(re.search(r"\bF\b", joined))
+                    has_m, has_f = _sex_flags_in_text(joined)
                     if has_m and not has_f:
                         x1 = min(b["x"] for b in picked)
                         y1 = min(b["y"] for b in picked)
@@ -6604,17 +7189,21 @@ def _evaluate(
                 exp = _normalize_expected_sex(expected_sex)
                 if not exp:
                     return None, "", None
+                line_text = raw_text
+                if doc_type in ("birth_certificate", "birthcert"):
+                    try:
+                        lines = [ln for ln in (raw_text or "").splitlines() if (ln or "").strip()]
+                        upper_n = max(10, int(len(lines) * 0.45))
+                        line_text = "\n".join(lines[:upper_n])
+                    except Exception:
+                        line_text = raw_text
+                line_detected = _detect_sex_from_lines(line_text)
                 detected, bbox = _detect_sex_from_boxes(ocr_boxes)
-                if not detected:
-                    line_text = raw_text
-                    if doc_type in ("birth_certificate", "birthcert"):
-                        try:
-                            lines = [ln for ln in (raw_text or "").splitlines() if (ln or "").strip()]
-                            upper_n = max(10, int(len(lines) * 0.45))
-                            line_text = "\n".join(lines[:upper_n])
-                        except Exception:
-                            line_text = raw_text
-                    detected = _detect_sex_from_lines(line_text)
+                if line_detected and detected and line_detected != detected:
+                    # Label-row text beats a stray same-row OCR box (common on SF9 headers).
+                    detected = line_detected
+                elif not detected:
+                    detected = line_detected
                 if not detected:
                     return None, "", None
                 return (detected == exp), detected, bbox
@@ -6981,18 +7570,16 @@ def _evaluate(
             if run_sex_check and exp_sex:
                 sm, detected_sex, detected_sex_box = sex_match(exp_sex, text, norm_text, boxes)
                 if sm is None:
-                    # Make the check VISIBLE even when the AI cannot confidently read sex/gender
-                    # from the document, so the registrar always sees the row instead of silence.
                     row = {
                         "field": "Sex",
                         "expected": exp_sex,
                         "detected": "",
-                        "ok": False,
+                        "ok": None,
                         "note": "Could not read sex/gender from the document — please verify manually.",
                     }
                     checks.append(row)
                     issues.append("Sex/Gender could not be read from the document — manual check required.")
-                    penalize(0.06)
+                    penalize(0.03)
                 else:
                     row = {"field": "Sex", "expected": exp_sex, "detected": detected_sex, "ok": bool(sm)}
                     if detected_sex_box and all(k in detected_sex_box for k in ("x", "y", "w", "h")):
@@ -7388,7 +7975,7 @@ def _evaluate(
     if slot_mismatch_info:
         payload["document_slot_expected"] = slot_mismatch_info["expected"]
         payload["document_slot_detected"] = slot_mismatch_info["detected"]
-    payload["v"] = 23
+    payload["v"] = AI_VERIFY_PAYLOAD_VERSION
 
     return payload
 
@@ -7528,9 +8115,10 @@ def screen_readability():
 
     filepath = _staging_upload_path(file)
     file.save(filepath)
+    scan_path, scan_tmp = _oriented_document_work_path(filepath)
 
     try:
-        readability = _upload_document_readability_check(filepath, doc_type)
+        readability = _upload_document_readability_check(scan_path, doc_type)
         readability_level = _level_pack(
             level=2,
             title="Document readability",
@@ -7569,6 +8157,11 @@ def screen_readability():
             os.remove(filepath)
         except OSError:
             pass
+        if scan_tmp:
+            try:
+                os.remove(scan_tmp)
+            except OSError:
+                pass
 
 
 @app.route("/verify", methods=["POST"])
@@ -7597,6 +8190,7 @@ def verify_doc():
     
     filepath = _staging_upload_path(file)
     file.save(filepath)
+    scan_path, scan_tmp = _oriented_document_work_path(filepath)
     
     try:
         # Level 1 (blur / brightness) is enforced at student upload in PHP for JPG/PNG.
@@ -7607,12 +8201,19 @@ def verify_doc():
         try:
             from PIL import Image
 
-            im = Image.open(filepath)
+            im = Image.open(scan_path)
             img_w, img_h = int(im.size[0]), int(im.size[1])
         except Exception:
             img_w, img_h = None, None
 
-        text, avg_conf, boxes, ocr_meta = _ocr_read_document(filepath, doc_type)
+        text, avg_conf, boxes, ocr_meta = _ocr_read_document(scan_path, doc_type)
+        try:
+            ow = int(ocr_meta.get("original_width") or 0)
+            oh = int(ocr_meta.get("original_height") or 0)
+            if ow > 0 and oh > 0:
+                img_w, img_h = ow, oh
+        except (TypeError, ValueError):
+            pass
 
         # Used by downstream checks (synthetic heuristics, UI hints)
         word_count = len((text or "").split())
@@ -7638,7 +8239,7 @@ def verify_doc():
             boxes=boxes,
             img_h=img_h,
             expected=expected,
-            filepath=filepath,
+            filepath=scan_path,
             img_w=img_w,
         )
         payload["ocr_engine"] = ocr_meta.get("engine")
@@ -7651,13 +8252,13 @@ def verify_doc():
             payload["image_height"] = img_h
 
         is_photo_verify = effective_doc_type in PHOTO_DOC_TYPES
-        tamper_score, tamper_signals = _tamper_check(filepath)
+        tamper_score, tamper_signals = _tamper_check(scan_path)
         payload["tamper_applicable"] = True
         payload["tamper_score"] = tamper_score
         payload["tamper_signals"] = tamper_signals
 
         # Synthetic / AI-generated suspicion signals (heuristics; NOT definitive).
-        syn_score, syn_signals = _synthetic_check(filepath, ocr_confidence=avg_conf, word_count=word_count)
+        syn_score, syn_signals = _synthetic_check(scan_path, ocr_confidence=avg_conf, word_count=word_count)
         payload["synthetic_applicable"] = True
         payload["synthetic_score"] = syn_score
         payload["synthetic_signals"] = syn_signals
@@ -7678,9 +8279,9 @@ def verify_doc():
 
         # SF9/report card: add cell-level tamper hints (JPEG ELA + numeric boxes).
         if effective_doc_type in ("sf9", "report_card"):
-            diff_arr, _ = _compute_ela_diff(filepath)
+            diff_arr, _ = _compute_ela_diff(scan_path)
             if diff_arr is None:
-                diff_arr = _compute_noise_residual(filepath)
+                diff_arr = _compute_noise_residual(scan_path)
             cells = _sf9_cell_tamper(diff_arr, boxes)
             payload["tamper_cells"] = cells
             fields = _sf9_field_tamper(diff_arr, boxes, img_w, img_h)
@@ -7703,9 +8304,9 @@ def verify_doc():
 
         # Other doc types: field-only tamper hints (names, IDs, etc.)
         if effective_doc_type in ("sf10", "form137", "form157"):
-            diff_arr, _ = _compute_ela_diff(filepath)
+            diff_arr, _ = _compute_ela_diff(scan_path)
             if diff_arr is None:
-                diff_arr = _compute_noise_residual(filepath)
+                diff_arr = _compute_noise_residual(scan_path)
             fm = {
                 "LRN": ["LRN", "IRN", "URN"],
                 "NAME": ["NAME"],
@@ -7724,15 +8325,17 @@ def verify_doc():
                 ]
 
         if effective_doc_type in ("birth_certificate", "birthcert"):
-            diff_arr, _ = _compute_ela_diff(filepath)
+            diff_arr, _ = _compute_ela_diff(scan_path)
             if diff_arr is None:
-                diff_arr = _compute_noise_residual(filepath)
+                diff_arr = _compute_noise_residual(scan_path)
             fm = {
                 "NAME": ["NAME", "CHILD'S NAME", "CHILDS NAME"],
                 "DATE OF BIRTH": ["DATE OF BIRTH"],
                 "PLACE OF BIRTH": ["PLACE OF BIRTH"],
                 "SEX": ["SEX"],
                 "REGISTRY NO": ["REGISTRY NO", "REGISTRY NO."],
+                "FATHER NAME": ["NAME OF FATHER", "FATHERS NAME", "FATHER S NAME"],
+                "MOTHER NAME": ["NAME OF MOTHER", "MAIDEN NAME OF MOTHER", "MOTHERS NAME"],
             }
             fields = _keyword_field_tamper(
                 diff_arr,
@@ -7754,12 +8357,12 @@ def verify_doc():
                 ]
 
         if effective_doc_type in ("good_moral", "goodmoral") and img_w and img_h:
-            _append_good_moral_signature_field_check(payload, filepath, boxes, img_w, img_h)
+            _append_good_moral_signature_field_check(payload, scan_path, boxes, img_w, img_h)
 
         if effective_doc_type in ("good_moral", "goodmoral"):
-            diff_arr, _ = _compute_ela_diff(filepath)
+            diff_arr, _ = _compute_ela_diff(scan_path)
             if diff_arr is None:
-                diff_arr = _compute_noise_residual(filepath)
+                diff_arr = _compute_noise_residual(scan_path)
             fm = {
                 "NAME": ["CERTIFY", "CERTIFIES"],
                 "SCHOOL": ["HIGH SCHOOL", "ACADEMY", "NATIONAL HIGH"],
@@ -7783,7 +8386,7 @@ def verify_doc():
         # Skip for 2×2 photos — natural face/hair edges against white backgrounds look like outliers.
         if not is_photo_verify:
             try:
-                tmap = _compute_tamper_map(filepath)
+                tmap = _compute_tamper_map(scan_path)
                 if effective_doc_type in ("birth_certificate", "birthcert"):
                     # PSA scans include security print / watermarks that look like outliers.
                     region_hits = _grid_hotspot_tamper(
@@ -7810,7 +8413,7 @@ def verify_doc():
                 pass
 
         if is_photo_verify and img_w and img_h:
-            photo_regions = _photo_integrity_regions(filepath, img_w, img_h)
+            photo_regions = _photo_integrity_regions(scan_path, img_w, img_h)
             if photo_regions:
                 payload["tamper_fields"] = (payload.get("tamper_fields") or []) + photo_regions
 
@@ -7864,7 +8467,7 @@ def verify_doc():
 
         if effective_doc_type in ("birth_certificate", "birthcert", "good_moral", "goodmoral"):
             _append_seal_logo_doc_check(
-                payload, filepath, effective_doc_type, ocr_text=text or ""
+                payload, scan_path, effective_doc_type, ocr_text=text or ""
             )
             if effective_doc_type in ("birth_certificate", "birthcert"):
                 _upgrade_birth_cert_header_doc_checks(payload, text or "", boxes, img_h)
@@ -7886,8 +8489,19 @@ def verify_doc():
             payload["status"] = "failed"
             payload["issues"] = (payload.get("issues") or []) + ["High tamper risk: possible image manipulation"]
 
+        if not is_photo_verify and img_w and img_h:
+            _append_layout_quality_to_payload(
+                payload,
+                effective_doc_type,
+                text or "",
+                boxes,
+                img_w,
+                img_h,
+                scan_path,
+            )
+
         if is_photo_verify:
-            quality = _image_quality_check(filepath, effective_doc_type)
+            quality = _image_quality_check(scan_path, effective_doc_type)
             quality_enforced_at_upload = False
         else:
             quality_enforced_at_upload = True
@@ -7905,6 +8519,7 @@ def verify_doc():
         if not payload["security_levels"]["overall_pass"]:
             payload["status"] = "failed"
 
+        payload["v"] = AI_VERIFY_PAYLOAD_VERSION
         return jsonify(payload)
     except Exception as e:
         err_name = type(e).__name__
@@ -7937,9 +8552,11 @@ def verify_doc():
             os.remove(filepath)
         except OSError:
             pass
-
-
-if __name__ == "__main__":
+        if scan_tmp:
+            try:
+                os.remove(scan_tmp)
+            except OSError:
+                pass
     # Hosts like Railway / Render inject the port via $PORT; fall back to 5000 locally.
     _port = int(os.environ.get("PORT", "5000"))
     _debug = os.environ.get("FLASK_DEBUG", "0") == "1"

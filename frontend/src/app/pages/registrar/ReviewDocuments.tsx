@@ -351,7 +351,7 @@ function resolveApplicationVerifyFields(app: any) {
   };
 }
 
-const AI_VERIFY_PAYLOAD_VERSION = 30;
+const AI_VERIFY_PAYLOAD_VERSION = 39;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -387,7 +387,7 @@ function filterIssuesForDisplay(docType: AiDocType, issues: string[]): string[] 
   return issues.filter((issue) => {
     const lower = issue.toLowerCase();
     if (docType !== "good_moral" && lower.includes("signature")) return false;
-    if (docType !== "birth_certificate" && (lower.includes("seal") || lower.includes("logo"))) return false;
+    if (docType !== "birth_certificate" && docType !== "good_moral" && (lower.includes("seal") || lower.includes("logo"))) return false;
     return true;
   });
 }
@@ -416,7 +416,8 @@ function filterIssuesForDocType(
 }
 
 function singleFieldCheckConcernPct(fc: FieldCheckRow): number {
-  if (fc.ok) return 0;
+  if (fc.ok === true) return 0;
+  if (fc.ok === null) return 0;
   if (typeof fc.concern_pct === "number" && Number.isFinite(fc.concern_pct)) {
     return Math.max(0, Math.min(100, Math.round(fc.concern_pct)));
   }
@@ -516,7 +517,13 @@ function aiResultForDisplay(
   );
   const doc_checks = (Array.isArray(r.doc_checks) ? r.doc_checks : []).filter((c) => {
     if (docType !== "good_moral" && isSignatureRelatedDocCheck(c)) return false;
-    if (docType !== "birth_certificate" && isVisualSealOrLogoCheck(c)) return false;
+    if (
+      docType !== "birth_certificate" &&
+      docType !== "good_moral" &&
+      isVisualSealOrLogoCheck(c)
+    ) {
+      return false;
+    }
     if (docType === "good_moral" && isRedundantAuthoritySignatureKeywordCheck(c)) return false;
     return true;
   });
@@ -539,7 +546,10 @@ function aiResultForDisplay(
       : { ...r, field_checks, doc_checks, issues: issuesFiltered };
   return {
     ...base,
-    seal_scan: docType === "birth_certificate" ? base.seal_scan : undefined,
+    seal_scan:
+      docType === "birth_certificate" || docType === "good_moral"
+        ? base.seal_scan
+        : undefined,
     security_levels: filterSecurityLevelsForDocType(
       docType,
       base.security_levels,
@@ -695,7 +705,7 @@ function isAiVerifyPayloadStale(docType: AiDocType, app: any, r?: AiVerifyRespon
   if (!r.resolved_doc_type) return true;
   const effective = aiDocTypeFromResolved(String(r.resolved_doc_type ?? "")) ?? docType;
   if (
-    effective === "birth_certificate" &&
+    (effective === "birth_certificate" || effective === "good_moral") &&
     !r.seal_scan &&
     !r.doc_checks?.some((c) => /seal|logo/i.test(String(c.field || "")))
   ) {
@@ -706,8 +716,9 @@ function isAiVerifyPayloadStale(docType: AiDocType, app: any, r?: AiVerifyRespon
       GOOD_MORAL_EXCLUDED_CROSS_FIELDS.has(String(fc.field || "").trim().toLowerCase()),
     );
     if (hasExcluded) return true;
-    const hasSignatureScan = r.field_checks.some((fc) => isSignatureFieldCheck(fc));
-    if (!hasSignatureScan) return true;
+    const sig = r.field_checks.find((fc) => isSignatureFieldCheck(fc));
+    if (!sig) return true;
+    if (sig.ok === false && String(sig.scan_method || "").toLowerCase() !== "visual") return true;
   }
   const mismatchLv = r.security_levels?.levels?.find((lv) =>
     /mismatch|enrollment/i.test(lv.title),
@@ -778,31 +789,41 @@ function documentAiIsPending(doc: { aiStatus?: unknown; ai_status?: unknown; aiC
   return st === "" || st === "pending";
 }
 
-function documentAiIsSettled(docId: string, doc: any): boolean {
+function documentAiIsSettled(docId: string, doc: any, app?: any): boolean {
+  const envelope = aiVerifyFromDocument(doc);
+  if (envelope) {
+    const docType = mapDocType(doc);
+    if (isAiVerifyPayloadStale(docType, app ?? null, envelope)) return false;
+    return true;
+  }
   if (isDocumentAiSettledInBrowser(docId)) return true;
-  if (aiVerifyFromDocument(doc)) return true;
   if (typeof doc?.aiConfidence === "number" && Number.isFinite(doc.aiConfidence)) return true;
   const st = documentAiStatus(doc);
   if (st === "processing" || st === "queued") return true;
   if (st && st !== "pending") return true;
-  return hydrateAiResultFromDocument(doc) !== null;
+  return hydrateAiResultFromDocument(doc, app) !== null;
 }
 
 function documentAiIsLocked(doc: { aiStatus?: unknown; ai_status?: unknown }): boolean {
   return !documentAiIsPending(doc);
 }
 
-function documentNeedsAutoAiRun(docId: string, doc: any): boolean {
+function documentNeedsAutoAiRun(docId: string, doc: any, app?: any): boolean {
   if (!doc?.id) return false;
   if (guessDocKind(doc?.mimeType, doc?.fileName || doc?.name) !== "image") return false;
-  if (documentAiIsSettled(docId, doc)) return false;
+  if (documentAiIsSettled(docId, doc, app)) return false;
+  const envelope = aiVerifyFromDocument(doc);
+  if (envelope && isAiVerifyPayloadStale(mapDocType(doc), app ?? null, envelope)) return true;
   return documentAiIsPending(doc);
 }
 
-function hydrateAiResultFromDocument(doc: any): AiVerifyResponse | null {
+function hydrateAiResultFromDocument(doc: any, app?: any): AiVerifyResponse | null {
   const fromEnvelope = aiVerifyFromDocument(doc);
   if (fromEnvelope) {
     const docType = mapDocType(doc);
+    if (isAiVerifyPayloadStale(docType, app ?? null, fromEnvelope)) {
+      return null;
+    }
     return aiResultForDisplay(docType, fromEnvelope) ?? fromEnvelope;
   }
 
@@ -890,7 +911,7 @@ function checkDetailVisibility(docType: AiDocType): CheckDetailVisibility {
       return {
         tamper: true,
         synthetic: true,
-        sealLogo: false,
+        sealLogo: true,
         labels: true,
         enrollment: true,
       };
@@ -921,7 +942,7 @@ function checkDetailsIntro(docType: AiDocType): string {
     case "birth_certificate":
       return "PSA seal/logo, document labels, identity cross-check, and integrity signals.";
     case "good_moral":
-      return "Certificate labels, enrollment cross-check, signature scan, and integrity signals.";
+      return "School seal/logo, certificate labels, enrollment cross-check, signature scan, and integrity signals.";
     case "sf9":
       return "Report card labels, enrollment cross-check, and integrity signals.";
     case "form137":
@@ -1234,7 +1255,13 @@ export function ReviewDocuments() {
       for (const doc of Array.isArray(app?.documents) ? app.documents : []) {
         if (!doc?.id) continue;
         const id = String(doc.id);
-        const hydrated = hydrateAiResultFromDocument(doc);
+        const docType = mapDocType(doc);
+        const fromEnvelope = aiVerifyFromDocument(doc);
+        if (fromEnvelope && isAiVerifyPayloadStale(docType, app, fromEnvelope)) {
+          clearDocumentAiSettledInBrowser(id);
+          continue;
+        }
+        const hydrated = hydrateAiResultFromDocument(doc, app);
         if (hydrated) {
           seeded[id] = hydrated;
           doneStates[id] = { state: "done" };
@@ -1850,11 +1877,11 @@ export function ReviewDocuments() {
   const pendingImageDocIds = useMemo(() => {
     if (!Array.isArray(application?.documents)) return "";
     return (application.documents as any[])
-      .filter((d) => d?.id && documentNeedsAutoAiRun(String(d.id), d))
+      .filter((d) => d?.id && documentNeedsAutoAiRun(String(d.id), d, application))
       .map((d) => String(d.id))
       .sort()
       .join(",");
-  }, [application?.documents]);
+  }, [application?.documents, application]);
 
   const handleRerunAi = useCallback(async () => {
     if (!application?.documents?.length) return;
@@ -1915,7 +1942,7 @@ export function ReviewDocuments() {
         for (const doc of docs) {
           if (cancelled) return;
           const id = String(doc.id);
-          if (documentAiIsSettled(id, doc)) continue;
+          if (documentAiIsSettled(id, doc, application)) continue;
           await runVerifyForDoc(doc, { applicationSnapshot: application });
         }
       } finally {
@@ -3677,7 +3704,7 @@ export function ReviewDocuments() {
                           transform: "translate(-50%, -50%)",
                         }}
                       >
-                        {cells.map((c, idx) => {
+                        {cells.filter((c) => String(c.risk || "").toLowerCase() === "high").map((c, idx) => {
                           const risk = c.risk || "warning";
                           const color =
                             risk === "high"

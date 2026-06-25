@@ -189,7 +189,7 @@ if (isset($row['ai_score']) && $row['ai_score'] !== '' && is_numeric($row['ai_sc
 }
 
 if (documentHasPersistedAiArtifacts($aiStatusRaw, isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null, $row['ai_score'] ?? null)) {
-    if (!$forceRerun) {
+    if (!$forceRerun && !aiPersistedEnvelopeIsStale($storedEnvelope)) {
         $cached = reconstructAiVerifyFromLockedRow($aiStatusRaw, $scorePct, $storedEnvelope);
         echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
         exit;
@@ -294,6 +294,7 @@ if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
 }
 
 $decoded = $aiRes['body'];
+$decoded['v'] = AI_VERIFY_PAYLOAD_VERSION;
 
 try {
     persistDocumentAiResult($pdo, $docId, $decoded, $fileFingerprint !== '' ? $fileFingerprint : null);
