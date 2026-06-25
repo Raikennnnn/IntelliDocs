@@ -72,6 +72,17 @@ import {
   syntheticConcernPercent,
   tamperConcernPercent,
 } from "../../lib/concernScore";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
+import {
+  REJECTION_REASON_PRESETS,
+  getRejectionPresetByValue,
+} from "../../lib/rejectionReasons";
 import { cn } from "../../components/ui/utils";
 
 function applicationReviewStatusBadgeClass(status: string): string {
@@ -1004,6 +1015,7 @@ export function ReviewDocuments() {
   const params = useParams();
   const applicationId = params.applicationId;
   const [remarks, setRemarks] = useState("");
+  const [rejectReasonPreset, setRejectReasonPreset] = useState<string>("other");
   const [selectedDocument, setSelectedDocument] = useState<any>(null);
   const [isDocumentDialogOpen, setIsDocumentDialogOpen] = useState(false);
   const [previewObjectUrl, setPreviewObjectUrl] = useState<string | null>(null);
@@ -2807,6 +2819,34 @@ export function ReviewDocuments() {
 
           {decisionDialog === "reject" && (
             <div className="space-y-2">
+              <div className="space-y-2">
+                <Label htmlFor="reject-reason-preset">Reason preset</Label>
+                <Select
+                  value={rejectReasonPreset}
+                  onValueChange={(val) => {
+                    setRejectReasonPreset(val);
+                    const preset = getRejectionPresetByValue(val);
+                    if (preset && preset.value !== "other" && preset.template.trim()) {
+                      setRemarks(preset.template);
+                    }
+                  }}
+                >
+                  <SelectTrigger id="reject-reason-preset">
+                    <SelectValue placeholder="Select a preset (optional)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {REJECTION_REASON_PRESETS.map((p) => (
+                      <SelectItem key={p.value} value={p.value}>
+                        {p.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-gray-500">
+                  Choose a preset to auto-fill the remarks. You can still edit the text below.
+                </p>
+              </div>
+
               <Label htmlFor="reject-remarks">
                 Reason for rejection <span className="text-red-500" aria-hidden="true">*</span>
               </Label>

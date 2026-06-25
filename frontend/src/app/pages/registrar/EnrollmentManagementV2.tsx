@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { PDFViewerList } from '../../components/PDFViewer';
+import { REJECTION_REASON_PRESETS, getRejectionPresetByValue } from '../../lib/rejectionReasons';
 
 type Strand = 'HUMSS' | 'TVL';
 type EnrollmentStatus = 'Pending Review' | 'Approved' | 'Rejected';
@@ -59,6 +60,7 @@ export function EnrollmentManagement() {
   const [selectedApp, setSelectedApp] = useState<Application | null>(null);
   const [selectedSection, setSelectedSection] = useState<string>('');
   const [actionComment, setActionComment] = useState('');
+  const [rejectReasonPreset, setRejectReasonPreset] = useState<string>('other');
   const [currentAction, setCurrentAction] = useState<'approve' | 'reject' | 'verify-payment' | null>(null);
   const [isReviewDialogOpen, setIsReviewDialogOpen] = useState(false);
   const [isActionDialogOpen, setIsActionDialogOpen] = useState(false);
@@ -756,6 +758,38 @@ export function EnrollmentManagement() {
           </DialogHeader>
           
           <div className="space-y-4">
+            {currentAction === 'reject' && (
+              <div>
+                <Label className="text-sm font-medium text-gray-700 mb-2 block">
+                  Reason preset
+                </Label>
+                <Select
+                  value={rejectReasonPreset}
+                  onValueChange={(val) => {
+                    setRejectReasonPreset(val);
+                    const preset = getRejectionPresetByValue(val);
+                    if (preset && preset.value !== 'other' && preset.template.trim()) {
+                      setActionComment(preset.template);
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a preset (optional)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {REJECTION_REASON_PRESETS.map((p) => (
+                      <SelectItem key={p.value} value={p.value}>
+                        {p.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-gray-500 mt-2">
+                  Choosing a preset auto-fills the comments box below. You can still edit it.
+                </p>
+              </div>
+            )}
+
             <div>
               <Label className="text-sm font-medium text-gray-700 mb-2 block">
                 Comments <span className="text-red-600">*</span>
