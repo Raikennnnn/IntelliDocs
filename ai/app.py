@@ -7458,6 +7458,20 @@ def screen_readability():
     if request.method == "OPTIONS":
         return _corsify(make_response("", 204))
 
+    if not _ocr_any_available():
+        return (
+            jsonify(
+                {
+                    "pass": False,
+                    "level": 2,
+                    "retryable": True,
+                    "error": "ocr_unavailable",
+                    "message": "Document verification is temporarily unavailable. Please try again in a few minutes.",
+                }
+            ),
+            503,
+        )
+
     if "image" not in request.files:
         return jsonify({"error": "No image"}), 400
 

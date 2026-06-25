@@ -57,7 +57,8 @@ function aiServiceBaseUrl(): string
     }
 
     foreach ($candidates as $base) {
-        if (aiServiceHealthProbe($base) !== null) {
+        $health = aiServiceHealthProbe($base);
+        if ($health !== null && !empty($health['ok'])) {
             $resolved = $base;
             return $resolved;
         }
@@ -237,7 +238,7 @@ function aiScreenUploadReadability(
 ): array {
     $res = aiPostMultipart('/screen-readability', $fullPath, $downloadName, $mimeType, [
         'doc_type' => $docType,
-    ], 45);
+    ], 120);
 
     if (!$res['ok'] || !is_array($res['body'])) {
         $message = sanitizeClientErrorMessage($res['error'] ?? '');

@@ -174,6 +174,8 @@ interface DocumentUpload {
   uploadCount?: number;
   /** Copied from a prior school-year enrollment during Grade 12 rollover. */
   carriedForward?: boolean;
+  /** Set when deferred readability checks cannot reach the AI service. */
+  readabilityCheckPaused?: boolean;
 }
 
 /** Maximum number of times a student may upload a single requirement. */
@@ -327,6 +329,16 @@ function studentDocumentDisplayMeta(
   }
 
   if (aiStatus === "screening") {
+    if (doc.readabilityCheckPaused) {
+      return {
+        needsResubmit: false,
+        verified: false,
+        label: "Verification unavailable",
+        badgeClass: "bg-red-600 text-white",
+        showCarriedHint: false,
+        allowReupload: false,
+      };
+    }
     return {
       needsResubmit: false,
       verified: false,
@@ -644,6 +656,7 @@ export function StudentEnrollment() {
   const [formData, setFormData] = useState<EnrollmentFormData>(INITIAL_ENROLLMENT_FORM_DATA);
   const submitInFlightRef = useRef(false);
   const readabilityInFlightRef = useRef(new Set<number>());
+  const readabilityRetryRef = useRef(new Map<number, number>());
 
   const hasOpenSchoolYear =
     enrollmentAllowedFromSettings === true ||
@@ -1285,6 +1298,16 @@ export function StudentEnrollment() {
   const runDocumentReadabilityCheck = useCallback(async (docIndex: number, documentId: number) => {
     if (!documentId || readabilityInFlightRef.current.has(documentId)) return;
     readabilityInFlightRef.current.add(documentId);
+    setDocuments((prev) => {
+      const next = [...prev];
+      if (next[docIndex]?.uploadedId === documentId) {
+        next[docIndex] = {
+          ...next[docIndex],
+          readabilityCheckPaused: false,
+        };
+      }
+      return next;
+    });
     try {
       const res = await apiFetch('/api/documents/screen-readability', {
         method: 'POST',
@@ -1301,6 +1324,7 @@ export function StudentEnrollment() {
       };
       if (!res.ok || !json.success) {
         if (json.readability_failed || res.status === 422) {
+          readabilityRetryRef.current.delete(documentId);
           setDocuments((prev) => {
             const next = [...prev];
             next[docIndex] = {
@@ -1310,6 +1334,7 @@ export function StudentEnrollment() {
               uploadedId: undefined,
               uploadedAt: undefined,
               aiStatus: undefined,
+              readabilityCheckPaused: false,
             };
             return next;
           });
@@ -1317,9 +1342,28 @@ export function StudentEnrollment() {
           toast.error(`Document not readable: ${json.error || 'Upload a clearer photo (JPG or PNG).'}`, {
             duration: 9000,
           });
-        } else if (json.retryable) {
+        } else if (json.retryable || res.status === 503) {
+          const attempts = (readabilityRetryRef.current.get(documentId) ?? 0) + 1;
+          readabilityRetryRef.current.set(documentId, attempts);
+          if (attempts >= 6) {
+            setDocuments((prev) => {
+              const next = [...prev];
+              if (next[docIndex]?.uploadedId === documentId) {
+                next[docIndex] = {
+                  ...next[docIndex],
+                  readabilityCheckPaused: true,
+                };
+              }
+              return next;
+            });
+            toast.error(
+              'Document verification is temporarily unavailable. Tap Retry check on the document, or try again in a few minutes.',
+              { duration: 8000 },
+            );
+            return;
+          }
           toast.error(json.error || 'Readability check unavailable. Retrying…', {
-            duration: 6000,
+            duration: 5000,
           });
           window.setTimeout(() => {
             void runDocumentReadabilityCheck(docIndex, documentId);
@@ -1329,12 +1373,14 @@ export function StudentEnrollment() {
         }
         return;
       }
+      readabilityRetryRef.current.delete(documentId);
       setDocuments((prev) => {
         const next = [...prev];
         if (next[docIndex]?.uploadedId === documentId) {
           next[docIndex] = {
             ...next[docIndex],
             aiStatus: json.ai_status || 'pending',
+            readabilityCheckPaused: false,
           };
         }
         return next;
@@ -1740,7 +1786,12 @@ export function StudentEnrollment() {
       (doc) => doc.status === 'uploaded' && String(doc.aiStatus || '').toLowerCase() === 'screening',
     );
     if (screeningDocs.length > 0) {
-      toast.error('Document readability checks are still in progress. Please wait a moment.');
+      const paused = screeningDocs.some((doc) => doc.readabilityCheckPaused);
+      toast.error(
+        paused
+          ? 'Document verification is temporarily unavailable. Tap Retry check on the affected document(s), or try again in a few minutes.'
+          : 'Document readability checks are still in progress. Please wait a moment.',
+      );
       return false;
     }
     if (!documentsAuthenticityConfirmed) {
@@ -2992,6 +3043,9 @@ export function StudentEnrollment() {
                     (docNeedsResubmit || (isResubmitFlow && uploadsUsed > 0) || uploadLimitReached);
                   const attemptsRemaining = Math.max(0, UPLOAD_ATTEMPT_LIMIT - uploadsUsed);
 
+                  const aiStatusLower = String(doc.aiStatus || '').toLowerCase();
+                  const readabilityPaused =
+                    aiStatusLower === 'screening' && Boolean(doc.readabilityCheckPaused);
                   const openUploadPicker = () => {
                     const input = document.createElement('input');
                     input.type = 'file';
@@ -3079,9 +3133,18 @@ export function StudentEnrollment() {
                               this document.
                             </p>
                           ) : null}
-                          {doc.status === 'uploaded' && !docNeedsResubmit && !docMeta.allowReupload && !isGrade12PromotionFlow ? (
+                          {doc.status === 'uploaded' &&
+                          !docNeedsResubmit &&
+                          !docMeta.allowReupload &&
+                          !isGrade12PromotionFlow &&
+                          !readabilityPaused ? (
                             <p className="text-xs text-gray-500 mt-1">
                               This document is locked and cannot be replaced here.
+                            </p>
+                          ) : null}
+                          {readabilityPaused ? (
+                            <p className="text-xs text-red-700 mt-1">
+                              Verification service is temporarily unavailable. Tap Retry check, or wait a few minutes and refresh.
                             </p>
                           ) : null}
                         </div>
@@ -3132,7 +3195,19 @@ export function StudentEnrollment() {
                               <CheckCircle className="w-3 h-3 mr-1" />
                               {docMeta.label}
                             </Badge>
-                            {lockedForResubmit || !docMeta.allowReupload ? (
+                            {readabilityPaused && doc.uploadedId ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-amber-600 text-amber-800 hover:bg-amber-600 hover:text-white"
+                                onClick={() => {
+                                  readabilityRetryRef.current.delete(doc.uploadedId!);
+                                  void runDocumentReadabilityCheck(index, doc.uploadedId!);
+                                }}
+                              >
+                                Retry check
+                              </Button>
+                            ) : lockedForResubmit || !docMeta.allowReupload ? (
                               <Badge variant="outline" className="border-gray-400 text-gray-600">
                                 {enrollmentFinalized ? "On file" : "Locked"}
                               </Badge>

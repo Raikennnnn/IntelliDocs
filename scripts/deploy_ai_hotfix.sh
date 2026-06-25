@@ -50,8 +50,27 @@ echo "$HEALTH"
 if echo "$HEALTH" | grep -qE '"ok"[[:space:]]*:[[:space:]]*true'; then
   echo "OK: AI service running with commit $(git -C "$APP_ROOT" rev-parse --short HEAD)"
 else
-  echo "WARNING: AI health check failed. Run: journalctl -u intellidocs-ai -n 40 --no-pager"
+  echo "WARNING: AI health check failed — running fix_ai_service.sh…"
+  if [ -f "$APP_ROOT/scripts/fix_ai_service.sh" ]; then
+    bash "$APP_ROOT/scripts/fix_ai_service.sh" || true
+    HEALTH="$(curl -fsS --max-time 15 http://127.0.0.1:8080/health || true)"
+    echo "$HEALTH"
+  fi
+  if ! echo "$HEALTH" | grep -qE '"ok"[[:space:]]*:[[:space:]]*true'; then
+    echo "ERROR: AI still unhealthy. Run: journalctl -u intellidocs-ai -n 40 --no-pager"
+    exit 1
+  fi
+fi
+
+step "Verify /screen-readability route exists"
+SCREEN_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/screen-readability || echo 000)"
+echo "POST /screen-readability => HTTP $SCREEN_CODE"
+if [ "$SCREEN_CODE" = "404" ]; then
+  echo "ERROR: /screen-readability missing — AI code is stale. Re-run deploy after git pull."
   exit 1
+fi
+if [ "$SCREEN_CODE" != "400" ] && [ "$SCREEN_CODE" != "503" ]; then
+  echo "WARNING: expected HTTP 400 (no file) or 503 (OCR warming up), got $SCREEN_CODE"
 fi
 
 step "Verify AI code markers and /health build"
