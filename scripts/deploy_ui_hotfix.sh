@@ -68,6 +68,9 @@ rm -rf "$APP_ROOT/public/app/"*
 cp -r dist/* "$APP_ROOT/public/app/"
 bash "$APP_ROOT/scripts/sync_spa_to_root.sh"
 
+step "Verify all JS chunks exist"
+bash "$APP_ROOT/scripts/verify_frontend_assets.sh"
+
 step "Verify bundle"
 ROOT_BUNDLE="$(ls -1 "$APP_ROOT/public/assets"/index-*.js 2>/dev/null | head -1 || true)"
 if [ -z "$ROOT_BUNDLE" ]; then

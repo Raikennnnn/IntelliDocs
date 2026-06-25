@@ -130,6 +130,7 @@ cp -r dist/* "$APP_ROOT/public/app/"
 
 # Keep site root in sync (nginx try_files → /index.html for /landing, /registrar/…)
 bash "$APP_ROOT/scripts/sync_spa_to_root.sh"
+bash "$APP_ROOT/scripts/verify_frontend_assets.sh"
 # Static marketing assets used by enrollment UI
 if [ -d public/admission-samples ]; then
   mkdir -p "$APP_ROOT/public/admission-samples"
