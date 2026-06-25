@@ -8,6 +8,7 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 }
 
 require_once __DIR__ . '/logging.php';
+require_once __DIR__ . '/upload_limits.php';
 
 function tableExists(PDO $pdo, string $table): bool
 {
@@ -26,7 +27,7 @@ function columnExists(PDO $pdo, string $table, string $column): bool
 function describeUploadError(int $code): string
 {
     return match ($code) {
-        UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'File is too large. Maximum size is 5MB — try compressing the image or saving as JPG.',
+        UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => documentUploadTooLargeErrorMessage(),
         UPLOAD_ERR_PARTIAL => 'Upload was interrupted. Please try again.',
         UPLOAD_ERR_NO_FILE => 'No file was received. Please choose a file and try again.',
         UPLOAD_ERR_NO_TMP_DIR => 'Server upload folder is misconfigured. Contact the registrar.',
@@ -220,7 +221,7 @@ if ($method === 'POST') {
             http_response_code(413);
             echo json_encode([
                 'success' => false,
-                'error' => 'File is too large for the server. Maximum size is 5MB — try compressing the image or saving as JPG.',
+                'error' => documentUploadTooLargeErrorMessage(),
             ]);
             exit;
         }
@@ -254,9 +255,9 @@ if ($method === 'POST') {
     $tmpPath = (string)$file['tmp_name'];
     $originalName = (string)($file['name'] ?? 'document');
     $size = (int)($file['size'] ?? 0);
-    if ($size <= 0 || $size > 5 * 1024 * 1024) {
+    if (documentUploadTooLarge($size)) {
         http_response_code(422);
-        echo json_encode(['success' => false, 'error' => 'File size must be between 1 byte and 5MB']);
+        echo json_encode(['success' => false, 'error' => documentUploadSizeErrorMessage()]);
         exit;
     }
 

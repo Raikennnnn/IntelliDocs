@@ -65,6 +65,10 @@ import {
 } from "../../lib/ncrAddress";
 import { useEnrollmentAllowed } from "../../context/SchoolYearContext";
 import { EnrollmentGuard } from "../../components/EnrollmentGuard";
+import {
+  isDocumentUploadTooLarge,
+  MAX_DOCUMENT_UPLOAD_LABEL,
+} from "../../lib/uploadLimits";
 
 /**
  * `RequiredLabel` renders a form label and a consistently-styled red
@@ -1356,8 +1360,8 @@ export function StudentEnrollment() {
 
   const handleFileUpload = async (index: number, file: File | null) => {
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error('Maximum file size is 5MB');
+    if (isDocumentUploadTooLarge(file.size)) {
+      toast.error(`Maximum file size is ${MAX_DOCUMENT_UPLOAD_LABEL}`);
       return;
     }
 
@@ -2949,7 +2953,7 @@ export function StudentEnrollment() {
                     <AlertCircle className="h-4 w-4" />
                     <AlertDescription>
                       Use good lighting and include the full document. We check each photo for clarity
-                      and readable text before it is accepted. Maximum file size: 5MB per document.
+                      and readable text before it is accepted. Maximum file size: {MAX_DOCUMENT_UPLOAD_LABEL} per document.
                     </AlertDescription>
                   </Alert>
                 )}
