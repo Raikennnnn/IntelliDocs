@@ -15,7 +15,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 39
+AI_VERIFY_PAYLOAD_VERSION = 44
 
 
 def _staging_upload_path(file) -> str:
@@ -685,30 +685,11 @@ def _clamp_signature_region(
     return x, y, w, h
 
 
-def _signature_candidate_regions(
-    boxes: list[dict] | None,
-    img_w: int,
-    img_h: int,
-) -> list[tuple[int, int, int, int]]:
-    """
-    Candidate signature areas on PH school certificates.
-
-    Handwritten signatures usually sit just below the last certification sentence and
-    above the printed principal/registrar name — not on the bottom page margin.
-    """
-    candidates: list[tuple[int, int, int, int]] = []
-    seen: set[tuple[int, int, int, int]] = set()
-
-    def _add(x: int, y: int, w: int, h: int) -> None:
-        region = _clamp_signature_region(x, y, w, h, img_w, img_h)
-        if region and region not in seen:
-            seen.add(region)
-            candidates.append(region)
-
+def _signature_authority_boxes(boxes: list[dict] | None, img_h: int) -> list[dict]:
+    """OCR boxes that look like printed principal / school-head signatory lines."""
+    if not boxes:
+        return []
     lower_start = int(img_h * 0.45)
-    sig_h = max(28, int(img_h * 0.11))
-    sig_w = max(int(img_w * 0.34), int(img_w * 0.42))
-
     authority_kw = (
         "PRINCIPAL",
         "REGISTRAR",
@@ -717,11 +698,287 @@ def _signature_candidate_regions(
         "ADMINISTRATOR",
         "SCHOOL PRINCIPAL",
         "DIRECTOR",
+        "TEACHER",
+        "IN-CHARGE",
+        "IN CHARGE",
+        "CHARGE",
     )
     name_prefix = ("MR.", "MR ", "MRS.", "MS.", "DR.", "DR ")
-    authority_boxes: list[dict] = []
-    body_boxes: list[dict] = []
+    footer_words = frozenset({
+        "SCHOOL",
+        "SEAL",
+        "NOT",
+        "VALID",
+        "WITHOUT",
+        "THIS",
+        "CERTIFICATION",
+        "ISSUED",
+        "PURPOSE",
+        "MAY",
+        "SERVE",
+        "ANY",
+        "AND",
+        "THE",
+        "FOR",
+        "HIM",
+        "HER",
+        "WHATEVER",
+        "REGULATIONS",
+    })
+    out: list[dict] = []
+    for b in boxes:
+        t = str(b.get("text") or "").upper().strip()
+        by = float(b.get("y", 0))
+        bh = float(b.get("h", 0))
+        cy = by + bh / 2.0
+        if cy < lower_start:
+            continue
+        if any(k in t for k in authority_kw) or any(t.startswith(p) for p in name_prefix):
+            out.append(b)
+            continue
+        words = [w for w in t.replace(".", " ").split() if w]
+        if len(words) >= 2 and sum(1 for w in words if w.isupper() or w.isdigit()) >= len(words) - 1:
+            if cy >= img_h * 0.62:
+                out.append(b)
+                continue
+        if cy >= img_h * 0.78 and len(t) >= 4:
+            token = t.replace(".", "")
+            if token in footer_words:
+                continue
+            if token.isalpha() and token.isupper():
+                out.append(b)
+    out.sort(key=lambda b: float(b.get("y", 0)), reverse=True)
+    return out
+
+
+def _signature_signatory_top_y(authority_boxes: list[dict], img_h: int) -> float | None:
+    """Top edge of the printed signatory name block (gap for handwriting sits above this)."""
+    if not authority_boxes:
+        return None
+    title_only = (
+        "SCHOOL HEAD",
+        "HEAD",
+        "PRINCIPAL",
+        "REGISTRAR",
+        "TEACHER",
+        "IN-CHARGE",
+        "IN CHARGE",
+        "DIRECTOR",
+        "ADMINISTRATOR",
+        "SCHOOL PRINCIPAL",
+        "CHARGE",
+    )
+    name_boxes: list[dict] = []
+    for b in authority_boxes:
+        t = str(b.get("text") or "").upper().strip()
+        if len(t) <= 2:
+            continue
+        if any(tok in t for tok in title_only) and not any(t.startswith(p) for p in ("MR.", "MR ", "MRS.", "MS.", "DR.", "DR ")):
+            continue
+        name_boxes.append(b)
+    pool = name_boxes or authority_boxes
+    return min(float(b.get("y", 0)) for b in pool)
+
+
+def _signature_body_bottom_y(boxes: list[dict] | None, img_h: int) -> float | None:
+    """Bottom edge of the last certification sentence before the signature gap."""
+    if not boxes:
+        return None
+    closing_kw = (
+        "CERTIFICATION",
+        "ISSUED",
+        "SERVE",
+        "PURPOSE",
+        "REGULATIONS",
+        "WHATEVER",
+        "HIM",
+        "VALID",
+        "SEAL",
+        "DISCIPLINARY",
+        "CHARACTER",
+        "MORAL",
+    )
+    body_kw = ("CERTIFY", "CERTIFIES", "HEREBY", "STUDENT", "GRADE", "SCHOOL")
+    footer_words = frozenset({
+        "SCHOOL", "SEAL", "NOT", "VALID", "WITHOUT", "THIS", "CERTIFICATION",
+        "ISSUED", "PURPOSE", "MAY", "SERVE", "ANY", "AND", "THE", "FOR", "HIM", "HER",
+    })
+    bottoms: list[float] = []
+    for b in boxes:
+        t = str(b.get("text") or "").upper().strip()
+        if t in footer_words:
+            continue
+        by = float(b.get("y", 0))
+        bh = float(b.get("h", 0))
+        cy = by + bh / 2.0
+        if cy < img_h * 0.22 or cy > img_h * 0.82:
+            continue
+        if any(k in t for k in closing_kw) or any(k in t for k in body_kw):
+            bottoms.append(by + bh)
+    return max(bottoms) if bottoms else None
+
+
+def _signature_structured_gap_regions(
+    boxes: list[dict] | None,
+    img_w: int,
+    img_h: int,
+) -> list[tuple[int, int, int, int, str]]:
+    """Crop the blank band between the closing certification line and printed signatory name."""
+    body_bottom = _signature_body_bottom_y(boxes, img_h)
+    signatory_top = _signature_signatory_top_y(_signature_authority_boxes(boxes, img_h), img_h)
+    if body_bottom is None or signatory_top is None:
+        return []
+    gap_top = int(body_bottom) + max(8, int(img_h * 0.012))
+    gap_bottom = int(signatory_top) - max(8, int(img_h * 0.010))
+    gap_h = gap_bottom - gap_top
+    if gap_h < 20:
+        return []
+    sig_w = max(int(img_w * 0.22), min(int(img_w * 0.36), int(img_w * 0.42)))
+    regions: list[tuple[int, int, int, int, str]] = []
+    for x_frac in (0.40, 0.50, 0.60):
+        x = max(0, min(int(img_w * x_frac), img_w - sig_w))
+        region = _clamp_signature_region(x, gap_top, sig_w, gap_h, img_w, img_h)
+        if region:
+            regions.append((*region, "gap"))
+    return regions
+
+
+def _signature_roi_handwriting_like(
+    gray_roi,
+    roi_w: int,
+    roi_h: int,
+    stroke_components: int,
+    ink_ratio: float,
+) -> bool:
+    """Ink blobs that look like handwriting rather than printed lines or scan speckle."""
+    if stroke_components < 3 or stroke_components > 14:
+        return False
+    if ink_ratio < 0.020 or ink_ratio > 0.060:
+        return False
+    try:
+        import cv2
+        import numpy as np
+
+        gray = np.asarray(gray_roi, dtype=np.uint8)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        areas = [cv2.contourArea(c) for c in contours if cv2.contourArea(c) >= 8]
+        if not areas:
+            return False
+        tiny = sum(1 for a in areas if a < 35)
+        if len(areas) >= 2 and tiny / len(areas) > 0.65 and max(areas) < 100:
+            return False
+        large_strokes = 0
+        span_strokes = 0
+        y_centers: list[float] = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 45:
+                continue
+            _bx, by, bw, bh = cv2.boundingRect(c)
+            if area >= 70:
+                large_strokes += 1
+            if bw >= max(14, roi_w * 0.07) and 2 <= bh <= max(40, roi_h * 0.45):
+                span_strokes += 1
+            y_centers.append(by + bh / 2.0)
+        if large_strokes < 1 or span_strokes < 1:
+            return False
+        if y_centers and (max(y_centers) - min(y_centers)) < max(8, roi_h * 0.14):
+            if stroke_components >= 6:
+                return False
+        return True
+    except Exception:
+        return stroke_components >= 3 and ink_ratio >= 0.018
+
+
+def _signature_roi_looks_like_printed_text(
+    gray_roi,
+    roi_w: int,
+    roi_h: int,
+    stroke_components: int,
+    ink_ratio: float,
+) -> bool:
+    """Reject ROIs dominated by typed/printed authority lines (not handwriting)."""
+    if stroke_components > 14:
+        return True
+    if stroke_components >= 7 and ink_ratio >= 0.018:
+        return True
+    try:
+        import numpy as np
+        import cv2
+
+        gray = np.asarray(gray_roi, dtype=np.uint8)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        wide_rows = 0
+        for row in binary:
+            if row.mean() < 0.025:
+                continue
+            cols = np.where(row > 0)[0]
+            if cols.size and (cols[-1] - cols[0]) >= roi_w * 0.40:
+                wide_rows += 1
+        if wide_rows >= 2 and stroke_components >= 4:
+            return True
+        if wide_rows >= 1 and stroke_components >= 6 and ink_ratio >= 0.012:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _signature_roi_overlaps_authority_print(
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    boxes: list[dict] | None,
+    img_h: int,
+) -> bool:
+    """True when the ROI sits on the printed signatory name/title instead of the gap above it."""
+    authority_boxes = _signature_authority_boxes(boxes, img_h)
+    if not authority_boxes:
+        return False
+    roi_cy = y + h / 2.0
+    for b in authority_boxes:
+        by = float(b.get("y", 0))
+        bh = float(b.get("h", 0))
+        box_top = by
+        if roi_cy >= box_top - bh * 0.25:
+            if y + h > box_top - max(4, int(bh * 0.35)):
+                return True
+    return False
+
+
+def _signature_candidate_regions(
+    boxes: list[dict] | None,
+    img_w: int,
+    img_h: int,
+    *,
+    anchor_only: bool = False,
+) -> list[tuple[int, int, int, int, str]]:
+    """
+    Candidate signature areas on PH school certificates.
+
+    Handwritten signatures usually sit just below the last certification sentence and
+    above the printed principal/registrar name — not on the bottom page margin.
+    Returns (x, y, w, h, kind) where kind is anchor|fallback.
+    """
+    candidates: list[tuple[int, int, int, int, str]] = []
+    seen: set[tuple[int, int, int, int]] = set()
+
+    def _add(x: int, y: int, w: int, h: int, kind: str = "anchor") -> None:
+        region = _clamp_signature_region(x, y, w, h, img_w, img_h)
+        if region and region not in seen:
+            seen.add(region)
+            candidates.append((*region, kind))
+
+    lower_start = int(img_h * 0.45)
+    sig_h = max(28, int(img_h * 0.11))
+    sig_w = max(int(img_w * 0.34), int(img_w * 0.42))
+
     body_kw = ("CERTIFY", "CERTIFIES", "MORAL", "CHARACTER", "GRADE", "STUDENT", "SCHOOL", "HEREBY")
+    body_boxes: list[dict] = []
+    authority_boxes = _signature_authority_boxes(boxes, img_h)
 
     if boxes:
         for b in boxes:
@@ -729,11 +986,6 @@ def _signature_candidate_regions(
             by = float(b.get("y", 0))
             bh = float(b.get("h", 0))
             cy = by + bh / 2.0
-            if cy >= lower_start and (
-                any(k in t for k in authority_kw)
-                or any(t.startswith(p) for p in name_prefix)
-            ):
-                authority_boxes.append(b)
             if img_h * 0.30 < cy < img_h * 0.86 and any(k in t for k in body_kw):
                 body_boxes.append(b)
 
@@ -749,7 +1001,6 @@ def _signature_candidate_regions(
 
     # 2) Above printed principal / registrar / school-head name in the lower block.
     if authority_boxes:
-        authority_boxes.sort(key=lambda b: float(b.get("y", 0)), reverse=True)
         anchor = authority_boxes[0]
         ax = int(float(anchor.get("x", 0)))
         ay = int(float(anchor.get("y", 0)))
@@ -760,37 +1011,34 @@ def _signature_candidate_regions(
         anchor_x = max(0, min(anchor_cx - sig_w // 2, img_w - sig_w))
         _add(anchor_x, y_above_name, sig_w, sig_h)
         _add(max(0, ax - int(aw * 0.15)), y_above_name, sig_w, sig_h)
-        # Signatures often overlap the printed signatory line (ink on top of the name).
-        overlap_y = max(0, ay - int(sig_h * 0.42))
-        overlap_h = min(img_h - overlap_y, max(sig_h, int(sig_h * 0.55)))
-        overlap_w = max(int(img_w * 0.22), min(sig_w, int(aw * 4)))
-        overlap_x = max(0, min(anchor_cx - overlap_w // 2, img_w - overlap_w))
-        _add(overlap_x, overlap_y, overlap_w, overlap_h)
         if anchor_cx > int(img_w * 0.48):
             _add(int(img_w * 0.50), y_above_name, sig_w, sig_h)
             _add(int(img_w * 0.58), max(0, ay - sig_h - ah), sig_w, sig_h)
         else:
             _add(int(img_w * 0.28), y_above_name, sig_w, sig_h)
 
+    if anchor_only:
+        return candidates
+
     # 3) Lower band fallbacks — signatures often sit bottom-left or bottom-right.
     band_y = int(img_h * 0.58)
-    _add(int(img_w * 0.06), band_y, sig_w, sig_h)
-    _add(int(img_w * 0.28), int(img_h * 0.62), sig_w, sig_h)
-    _add(int(img_w * 0.50), int(img_h * 0.60), sig_w, sig_h)
-    _add(int(img_w * 0.58), int(img_h * 0.64), sig_w, sig_h)
+    _add(int(img_w * 0.06), band_y, sig_w, sig_h, "fallback")
+    _add(int(img_w * 0.28), int(img_h * 0.62), sig_w, sig_h, "fallback")
+    _add(int(img_w * 0.50), int(img_h * 0.60), sig_w, sig_h, "fallback")
+    _add(int(img_w * 0.58), int(img_h * 0.64), sig_w, sig_h, "fallback")
 
     # 4) Full lower-third sweep when OCR anchors are weak (phone photos, cropped scans).
     sweep_top = int(img_h * 0.62)
     sweep_h = max(sig_h, int(img_h * 0.22))
     col_w = max(sig_w, int(img_w * 0.36))
     for x_frac in (0.04, 0.30, 0.54):
-        _add(int(img_w * x_frac), sweep_top, col_w, sweep_h)
+        _add(int(img_w * x_frac), sweep_top, col_w, sweep_h, "fallback")
     # 5) Bottom-right strip — common for school-head signatures (e.g. MR. … / School Head).
     foot_h = max(sig_h, int(img_h * 0.20))
     foot_y = max(0, img_h - foot_h - max(4, int(img_h * 0.015)))
     foot_w = max(int(img_w * 0.24), int(img_w * 0.30))
     for x_frac in (0.48, 0.62, 0.72):
-        _add(int(img_w * x_frac), foot_y, foot_w, foot_h)
+        _add(int(img_w * x_frac), foot_y, foot_w, foot_h, "fallback")
 
     return candidates
 
@@ -817,7 +1065,13 @@ def _gray_image_for_scan(filepath: str) -> tuple["object|None", int, int]:
         return None, 0, 0
 
 
-def _score_signature_roi(gray_roi, roi_w: int, roi_h: int) -> tuple[float, bool, float, int]:
+def _score_signature_roi(
+    gray_roi,
+    roi_w: int,
+    roi_h: int,
+    *,
+    allow_printed: bool = False,
+) -> tuple[float, bool, float, int]:
     """Return confidence, detected, ink_ratio, stroke_components for a grayscale ROI."""
     try:
         import cv2
@@ -869,7 +1123,17 @@ def _score_signature_roi(gray_roi, roi_w: int, roi_h: int) -> tuple[float, bool,
     elif stroke_components >= 1:
         score += 0.12
     confidence = max(0.0, min(1.0, score))
-    detected = confidence >= 0.34 and ink_ratio >= 0.0018 and stroke_components >= 1
+    if not allow_printed and _signature_roi_looks_like_printed_text(
+        gray_roi, roi_w, roi_h, stroke_components, ink_ratio
+    ):
+        return confidence, False, ink_ratio, stroke_components
+    handwriting_like = _signature_roi_handwriting_like(
+        gray_roi, roi_w, roi_h, stroke_components, ink_ratio
+    )
+    detected = (
+        confidence >= 0.42
+        and handwriting_like
+    )
     return confidence, detected, ink_ratio, stroke_components
 
 
@@ -907,8 +1171,21 @@ def _scan_handwritten_signature(
             "stroke_components": 0,
         }
 
-        def _try_region(x: int, y: int, w: int, h: int) -> None:
+        structured_gaps = _signature_structured_gap_regions(boxes, img_w, img_h)
+
+        def _try_region(
+            x: int,
+            y: int,
+            w: int,
+            h: int,
+            *,
+            kind: str = "anchor",
+        ) -> None:
             nonlocal best
+            if y + h > img_h * 0.88 and kind != "gap":
+                return
+            if _signature_roi_overlaps_authority_print(x, y, w, h, boxes, img_h):
+                return
             x = max(0, min(x, img_w - 1))
             y = max(0, min(y, img_h - 1))
             w = max(8, min(w, img_w - x))
@@ -917,6 +1194,8 @@ def _scan_handwritten_signature(
             if roi.size == 0:
                 return
             confidence, detected, ink_ratio, stroke_components = _score_signature_roi(roi, w, h)
+            if kind == "fallback" and (not detected or confidence < 0.50):
+                return
             if confidence > best["confidence"] or (detected and not best["detected"]):
                 best = {
                     "detected": detected,
@@ -931,23 +1210,26 @@ def _scan_handwritten_signature(
                     "stroke_components": stroke_components,
                 }
 
-        for x, y, w, h in _signature_candidate_regions(boxes, img_w, img_h):
-            _try_region(x, y, w, h)
+        if structured_gaps:
+            for x, y, w, h, kind in structured_gaps:
+                _try_region(x, y, w, h, kind=kind)
+            if not best["detected"]:
+                return {
+                    "detected": False,
+                    "confidence": round(float(best["confidence"]), 2) if best["confidence"] else 0.0,
+                    "bbox": None,
+                    "note": "No handwritten signature in signatory gap",
+                    "scan_method": "visual",
+                }
+        else:
+            for x, y, w, h, kind in _signature_candidate_regions(boxes, img_w, img_h, anchor_only=True):
+                _try_region(x, y, w, h, kind=kind)
 
-        if not best["detected"] and img_w > 0 and img_h > 0:
-            foot_h = max(36, int(img_h * 0.20))
-            foot_y = max(0, img_h - foot_h - max(4, int(img_h * 0.02)))
-            foot_w = max(48, int(img_w * 0.28))
-            for x_frac in (0.04, 0.22, 0.40, 0.58, 0.72):
-                x = int(img_w * x_frac)
-                x = min(x, max(0, img_w - foot_w))
-                _try_region(x, foot_y, foot_w, foot_h)
-            # Full lower band — large school-head signatures (e.g. stylized initials).
-            band_y = int(img_h * 0.70)
-            band_h = max(40, int(img_h * 0.28))
-            col_w = max(int(img_w * 0.30), int(img_w * 0.36))
-            for x_frac in (0.04, 0.34, 0.58):
-                _try_region(int(img_w * x_frac), band_y, col_w, band_h)
+            if not best["detected"]:
+                for x, y, w, h, kind in _signature_candidate_regions(boxes, img_w, img_h):
+                    if kind == "anchor":
+                        continue
+                    _try_region(x, y, w, h, kind=kind)
 
         if best["bbox"] is None:
             return fallback
@@ -1172,6 +1454,402 @@ def _ocr_birth_cert_header_text(filepath: str) -> str:
         return ""
 
 
+_PSA_FIELD1_ROW_GARBAGE = (
+    "PAPSIATION",
+    "POPULATION",
+    "POPULATI",
+    "REFERENCE",
+    "RETORENCE",
+    "RETRENCE",
+    "OCRO",
+    "REGISTRY",
+    "REMARKS",
+    "ANNOTATION",
+    "FOR USE",
+    "ONLY",
+    "WEIGHT",
+    "BIRTH",
+    "ORDER",
+)
+
+
+def _psa_parse_field1_name_row(line: str) -> str:
+    """Extract the child name tokens from PSA field-1 value row before OCRO/Reference tail noise."""
+    raw = (line or "").strip()
+    if not raw:
+        return ""
+    upper = raw.upper()
+    cut = len(raw)
+    for marker in _PSA_FIELD1_ROW_GARBAGE:
+        pos = upper.find(marker)
+        if 3 < pos < cut:
+            cut = pos
+    trimmed = raw[:cut].strip(" -.,;:")
+    tokens = re.findall(r"[A-Za-z][A-Za-z'.\-]{0,24}", trimmed)
+    clean: list[str] = []
+    for t in tokens:
+        tok = t.strip(".-").upper()
+        if len(tok) < 2 or tok in _ACADEMIC_NAME_LABEL_WORDS:
+            continue
+        if any(k in tok for k in ("REFERENCE", "LEARNER", "OCRO", "REGIST")):
+            continue
+        clean.append(tok)
+    if len(clean) >= 2:
+        return " ".join(clean[:5])
+    return ""
+
+
+def _psa_name_tokens_from_enrollment(line: str, expected_name: str) -> str:
+    """Keep OCR tokens on a PSA row that fuzzy-match enrollment (drops Casey/Papsiation-style noise)."""
+    exp_tokens = _norm_simple_name_tokens(expected_name)
+    if not exp_tokens:
+        return _psa_parse_field1_name_row(line)
+    row_name = _psa_parse_field1_name_row(line)
+    if not row_name:
+        return ""
+    row_tokens = _cert_name_tokens(row_name)
+    matched = [
+        t
+        for t in row_tokens
+        if any(_fuzzy_name_token_match(et, t, [t]) for et in exp_tokens)
+    ]
+    if len(matched) >= 2:
+        last_exp = exp_tokens[-1]
+        without_last = [t for t in matched if not _fuzzy_name_token_match(last_exp, t, [t])]
+        last_parts = [t for t in matched if _fuzzy_name_token_match(last_exp, t, [t])]
+        if last_parts:
+            matched = without_last + [last_parts[-1]]
+        return " ".join(matched)
+    return ""
+
+
+def _extract_psa_child_name_from_labeled_text(text: str, expected_name: str = "") -> str:
+    """
+    Parse PSA Form 102 field 1 — FIRST / MIDDLE / LAST columns or the value row under '1. NAME'.
+    """
+    raw_lines = [x for x in (text or "").splitlines() if (x or "").strip()]
+    norm_lines = [_norm_ocr_text(x) for x in raw_lines]
+
+    def _pick_column(label_pat: str) -> str:
+        for i, ln in enumerate(norm_lines):
+            if not re.search(label_pat, ln, re.I):
+                continue
+            same = re.search(
+                rf"{label_pat}\s*:?\s*([A-Z][A-Z \-' ]{{1,36}}?)"
+                rf"(?:\s+(?:MIDDLE|LAST|FIRST|SEX|DATE|2\b|3\b|NAME)|$)",
+                ln,
+                re.I,
+            )
+            if same:
+                val = same.group(1).strip()
+                if _psa_name_part_plausible(val):
+                    return val
+            for j in (0, 1):
+                if i + j + 1 >= len(raw_lines):
+                    continue
+                nxt = _psa_parse_field1_name_row(raw_lines[i + j + 1])
+                if nxt:
+                    return nxt
+        return ""
+
+    first = _pick_column(r"FIRST\s*NAME")
+    middle = _pick_column(r"MIDDLE\s*NAME")
+    last = _pick_column(r"LAST\s*NAME")
+    parts = [p for p in (first, middle, last) if p]
+    if len(parts) >= 2:
+        full = " ".join(parts)
+        if expected_name:
+            guided = _psa_name_tokens_from_enrollment(full, expected_name)
+            if guided:
+                return guided[:64]
+        else:
+            return full[:64]
+
+    child_end = _psa_child_text_end_index(norm_lines)
+    for i, nl in enumerate(norm_lines[:child_end]):
+        if not (re.search(r"\b1\b", nl) and "NAME" in nl):
+            continue
+        if i + 1 >= len(raw_lines):
+            break
+        row = raw_lines[i + 1]
+        if expected_name:
+            guided = _psa_name_tokens_from_enrollment(row, expected_name)
+            if guided:
+                return guided[:64]
+            # Row under field 1 can be OCR garbage — do not return unguided parse when enrolling.
+            continue
+        parsed = _psa_parse_field1_name_row(row)
+        if parsed:
+            return parsed[:64]
+
+    if expected_name:
+        exp_tokens = _norm_simple_name_tokens(expected_name)
+        best_ratio = -1.0
+        best_guided = ""
+        for raw in raw_lines[:child_end]:
+            if _psa_child_name_line_noise(raw):
+                continue
+            guided = _psa_name_tokens_from_enrollment(raw, expected_name)
+            if not guided:
+                parsed = _psa_parse_field1_name_row(raw)
+                if parsed:
+                    guided = _psa_name_tokens_from_enrollment(parsed, expected_name) or parsed
+            if not guided:
+                continue
+            _ok, ratio, _missing, _hits = _name_tokens_match_robust(
+                expected_name, guided, certificate_style=True
+            )
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_guided = guided
+        if best_guided and best_ratio >= 0.67:
+            return best_guided[:64]
+
+    for raw in raw_lines[:child_end]:
+        if _psa_child_name_line_noise(raw):
+            continue
+        parsed = _psa_parse_field1_name_row(raw)
+        if not parsed:
+            continue
+        if expected_name:
+            guided = _psa_name_tokens_from_enrollment(raw, expected_name)
+            if guided:
+                return guided[:64]
+            continue
+        if len(parsed.split()) >= 2:
+            return parsed[:64]
+    return ""
+
+
+def _psa_name_part_plausible(part: str) -> bool:
+    p = re.sub(r"\s+", " ", (part or "").strip().upper())
+    if not p or len(p) < 2 or len(p) > 40:
+        return False
+    words = [w for w in p.split() if w]
+    if not words or len(words) > 5:
+        return False
+    for w in words:
+        if w in _ACADEMIC_NAME_LABEL_WORDS:
+            return False
+        if any(k in w for k in ("REFERENCE", "LEARNER", "OCRO", "REGIST", "PAPSI")):
+            return False
+        if re.search(r"\d", w):
+            return False
+    return True
+
+
+def _boxes_image_size(boxes: list[dict] | None) -> tuple[int, int]:
+    if not boxes:
+        return 0, 0
+    try:
+        w = int(max(float(b.get("x", 0)) + float(b.get("w", 0)) for b in boxes))
+        h = int(max(float(b.get("y", 0)) + float(b.get("h", 0)) for b in boxes))
+        return max(0, w), max(0, h)
+    except Exception:
+        return 0, 0
+
+
+def _psa_parent_line_marker(nl: str) -> bool:
+    if not nl:
+        return False
+    if "MAIDEN" in nl and not re.search(r"\b1\b", nl):
+        return True
+    if re.search(r"\b(6|[7-9]|1[0-3])\b", nl) and "NAME" in nl:
+        if re.search(r"\b1\b", nl) and not re.search(r"\b(1[0-3]|[6-9])\b", nl):
+            return False
+        return True
+    if re.search(r"\b1[4-9]\b", nl) and "NAME" in nl:
+        return True
+    if any(
+        k in nl
+        for k in (
+            "NAME OF FATHER",
+            "FATHERS NAME",
+            "NAME OF MOTHER",
+            "MAIDEN NAME OF MOTHER",
+            "INFORMANT",
+        )
+    ):
+        return True
+    return False
+
+
+def _psa_child_text_end_index(u_norm: list[str]) -> int:
+    """Scan full OCR text until parent / DOB rows — not a fixed line cap."""
+    end = len(u_norm)
+    for i, nl in enumerate(u_norm):
+        if _psa_parent_line_marker(nl):
+            return i
+        if "DATE OF BIRTH" in nl or "DATE OF BIRT" in nl:
+            return i + 1
+        if re.search(r"\b2\b", nl) and "SEX" in nl:
+            return min(len(u_norm), i + 2)
+    return end
+
+
+def _psa_child_zone_y_hi(normed: list[dict] | None, image_h: int | None) -> float:
+    """Upper Y for PSA field 1–4 — anchor on SEX/DOB rows; wider default for cropped phone photos."""
+    _iw, ih_box = _boxes_image_size(normed)
+    ih = float(image_h or ih_box or 1400)
+    cuts: list[float] = [ih * 0.42]
+    for b in normed or []:
+        t = str(b.get("t") or "")
+        by = float(b.get("y", 0))
+        bh = float(b.get("h", 0))
+        if re.search(r"\b2\b", t) and "SEX" in t:
+            cuts.append(by + bh + 14.0)
+        if "DATE OF BIRTH" in t or "DATE OF BIRT" in t:
+            cuts.append(by + bh + 10.0)
+        if "MAIDEN" in t and "NAME" in t:
+            cuts.append(by - 4.0)
+        if re.search(r"\b6\b", t) and "MOTHER" in t:
+            cuts.append(by - 4.0)
+    return max(ih * 0.14, min(cuts))
+
+
+def _academic_learner_zone_y_bounds(
+    normed: list[dict] | None,
+    image_h: int | None,
+) -> tuple[float, float]:
+    """Learner header band — widened defaults; shrinks when SCHOLASTIC / QUARTER anchors are found."""
+    _iw, ih_box = _boxes_image_size(normed)
+    ih = float(image_h or ih_box or 1400)
+    y_min = ih * 0.08
+    y_max = ih * 0.58
+    for b in normed or []:
+        t = str(b.get("t") or "")
+        if any(k in t for k in ("REPORT CARD", "SF10", "SF 10", "SF9", "PERMANENT RECORD", "FORM 137")):
+            y_min = max(y_min, float(b.get("y", 0)) + float(b.get("h", 0)) * 0.5)
+    stop_rows = [
+        b
+        for b in (normed or [])
+        if ("SCHOLASTIC" in b["t"] or "ELIGIBILITY" in b["t"])
+        or ("LEARNING" in b["t"] and "AREA" in b["t"])
+        or re.search(r"\bQUARTER\b", b["t"])
+        or "GENERAL AVERAGE" in b["t"]
+    ]
+    if stop_rows:
+        y_max = min(y_max, min(float(b["y"]) for b in stop_rows) - 4.0)
+    if y_max <= y_min:
+        y_max = ih * 0.55
+    return y_min, y_max
+
+
+def _ocr_psa_child_fields_pass_on_image(ocr_path: str) -> tuple[str, list[dict], float]:
+    """
+    High-contrast OCR on PSA field 1–4 band (child name / sex / DOB).
+    Uses the already-upscaled document image from _ocr_prepare_document_source.
+    """
+    if not _tesseract_available or not ocr_path:
+        return "", [], 0.0
+    try:
+        from PIL import Image
+    except ImportError:
+        return "", [], 0.0
+    try:
+        im = Image.open(ocr_path).convert("RGB")
+        w, h = im.size
+        y1 = max(0, int(h * 0.06))
+        y2 = max(y1 + 1, int(h * 0.45))
+        x2 = max(1, int(w * 0.96))
+        crop = im.crop((0, y1, x2, y2))
+        zoom = 2 if max(crop.size) < 1500 else 1
+        if zoom > 1:
+            crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
+
+        texts: list[str] = []
+        confs: list[float] = []
+        all_boxes: list[dict] = []
+        for psm in (4, 6, 11):
+            t, c, boxes = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
+            if (t or "").strip():
+                texts.append(t.strip())
+                confs.append(float(c))
+            for b in boxes or []:
+                all_boxes.append(
+                    {
+                        "text": b["text"],
+                        "x": int(float(b["x"]) / zoom),
+                        "y": int(float(b["y"]) / zoom) + y1,
+                        "w": max(1, int(float(b["w"]) / zoom)),
+                        "h": max(1, int(float(b["h"]) / zoom)),
+                        "conf": b.get("conf"),
+                    }
+                )
+        merged = "\n".join(texts)
+        avg_conf = sum(confs) / len(confs) if confs else 0.0
+        return merged, all_boxes, avg_conf
+    except Exception as exc:
+        print(f"[IntelliDocs AI] PSA child-band OCR failed: {exc}", flush=True)
+        return "", [], 0.0
+
+
+def _ocr_academic_learner_band_pass_on_image(ocr_path: str) -> tuple[str, list[dict], float]:
+    """High-contrast OCR on SF9/SF10 learner-information band (name, LRN, school year)."""
+    if not _tesseract_available or not ocr_path:
+        return "", [], 0.0
+    try:
+        from PIL import Image
+    except ImportError:
+        return "", [], 0.0
+    try:
+        im = Image.open(ocr_path).convert("RGB")
+        w, h = im.size
+        y1 = max(0, int(h * 0.06))
+        y2 = max(y1 + 1, int(h * 0.56))
+        x2 = max(1, int(w * 0.98))
+        crop = im.crop((0, y1, x2, y2))
+        zoom = 2 if max(crop.size) < 1500 else 1
+        if zoom > 1:
+            crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
+        texts: list[str] = []
+        confs: list[float] = []
+        all_boxes: list[dict] = []
+        for psm in (4, 6, 11):
+            t, c, boxes = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
+            if (t or "").strip():
+                texts.append(t.strip())
+                confs.append(float(c))
+            for b in boxes or []:
+                all_boxes.append(
+                    {
+                        "text": b["text"],
+                        "x": int(float(b["x"]) / zoom),
+                        "y": int(float(b["y"]) / zoom) + y1,
+                        "w": max(1, int(float(b["w"]) / zoom)),
+                        "h": max(1, int(float(b["h"]) / zoom)),
+                        "conf": b.get("conf"),
+                    }
+                )
+        merged = "\n".join(texts)
+        avg_conf = sum(confs) / len(confs) if confs else 0.0
+        return merged, all_boxes, avg_conf
+    except Exception as exc:
+        print(f"[IntelliDocs AI] Academic learner-band OCR failed: {exc}", flush=True)
+        return "", [], 0.0
+
+
+def _ocr_merge_box_pools(primary: list[dict] | None, extra: list[dict] | None) -> list[dict]:
+    """Union OCR box pools without duplicate text at the same grid cell."""
+    out = list(primary or [])
+    seen: set[tuple] = set()
+    for b in out:
+        t = str(b.get("text") or "").strip().upper()
+        if not t:
+            continue
+        seen.add((t[:32], int(float(b.get("x", 0)) // 8), int(float(b.get("y", 0)) // 8)))
+    for b in extra or []:
+        t = str(b.get("text") or "").strip()
+        if not t:
+            continue
+        sig = (t.upper()[:32], int(float(b.get("x", 0)) // 8), int(float(b.get("y", 0)) // 8))
+        if sig in seen:
+            continue
+        seen.add(sig)
+        out.append(b)
+    return out
+
+
 def _is_lrn_label_text(text: str) -> bool:
     """True when an OCR box looks like the LRN field label on DepEd school forms."""
     import re
@@ -1365,6 +2043,8 @@ def _extract_school_years_from_text(text: str) -> list[str]:
     out: list[str] = []
     s = _norm_ocr_text(text or "")
     for m in re.finditer(r"\b(20\d{2})\s*[-/]\s*(20\d{2})\b", s):
+        if not _school_year_span_valid(m.group(1), m.group(2)):
+            continue
         pair = f"{m.group(1)}-{m.group(2)}"
         if pair not in out:
             out.append(pair)
@@ -1375,7 +2055,7 @@ def _extract_lrn_from_ocr_boxes(
     _boxes: list[dict] | None,
     _img_h: int | None,
     *,
-    top_ratio: float = 0.48,
+    top_ratio: float = 0.58,
 ) -> str | None:
     """
     Prefer LRN values from OCR boxes in the learner header band.
@@ -2971,12 +3651,27 @@ def _ocr_read_document(
                         print(f"[IntelliDocs AI] OCR fallback ({tag}) failed: {exc}", flush=True)
 
         if _normalize_doc_type_key(doc_type) in ("birth_certificate", "birthcert"):
+            child_text, child_boxes, child_conf = _ocr_psa_child_fields_pass_on_image(ocr_path)
+            if (child_text or "").strip():
+                _run(2, "tesseract", "psa_child_band", child_text, child_conf, child_boxes)
             header_extra = _ocr_birth_cert_header_text(ocr_path)
             if (header_extra or "").strip():
                 best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
+            if (child_text or "").strip():
+                best_text = f"{(best_text or '').strip()}\n{child_text.strip()}".strip()
+
+        if _normalize_doc_type_key(doc_type) in ("sf9", "report_card", "sf10", "form137", "form157"):
+            band_text, band_boxes, band_conf = _ocr_academic_learner_band_pass_on_image(ocr_path)
+            if (band_text or "").strip():
+                _run(2, "tesseract", "academic_learner_band", band_text, band_conf, band_boxes)
+                best_text = f"{(best_text or '').strip()}\n{band_text.strip()}".strip()
 
         if _ocr_merge_results(doc_type) and len(candidates) > 1:
             best_text, best_conf, best_boxes, best_label = _ocr_merge_candidates(candidates, doc_type)
+
+        for _eng, label, _txt, _conf, box_pool in candidates:
+            if label in ("psa_child_band", "academic_learner_band") and box_pool:
+                best_boxes = _ocr_merge_box_pools(best_boxes, box_pool)
 
         best_boxes = _ocr_scale_boxes_to_original(best_boxes, ocr_scale)
 
@@ -4150,6 +4845,24 @@ def _sanitize_person_name_candidate(name: str) -> str:
     s = re.sub(r"\s+", " ", (name or "").strip().upper())
     s = re.sub(r"[^A-Z0-9'.\- ]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
+    for label in (
+        "LEARNER S INFORMATION",
+        "LEARNERS INFORMATION",
+        "LEARNER INFORMATION",
+        "LEARNER REFERENCE",
+        "NAME OF LEARNER",
+        "LEARNERS NAME",
+        "LEARNER S NAME",
+        "LEARNER NAME",
+    ):
+        s = re.sub(rf"\b{re.escape(label)}\b", " ", s, flags=re.I)
+    s = re.sub(
+        r"\b(LEARNERS?|LEAMER|REFERENCE|NUMBER|EXTN?\.?|OF|GRADE|GRADES|YEAR|SECTION|SCHOOL|MALE|FEMALE|THE|A|AN)\b",
+        " ",
+        s,
+        flags=re.I,
+    )
+    s = re.sub(r"\s+", " ", s).strip()
     s = re.sub(
         r"\b(OF|GRADE|GRADES|YEAR|SECTION|SCHOOL|MALE|FEMALE|THE|A|AN)\b.*$",
         "",
@@ -4157,6 +4870,70 @@ def _sanitize_person_name_candidate(name: str) -> str:
         flags=re.I,
     ).strip()
     return s
+
+
+def _refine_detected_person_name(expected_name: str, candidate: str) -> str:
+    """
+    Drop form-label tokens (LEARNER, REFERENCE, etc.) and OCR junk that does not
+    match enrollment — e.g. ISAIAH TARUC CASEY → ISAIAH TARUC when CASEY is noise.
+    """
+    cand = _sanitize_person_name_candidate(candidate)
+    if not cand:
+        return ""
+    exp_tokens = _norm_simple_name_tokens(expected_name)
+    if not exp_tokens:
+        return cand
+
+    label_words = _ACADEMIC_NAME_LABEL_WORDS | frozenset({"LEARNERS", "EXTN", "EXT"})
+    cand_tokens: list[str] = []
+    for t in _cert_name_tokens(cand):
+        if t in label_words:
+            continue
+        if any(k in t for k in ("LEARNER", "LEAMER", "REFERENCE")):
+            continue
+        cand_tokens.append(t)
+    if not cand_tokens:
+        return cand
+
+    matched = [
+        t
+        for t in cand_tokens
+        if any(_fuzzy_name_token_match(et, t, [t]) for et in exp_tokens)
+    ]
+    if len(matched) >= 2:
+        last_exp = exp_tokens[-1]
+        without_last = [t for t in matched if not _fuzzy_name_token_match(last_exp, t, [t])]
+        last_parts = [t for t in matched if _fuzzy_name_token_match(last_exp, t, [t])]
+        if last_parts:
+            matched = without_last + [last_parts[-1]]
+        return " ".join(matched)
+    if len(matched) == 1 and len(exp_tokens) >= 2:
+        return matched[0]
+    return " ".join(cand_tokens)
+
+
+def _school_year_span_valid(start: str, end: str) -> bool:
+    try:
+        a, b = int(start), int(end)
+    except ValueError:
+        return False
+    if a < 1990 or a > 2099 or b < 1990 or b > 2099:
+        return False
+    return b == a + 1
+
+
+def _lrn_enrollment_match(expected_digits: str, detected_digits: str) -> bool:
+    exp = re.sub(r"\D+", "", expected_digits or "")
+    det = re.sub(r"\D+", "", detected_digits or "")
+    if not exp or not det:
+        return False
+    if exp == det:
+        return True
+    if len(exp) == 12 and len(det) == 11 and (exp.startswith(det) or exp[:-1] == det):
+        return True
+    if len(det) == 12 and len(exp) == 11 and (det.startswith(exp) or det[:-1] == exp):
+        return True
+    return False
 
 
 def _norm_simple_name_tokens(name: str) -> list[str]:
@@ -4654,6 +5431,14 @@ def _psa_child_name_line_noise(clean: str) -> bool:
     nl = re.sub(r"\s+", " ", (clean or "").upper()).strip()
     if not nl:
         return True
+    words = [w for w in nl.split() if w.isalpha()]
+    if len(words) >= 2 and len(words) != len(set(words)):
+        # Repeated tokens (EO ISAIAH ISAIAH TSAIAH) are OCR junk, not a real name.
+        if max(words.count(w) for w in words) >= 2:
+            return True
+    if any(len(w) <= 2 and w not in {"DE", "LA", "JR", "SR"} for w in words):
+        if sum(1 for w in words if len(w) <= 2) >= 2:
+            return True
     noise = (
         "MUNICIPAL",
         "HUNICIPAL",
@@ -4670,6 +5455,11 @@ def _psa_child_name_line_noise(clean: str) -> bool:
         "CITY/M",
         "METRO MAN",
         "PAGE",
+        "PAPSIATION",
+        "POPULATION",
+        "TSAIAH",
+        "ACCOMPLISHED",
+        "QUADRUPL",
     )
     return any(k in nl for k in noise)
 
@@ -4704,6 +5494,21 @@ def _best_psa_child_name_line(
     )
     best_ratio = -1.0
     best_name = ""
+    for i, nl in enumerate(u_norm):
+        if re.search(r"\b1\b", nl) and "NAME" in nl and i + 1 < len(u_simple):
+            row = u_simple[i + 1]
+            guided = _psa_name_tokens_from_enrollment(row, expected_name) if expected_name else ""
+            parsed = guided or _psa_parse_field1_name_row(row)
+            if parsed and not _psa_child_name_line_noise(parsed):
+                if expected_name:
+                    ok, ratio, _m, _h = _name_tokens_match_robust(
+                        expected_name, parsed, certificate_style=True
+                    )
+                else:
+                    ratio = 0.5
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_name = parsed
     for i in range(min(end, len(u_norm))):
         nl = u_norm[i]
         if "FATHER" in nl or "MOTHER" in nl or "MAIDEN" in nl:
@@ -4951,7 +5756,6 @@ def _evaluate(
                 ) >= 10
                 grade_kw = has_any(["GRADE", "GRADES", "FINAL", "AVERAGE"])
                 school_year_kw = has_any(["SCHOOL YEAR", "SY"])
-                learner_kw = has_any(["LEARNER", "LEARNER'S", "LEARNERS"])
                 name_kw = has_any(["NAME"])
                 section_kw = has_any(["SECTION", "YEAR/SECTION", "YEAR SECTION"])
 
@@ -4959,7 +5763,6 @@ def _evaluate(
                     {"field": "LRN detected", "ok": bool(lrn_present)},
                     {"field": "Grades keyword (GRADE/FINAL/AVERAGE)", "ok": bool(grade_kw)},
                     {"field": "School year keyword (SY / SCHOOL YEAR)", "ok": bool(school_year_kw)},
-                    {"field": "Learner keyword", "ok": bool(learner_kw)},
                     {"field": "Name label", "ok": bool(name_kw)},
                     {"field": "Section keyword", "ok": bool(section_kw)},
                 ]
@@ -5118,6 +5921,9 @@ def _evaluate(
                 "SHS",
                 "SCHOOL YEAR",
                 "LEARNER S",
+                "LEARNER ",
+                "LEARNERS ",
+                "LEAMER",
                 "PAGE ",
                 "COPY",
                 "OCRG",
@@ -5319,9 +6125,8 @@ def _evaluate(
                 return False
 
             def _psa_hard_child_y_max(normed: list[dict], image_h: int | None) -> float:
-                """Absolute upper y for field 1 — child name is always in the top ~28% of PSA Form 102."""
-                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
-                return min(ih * 0.28, _psa_child_name_y_max(normed, image_h))
+                """Upper y for PSA field 1 — anchor-based, wider than fixed 28% for phone crops."""
+                return _psa_child_zone_y_hi(normed, image_h)
 
             def _psa_y_center_in_child_zone(y_center: float, normed: list[dict], image_h: int | None) -> bool:
                 return float(y_center) <= _psa_hard_child_y_max(normed, image_h)
@@ -5341,6 +6146,12 @@ def _evaluate(
                 if bb and not _psa_y_center_in_child_zone(
                     float(bb.get("y", 0)) + float(bb.get("h", 0)) / 2.0, normed, image_h
                 ):
+                    if expected_name:
+                        _ok, ratio, _m, _h = _name_tokens_match_robust(
+                            expected_name, name, certificate_style=True
+                        )
+                        if ratio >= 0.67:
+                            return False
                     return True
                 return False
 
@@ -5359,7 +6170,7 @@ def _evaluate(
                 iw = float(image_w or _infer_image_size_from_boxes(normed)[0] or 1000)
                 y_lo = ih * 0.05
                 y_hi = _psa_hard_child_y_max(normed, image_h)
-                x_max = iw * 0.72
+                x_max = iw * 0.88
                 row_band = max(14.0, ih * 0.018)
 
                 zone = [
@@ -5585,7 +6396,7 @@ def _evaluate(
                 ih = image_h or _infer_image_size_from_boxes(normed)[1] or 1400
                 y_header = ih * 0.08
                 y_child_max = _psa_hard_child_y_max(normed, image_h)
-                x_child_max = iw * 0.62
+                x_child_max = iw * 0.88
                 row_band = max(14.0, ih * 0.018)
 
                 zone = [
@@ -5681,7 +6492,7 @@ def _evaluate(
                 ih = image_h or _infer_image_size_from_boxes(normed)[1] or 1400
                 y_header = ih * 0.08
                 y_child_max = _psa_hard_child_y_max(normed, image_h)
-                x_child_max = iw * 0.62
+                x_child_max = iw * 0.88
 
                 zone = [
                     b
@@ -5806,9 +6617,9 @@ def _evaluate(
                     or re.search(r"\bQUARTER\b", b["t"])
                     or "GENERAL AVERAGE" in b["t"]
                 ]
-                y_hi = min((b["y"] for b in stop_rows), default=ih * 0.34) - 8.0
+                y_hi = min((b["y"] for b in stop_rows), default=ih * 0.42) - 8.0
                 if y_hi <= y_lo:
-                    y_hi = ih * 0.34
+                    y_hi = ih * 0.42
                 return y_lo, y_hi
 
             def _detect_sf9_report_card_name_from_boxes(
@@ -6041,6 +6852,15 @@ def _evaluate(
                     "LEARNERS NAME",
                     "LEARNER S NAME",
                     "LEARNER NAME",
+                    "LEARNER S INFORMATION",
+                    "LEARNERS INFORMATION",
+                    "LEARNER INFORMATION",
+                    "LEARNER REFERENCE",
+                    "LEARNER",
+                    "LEARNERS",
+                    "LEAMER",
+                    "REFERENCE",
+                    "NUMBER",
                     "NAME OF CHILD",
                     "CHILD S NAME",
                     "GENDER",
@@ -6412,8 +7232,9 @@ def _evaluate(
                 return joined[:64], bb
 
             def _name_tokens_match(expected_name: str, candidate: str) -> tuple[bool, float, list[str], list[str]]:
+                refined = _refine_detected_person_name(expected_name, candidate)
                 ok, ratio, missing, hits = _name_tokens_match_robust(
-                    expected_name, candidate, certificate_style=False
+                    expected_name, refined, certificate_style=False
                 )
                 return ok, ratio, missing, hits
 
@@ -6847,6 +7668,20 @@ def _evaluate(
                 """
                 iw = _infer_image_size_from_boxes(normed_boxes)[0]
 
+                labeled = _extract_psa_child_name_from_labeled_text(
+                    "\n".join(u_simple or []), expected_name
+                )
+                if labeled and not _psa_child_name_line_noise(labeled):
+                    refined = _refine_detected_person_name(expected_name, labeled)
+                    if refined and _candidate_name_is_plausible(refined):
+                        ok, ratio, missing, _hits = _name_tokens_match_robust(
+                            expected_name, refined, certificate_style=True
+                        )
+                        if not _psa_reject_parent_name(
+                            refined, expected_name, normed_boxes, image_h, None
+                        ):
+                            return ok, ratio, missing, refined, None
+
                 line_hit = _psa_child_name_from_text_line(expected_name, u_simple, u_norm)
                 if line_hit and not _psa_reject_parent_name(
                     line_hit, expected_name, normed_boxes, image_h, None
@@ -7228,22 +8063,28 @@ def _evaluate(
                 if not sy:
                     return None
                 m = re.search(r"(\d{4})\s*[-/]\s*(\d{4})", sy)
-                if not m:
+                if not m or not _school_year_span_valid(m.group(1), m.group(2)):
                     return None
                 a, b = m.group(1), m.group(2)
                 labeled = [ln for ln in u_lines if ("SCHOOL YEAR" in ln or re.search(r"\bSY\b", ln))]
                 pool = labeled if labeled else u_lines
                 for ln in pool:
-                    if a in ln and b in ln:
-                        return True
+                    for ym in re.finditer(r"(\d{4})\s*[-/]\s*(\d{4})", ln):
+                        if not _school_year_span_valid(ym.group(1), ym.group(2)):
+                            continue
+                        if ym.group(1) == a and ym.group(2) == b:
+                            return True
                 for i, ln in enumerate(u_lines):
                     if "SCHOOL YEAR" not in ln and not re.search(r"\bSY\b", ln):
                         continue
                     chunk = ln
                     if i + 1 < len(u_lines):
                         chunk = f"{chunk} {u_lines[i + 1]}"
-                    if a in chunk and b in chunk:
-                        return True
+                    for ym in re.finditer(r"(\d{4})\s*[-/]\s*(\d{4})", chunk):
+                        if not _school_year_span_valid(ym.group(1), ym.group(2)):
+                            continue
+                        if ym.group(1) == a and ym.group(2) == b:
+                            return True
                 return False
 
             exp_name = str(expected.get("name") or "").strip()
@@ -7370,14 +8211,7 @@ def _evaluate(
                 ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
                 if any("REPORT CARD" in b["t"] for b in normed):
                     return _sf9_learner_block_y(normed, image_h)
-                y_min = ih * 0.17
-                y_max = ih * 0.48
-                scholastic_rows = [
-                    b for b in normed if "SCHOLASTIC" in b["t"] or "ELIGIBILITY" in b["t"]
-                ]
-                if scholastic_rows:
-                    y_max = min(y_max, min(b["y"] for b in scholastic_rows) - 10)
-                return y_min, y_max
+                return _academic_learner_zone_y_bounds(normed, image_h)
 
             def _find_lrn_box(normed: list[dict], image_h: int | None = None) -> dict | None:
                 """Use the LRN value area in the learner block; fallback to any 12-digit token there."""
@@ -7390,10 +8224,10 @@ def _evaluate(
                 )
                 if bb:
                     return bb
+                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
+                y_cap = ih * 0.62
                 for b in normed:
-                    if y_min is not None and b["y"] < y_min:
-                        continue
-                    if y_max is not None and b["y"] > y_max:
+                    if float(b.get("y", 0)) > y_cap:
                         continue
                     if re.search(r"\b[0-9]{12}\b", b["t"]):
                         return {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
@@ -7415,7 +8249,7 @@ def _evaluate(
 
             if run_lrn_check and exp_lrn:
                 lrn_digits = re.sub(r"\D+", "", str(detected_lrn or ""))
-                ok_lrn = len(lrn_digits) == 12 and exp_lrn == lrn_digits
+                ok_lrn = _lrn_enrollment_match(exp_lrn, lrn_digits)
                 row = {"field": "LRN", "expected": exp_lrn, "detected": detected_lrn or "", "ok": ok_lrn}
                 _attach_bbox(row, _find_lrn_box(normed_boxes, img_h))
                 checks.append(row)
@@ -7445,13 +8279,15 @@ def _evaluate(
                         normed_boxes, doc_kind=doc_kind, image_h=img_h
                     )
                     if box_name:
-                        ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, box_name)
-                        detected_name = _normalize_person_name_display(box_name)
+                        refined_box = _refine_detected_person_name(exp_name, box_name)
+                        ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, refined_box)
+                        detected_name = _normalize_person_name_display(refined_box)
                     else:
                         line_name = _extract_academic_name_from_labeled_text(norm_text)
                         if line_name:
-                            ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, line_name)
-                            detected_name = _normalize_person_name_display(line_name)
+                            refined_line = _refine_detected_person_name(exp_name, line_name)
+                            ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, refined_line)
+                            detected_name = _normalize_person_name_display(refined_line)
                         elif doc_kind in ("sf9", "report_card"):
                             line_name = _extract_sf9_name_from_lines(simple_lines, norm_lines)
                             if line_name:
@@ -8557,6 +9393,9 @@ def verify_doc():
                 os.remove(scan_tmp)
             except OSError:
                 pass
+
+
+if __name__ == "__main__":
     # Hosts like Railway / Render inject the port via $PORT; fall back to 5000 locally.
     _port = int(os.environ.get("PORT", "5000"))
     _debug = os.environ.get("FLASK_DEBUG", "0") == "1"
