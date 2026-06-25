@@ -73,16 +73,10 @@ import {
   tamperConcernPercent,
 } from "../../lib/concernScore";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../components/ui/select";
-import {
   REJECTION_REASON_PRESETS,
-  getRejectionPresetByValue,
+  DOCUMENT_REJECTION_PRESETS,
 } from "../../lib/rejectionReasons";
+import { RejectionReasonFields } from "../../components/RejectionReasonFields";
 import { cn } from "../../components/ui/utils";
 
 function applicationReviewStatusBadgeClass(status: string): string {
@@ -1048,6 +1042,7 @@ export function ReviewDocuments() {
   const [reviewSubmittingByDocId, setReviewSubmittingByDocId] = useState<Record<string, boolean>>({});
   const [docDecisionDialogOpen, setDocDecisionDialogOpen] = useState(false);
   const [docDecisionRemarks, setDocDecisionRemarks] = useState("");
+  const [docRejectReasonPreset, setDocRejectReasonPreset] = useState<string>("other");
   const [docDecisionSubmitting, setDocDecisionSubmitting] = useState(false);
 
   const resolveEffectiveDocType = (doc: any, ai?: AiVerifyResponse | null): AiDocType => {
@@ -1520,6 +1515,7 @@ export function ReviewDocuments() {
       );
       setDocDecisionDialogOpen(false);
       setDocDecisionRemarks("");
+      setDocRejectReasonPreset("other");
     } catch (e: any) {
       toast.error(e?.message || "Failed to reject document");
     } finally {
@@ -2818,51 +2814,18 @@ export function ReviewDocuments() {
           )}
 
           {decisionDialog === "reject" && (
-            <div className="space-y-2">
-              <div className="space-y-2">
-                <Label htmlFor="reject-reason-preset">Reason preset</Label>
-                <Select
-                  value={rejectReasonPreset}
-                  onValueChange={(val) => {
-                    setRejectReasonPreset(val);
-                    const preset = getRejectionPresetByValue(val);
-                    if (preset && preset.value !== "other" && preset.template.trim()) {
-                      setRemarks(preset.template);
-                    }
-                  }}
-                >
-                  <SelectTrigger id="reject-reason-preset">
-                    <SelectValue placeholder="Select a preset (optional)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {REJECTION_REASON_PRESETS.map((p) => (
-                      <SelectItem key={p.value} value={p.value}>
-                        {p.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-gray-500">
-                  Choose a preset to auto-fill the remarks. You can still edit the text below.
-                </p>
-              </div>
-
-              <Label htmlFor="reject-remarks">
-                Reason for rejection <span className="text-red-500" aria-hidden="true">*</span>
-              </Label>
-              <textarea
-                id="reject-remarks"
-                value={remarks}
-                onChange={(e) => setRemarks(e.target.value)}
-                placeholder="e.g. Missing PSA birth certificate; please re-upload a clearer copy."
-                className="w-full min-h-[120px] px-3 py-2 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
-              />
-              {!remarks.trim() && (
-                <p className="text-xs text-gray-500">
-                  Remarks are required when rejecting an application.
-                </p>
-              )}
-            </div>
+            <RejectionReasonFields
+              presets={REJECTION_REASON_PRESETS}
+              presetValue={rejectReasonPreset}
+              onPresetChange={setRejectReasonPreset}
+              remarks={remarks}
+              onRemarksChange={setRemarks}
+              remarksLabel="Reason for rejection"
+              presetId="reject-reason-preset"
+              remarksId="reject-remarks"
+              placeholder="e.g. Missing PSA birth certificate; please re-upload a clearer copy."
+              requiredHint="Remarks are required when rejecting an application."
+            />
           )}
 
           <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -3107,6 +3070,7 @@ export function ReviewDocuments() {
                             onClick={() => {
                               setDocDecisionDialogOpen(true);
                               setDocDecisionRemarks(docRemarks);
+                              setDocRejectReasonPreset("other");
                             }}
                           >
                             <XCircle className="w-4 h-4 mr-2" />
@@ -3838,22 +3802,18 @@ export function ReviewDocuments() {
               see your reason and must submit a new file for this requirement.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <Label htmlFor="doc-reject-remarks">
-              Reason <span className="text-red-500" aria-hidden="true">*</span>
-            </Label>
-            <textarea
-              id="doc-reject-remarks"
-              className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-[#8B1538]/30"
-              rows={4}
-              value={docDecisionRemarks}
-              onChange={(e) => setDocDecisionRemarks(e.target.value)}
-              placeholder="Example: Please re-upload a clearer copy. The form keyword and school year header are not readable."
-            />
-            {!String(docDecisionRemarks).trim() ? (
-              <p className="text-xs text-red-600">Reason is required.</p>
-            ) : null}
-          </div>
+          <RejectionReasonFields
+            presets={DOCUMENT_REJECTION_PRESETS}
+            presetValue={docRejectReasonPreset}
+            onPresetChange={setDocRejectReasonPreset}
+            remarks={docDecisionRemarks}
+            onRemarksChange={setDocDecisionRemarks}
+            remarksLabel="Reason"
+            presetId="doc-reject-reason-preset"
+            remarksId="doc-reject-remarks"
+            placeholder="Example: Please re-upload a clearer copy. The form keyword and school year header are not readable."
+            requiredHint="Reason is required."
+          />
           <DialogFooter>
             <Button
               type="button"

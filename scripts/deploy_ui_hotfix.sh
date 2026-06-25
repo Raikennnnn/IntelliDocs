@@ -80,6 +80,11 @@ if grep -q 'SF10 may take 2' "$ROOT_BUNDLE" 2>/dev/null; then
 else
   echo "OK: SF10 wait banner removed from live bundle."
 fi
+if grep -q 'Reason preset' "$ROOT_BUNDLE" 2>/dev/null; then
+  echo "OK: Rejection reason preset dropdown found in live bundle."
+else
+  echo "WARNING: Rejection reason preset UI not found — rebuild may have failed."
+fi
 
 echo ""
 echo "UI hotfix deployed at commit $(git -C "$APP_ROOT" rev-parse --short HEAD)."

@@ -13,7 +13,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { PDFViewerList } from '../../components/PDFViewer';
-import { REJECTION_REASON_PRESETS, getRejectionPresetByValue } from '../../lib/rejectionReasons';
+import { RejectionReasonFields } from '../../components/RejectionReasonFields';
+import { REJECTION_REASON_PRESETS } from '../../lib/rejectionReasons';
 
 type Strand = 'HUMSS' | 'TVL';
 type EnrollmentStatus = 'Pending Review' | 'Approved' | 'Rejected';
@@ -758,57 +759,36 @@ export function EnrollmentManagement() {
           </DialogHeader>
           
           <div className="space-y-4">
-            {currentAction === 'reject' && (
+            {currentAction === 'reject' ? (
+              <RejectionReasonFields
+                presets={REJECTION_REASON_PRESETS}
+                presetValue={rejectReasonPreset}
+                onPresetChange={setRejectReasonPreset}
+                remarks={actionComment}
+                onRemarksChange={setActionComment}
+                remarksLabel="Comments"
+                presetId="enrollment-reject-preset"
+                remarksId="enrollment-reject-comments"
+                placeholder="Enter detailed reason for rejection..."
+                requiredHint="Comments are required when rejecting an application."
+              />
+            ) : (
               <div>
                 <Label className="text-sm font-medium text-gray-700 mb-2 block">
-                  Reason preset
+                  Comments <span className="text-red-600">*</span>
                 </Label>
-                <Select
-                  value={rejectReasonPreset}
-                  onValueChange={(val) => {
-                    setRejectReasonPreset(val);
-                    const preset = getRejectionPresetByValue(val);
-                    if (preset && preset.value !== 'other' && preset.template.trim()) {
-                      setActionComment(preset.template);
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a preset (optional)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {REJECTION_REASON_PRESETS.map((p) => (
-                      <SelectItem key={p.value} value={p.value}>
-                        {p.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <textarea
+                  value={actionComment}
+                  onChange={(e) => setActionComment(e.target.value)}
+                  rows={4}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B1538] resize-none"
+                  placeholder="Enter comments about this approval..."
+                />
                 <p className="text-xs text-gray-500 mt-2">
-                  Choosing a preset auto-fills the comments box below. You can still edit it.
+                  This comment will be recorded in the audit trail and shown to the student.
                 </p>
               </div>
             )}
-
-            <div>
-              <Label className="text-sm font-medium text-gray-700 mb-2 block">
-                Comments <span className="text-red-600">*</span>
-              </Label>
-              <textarea
-                value={actionComment}
-                onChange={(e) => setActionComment(e.target.value)}
-                rows={4}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B1538] resize-none"
-                placeholder={
-                  currentAction === 'reject' 
-                    ? 'Enter detailed reason for rejection...'
-                    : 'Enter comments about this approval...'
-                }
-              />
-              <p className="text-xs text-gray-500 mt-2">
-                This comment will be recorded in the audit trail and shown to the student.
-              </p>
-            </div>
           </div>
 
           <DialogFooter className="gap-2">
