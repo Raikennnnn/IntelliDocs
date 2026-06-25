@@ -113,6 +113,7 @@ type AiVerifyResponse = {
     detected?: string;
     ok: boolean;
     match_ratio?: number;
+    concern_pct?: number;
     missing_tokens?: string[];
     x?: number;
     y?: number;
@@ -350,7 +351,7 @@ function resolveApplicationVerifyFields(app: any) {
   };
 }
 
-const AI_VERIFY_PAYLOAD_VERSION = 29;
+const AI_VERIFY_PAYLOAD_VERSION = 30;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -416,10 +417,18 @@ function filterIssuesForDocType(
 
 function singleFieldCheckConcernPct(fc: FieldCheckRow): number {
   if (fc.ok) return 0;
+  if (typeof fc.concern_pct === "number" && Number.isFinite(fc.concern_pct)) {
+    return Math.max(0, Math.min(100, Math.round(fc.concern_pct)));
+  }
   if (typeof fc.match_ratio === "number" && Number.isFinite(fc.match_ratio)) {
     return Math.max(1, 100 - Math.round(fc.match_ratio * 100));
   }
   return 100;
+}
+
+function fieldCheckConcernLabel(fc: Pick<FieldCheckRow, "ok" | "match_ratio" | "concern_pct">): string {
+  const concern = singleFieldCheckConcernPct(fc as FieldCheckRow);
+  return `${concern}% concern`;
 }
 
 function isEnrollmentMmField(field: string): boolean {
@@ -609,6 +618,7 @@ type EnrollmentCrossRow = {
   detected?: string;
   ok: boolean | null;
   match_ratio?: number;
+  concern_pct?: number;
 };
 
 /** Enrollment form fields that should be compared to OCR for each requirement type. */
@@ -648,7 +658,7 @@ function enrollmentCrossCheckPlan(docType: AiDocType, app: any): EnrollmentCross
 
 function applyEnrollmentCrossChecks(
   plan: EnrollmentCrossRow[],
-  aiChecks: Array<{ field?: string; expected?: string; detected?: string; ok?: boolean; match_ratio?: number }>,
+  aiChecks: Array<{ field?: string; expected?: string; detected?: string; ok?: boolean; match_ratio?: number; concern_pct?: number }>,
 ): EnrollmentCrossRow[] {
   return plan.map((row) => {
     const hit = aiChecks.find(
@@ -661,6 +671,7 @@ function applyEnrollmentCrossChecks(
       detected: hit.detected ? String(hit.detected) : "",
       ok: Boolean(hit.ok),
       match_ratio: typeof hit.match_ratio === "number" ? hit.match_ratio : undefined,
+      concern_pct: typeof hit.concern_pct === "number" ? hit.concern_pct : undefined,
     };
   });
 }
@@ -672,11 +683,7 @@ function summarizeEnrollmentCrossRows(rows: EnrollmentCrossRow[]) {
   const pendingCount = rows.filter((r) => r.ok === null).length;
   const badBits = judged
     .filter((r) => r.ok === false)
-    .map((r) =>
-      typeof r.match_ratio === "number" && Number.isFinite(r.match_ratio)
-        ? `${r.field} (${Math.round(r.match_ratio * 100)}%)`
-        : r.field,
-    );
+    .map((r) => `${r.field} (${fieldCheckConcernLabel(r)})`);
   const okNames = judged.filter((r) => r.ok === true).map((r) => r.field);
   return { okCount, badCount, pendingCount, total: rows.length, badBits, okNames };
 }
@@ -994,13 +1001,7 @@ function documentAiSummaryLine(opts: {
 function summarizeFieldChecks(fieldChecks: NonNullable<AiVerifyResponse["field_checks"]>) {
   const bad = fieldChecks.filter((c) => !c.ok);
   const okCount = fieldChecks.length - bad.length;
-  const badBits = bad.map((c) => {
-    const n = String(c.field);
-    if (typeof c.match_ratio === "number" && Number.isFinite(c.match_ratio)) {
-      return `${n} (${Math.round(c.match_ratio * 100)}%)`;
-    }
-    return n;
-  });
+  const badBits = bad.map((c) => `${String(c.field)} (${fieldCheckConcernLabel(c)})`);
   const okNames = fieldChecks.filter((c) => c.ok).map((c) => String(c.field));
   return { okCount, badCount: bad.length, total: fieldChecks.length, badBits, okNames };
 }
@@ -3561,9 +3562,8 @@ export function ReviewDocuments() {
                                             : c.ok
                                               ? "match"
                                               : "mismatch"}
-                                        {typeof c.match_ratio === "number" && Number.isFinite(c.match_ratio)
-                                          ? ` (${Math.round(c.match_ratio * 100)}%)`
-                                          : ""}
+                                        {" "}
+                                        · {fieldCheckConcernLabel(c)}
                                       </span>
                                       <span className="block text-gray-600">
                                         Form: {String(c.expected).trim()}

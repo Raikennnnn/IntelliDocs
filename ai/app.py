@@ -3812,14 +3812,65 @@ def _distinctive_school_tokens(name: str) -> list[str]:
     return out
 
 
+def _field_row_concern_pct(ok: bool, match_ratio: float | int | None) -> int:
+    """0 = clear match; higher = worse mismatch."""
+    if ok:
+        return 0
+    if isinstance(match_ratio, (int, float)) and float(match_ratio) >= 0.0:
+        return max(1, min(100, 100 - int(round(float(match_ratio) * 100))))
+    return 100
+
+
+def _finalize_field_check_concern(row: dict) -> dict:
+    row["concern_pct"] = _field_row_concern_pct(bool(row.get("ok")), row.get("match_ratio"))
+    return row
+
+
+def _sanitize_school_ocr_line(line: str) -> str:
+    """Trim SF10/SF9 school rows — drop School ID / District / Division tail noise."""
+    import re
+
+    raw = re.sub(r"\s+", " ", (line or "").strip())
+    if not raw:
+        return ""
+    upper = _norm_school_text(raw)
+    cut_at = len(upper)
+    for marker in (
+        " SCHOOL ID ",
+        " SCHOOLID ",
+        " DISTRICT ",
+        " DIVISION ",
+        " REGION ",
+        " SCHOOL YEAR ",
+        " GRADE ",
+    ):
+        pos = upper.find(marker.strip())
+        if pos > 4:
+            cut_at = min(cut_at, pos)
+    trimmed = upper[:cut_at].strip()
+    trimmed = re.sub(r"^(SCHOOL\s+)+", "", trimmed)
+    trimmed = re.sub(r"\s+", " ", trimmed).strip()
+    return trimmed
+
+
 def _fuzzy_school_token_match(exp_tok: str, det_tokens: list[str]) -> bool:
     et = (exp_tok or "").strip().upper()
     if len(et) < 3:
         return False
+    if et == "SANTA":
+        for dt in det_tokens:
+            if dt in ("STA", "ST", "SANTA", "SANTO"):
+                return True
     for dt in det_tokens:
         if et == dt:
             return True
+        if len(et) >= 4 and len(dt) >= 3 and (et.startswith(dt) or dt.startswith(et[:3])):
+            return True
         if len(et) >= 4 and len(dt) >= 4 and (et.startswith(dt[:4]) or dt.startswith(et[:4])):
+            return True
+        if len(et) >= 4 and et in dt:
+            return True
+        if len(dt) >= 4 and dt in et:
             return True
         if len(et) >= 5 and len(dt) >= 5 and abs(len(et) - len(dt)) <= 1:
             mism = sum(a != b for a, b in zip(et, dt)) + abs(len(et) - len(dt))
@@ -3833,6 +3884,7 @@ def _school_names_match_robust(expected: str, detected: str) -> tuple[bool, floa
     Match enrollment previous-school against OCR school name.
     Ignores generic tokens (HIGH, SCHOOL, JUNIOR, …) that appear in certificate boilerplate.
     """
+    detected = _sanitize_school_ocr_line(detected)
     exp_tokens = _distinctive_school_tokens(expected)
     if not exp_tokens:
         return True, 1.0, []
@@ -3842,9 +3894,12 @@ def _school_names_match_robust(expected: str, detected: str) -> tuple[bool, floa
     hits = [t for t in exp_tokens if _fuzzy_school_token_match(t, det_tokens)]
     ratio = len(hits) / max(1, len(exp_tokens))
     missing = [t for t in exp_tokens if t not in hits]
-    ok = len(hits) >= 1 and ratio >= 0.50
     if len(exp_tokens) == 1:
         ok = len(hits) == 1
+    elif len(exp_tokens) == 2:
+        ok = len(hits) >= 2
+    else:
+        ok = len(hits) >= max(2, len(exp_tokens) - 1) and ratio >= 0.75
     return ok, float(ratio), missing[:6]
 
 
@@ -3875,6 +3930,8 @@ def _line_is_school_name_candidate(line: str) -> bool:
         "NOT VALID",
     )
     if any(k in nl for k in reject):
+        return False
+    if "SCHOOL ID" in nl or re.search(r"\bID\s+\d{4,}\b", nl):
         return False
     markers = (
         "HIGH SCHOOL",
@@ -7001,34 +7058,23 @@ def _evaluate(
                         )
                         best_line = detected_school[:64]
                     else:
-                        # Fallback: scan OCR lines that look like school names (not certificate body text).
                         best_ratio = -1.0
                         for ln in simple_lines or []:
-                            clean = (ln or "").strip()
-                            if not _line_is_school_name_candidate(clean):
+                            clean = _sanitize_school_ocr_line(ln)
+                            if not clean or not _line_is_school_name_candidate(clean):
                                 continue
-                            ok_ln, ratio_ln, _ = _school_names_match_robust(exp_prev_school, clean)
+                            ok_ln, ratio_ln, miss_ln = _school_names_match_robust(
+                                exp_prev_school, clean
+                            )
                             if ratio_ln > best_ratio:
                                 best_ratio = ratio_ln
                                 best_line = clean[:64]
                                 ok = ok_ln
+                                missing_school = miss_ln
                         if best_ratio < 0:
                             ok, best_ratio, missing_school = False, 0.0, _distinctive_school_tokens(
                                 exp_prev_school
                             )
-                        elif not _moral_doc and best_ratio < 0.50:
-                            for ln in simple_lines or []:
-                                clean = (ln or "").strip()
-                                if len(clean) < 4:
-                                    continue
-                                ok_ln, ratio_ln, miss_ln = _school_names_match_robust(
-                                    exp_prev_school, clean
-                                )
-                                if ratio_ln > best_ratio:
-                                    best_ratio = ratio_ln
-                                    best_line = clean[:64]
-                                    ok = ok_ln
-                                    missing_school = miss_ln
                     row = {
                         "field": "Previous school",
                         "expected": exp_prev_school,
@@ -7311,7 +7357,7 @@ def _evaluate(
         )
 
     if checks:
-        payload["field_checks"] = checks
+        payload["field_checks"] = [_finalize_field_check_concern(dict(row)) for row in checks]
 
     if doc_checks:
         payload["doc_checks"] = doc_checks
