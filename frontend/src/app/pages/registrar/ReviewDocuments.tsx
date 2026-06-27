@@ -351,7 +351,7 @@ function resolveApplicationVerifyFields(app: any) {
   };
 }
 
-const AI_VERIFY_PAYLOAD_VERSION = 47;
+const AI_VERIFY_PAYLOAD_VERSION = 49;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);

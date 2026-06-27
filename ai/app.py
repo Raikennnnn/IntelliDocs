@@ -5,6 +5,7 @@ import shutil
 import sys
 import tempfile
 import uuid
+from collections import OrderedDict
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -15,7 +16,11 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 47
+AI_VERIFY_PAYLOAD_VERSION = 49
+
+
+_IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
+_IMAGE_DUPLICATE_CACHE_LIMIT = 256
 
 
 def _staging_upload_path(file) -> str:
@@ -280,12 +285,114 @@ def _resolve_doc_type_from_content(norm_text: str, requested: str) -> str:
     return req
 
 
+def _sha256_file(filepath: str) -> str | None:
+    try:
+        import hashlib
+
+        with open(filepath, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except Exception:
+        return None
+
+
+def _track_photo_duplicate(filepath: str, *, doc_type: str) -> dict | None:
+    if doc_type not in PHOTO_DOC_TYPES:
+        return None
+    digest = _sha256_file(filepath)
+    if not digest:
+        return None
+
+    if digest in _IMAGE_DUPLICATE_CACHE:
+        _IMAGE_DUPLICATE_CACHE.move_to_end(digest)
+        return {"duplicate": True, "hash": digest}
+
+    _IMAGE_DUPLICATE_CACHE[digest] = 1
+    _IMAGE_DUPLICATE_CACHE.move_to_end(digest)
+    if len(_IMAGE_DUPLICATE_CACHE) > _IMAGE_DUPLICATE_CACHE_LIMIT:
+        _IMAGE_DUPLICATE_CACHE.popitem(last=False)
+    return {"duplicate": False, "hash": digest}
+
+
+def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> dict:
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        return {
+            "face_detected": False,
+            "face_bbox": None,
+            "face_width_ratio": 0.0,
+            "face_center_offset": 1.0,
+            "background_std": 0.0,
+            "background_edge_ratio": 0.0,
+            "background_clutter": False,
+        }
+
+    try:
+        cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+        if face_cascade is None or face_cascade.empty():
+            raise RuntimeError("face cascade unavailable")
+        gray_eq = cv2.equalizeHist(gray)
+        faces = face_cascade.detectMultiScale(gray_eq, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+        if len(faces) == 0:
+            return {
+                "face_detected": False,
+                "face_bbox": None,
+                "face_width_ratio": 0.0,
+                "face_center_offset": 1.0,
+                "background_std": 0.0,
+                "background_edge_ratio": 0.0,
+                "background_clutter": False,
+            }
+
+        x, y, w, h = max(faces, key=lambda rect: rect[2] * rect[3])
+        x = int(x)
+        y = int(y)
+        w = int(w)
+        h = int(h)
+        face_center_x = (x + (w / 2.0)) / max(1, float(image_w))
+        face_center_y = (y + (h / 2.0)) / max(1, float(image_h))
+        center_offset = abs(face_center_x - 0.5) + abs(face_center_y - 0.5)
+        face_width_ratio = (w / max(1, float(image_w)))
+
+        bg_mask = np.ones(gray.shape, dtype=np.uint8) * 255
+        bg_mask[y:y + h, x:x + w] = 0
+        bg_pixels = gray[bg_mask == 255]
+        background_std = float(np.std(bg_pixels)) if bg_pixels.size else 0.0
+        edges = cv2.Canny(gray, 50, 150)
+        bg_edges = edges[bg_mask == 255]
+        background_edge_ratio = float(np.mean(bg_edges > 0)) if bg_edges.size else 0.0
+        background_clutter = background_std > 36.0 and background_edge_ratio > 0.04
+
+        return {
+            "face_detected": True,
+            "face_bbox": {"x": x, "y": y, "w": w, "h": h},
+            "face_width_ratio": face_width_ratio,
+            "face_center_offset": center_offset,
+            "background_std": background_std,
+            "background_edge_ratio": background_edge_ratio,
+            "background_clutter": background_clutter,
+        }
+    except Exception:
+        return {
+            "face_detected": False,
+            "face_bbox": None,
+            "face_width_ratio": 0.0,
+            "face_center_offset": 1.0,
+            "background_std": 0.0,
+            "background_edge_ratio": 0.0,
+            "background_clutter": False,
+        }
+
+
 def _image_quality_check(filepath: str, doc_type: str) -> dict:
     """
-    Level 1 — image quality gate (blur, size, brightness).
+    Level 1 — image quality gate (blur, size, brightness, and selected 2×2/photo heuristics).
     Must pass before upload is accepted or before OCR runs.
     """
     issues: list[str] = []
+    warnings: list[str] = []
     is_photo = doc_type in PHOTO_DOC_TYPES
 
     try:
@@ -322,9 +429,41 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
         elif mean_brightness > 235:
             issues.append("Image is overexposed (too bright). Reduce glare and retake.")
 
+        contrast = float(np.std(gray))
+        if is_photo and contrast < 28.0:
+            issues.append("Image contrast is too low. Use stronger lighting and avoid washed-out photos.")
+
+        if is_photo:
+            ratio = w / max(1, h)
+            if ratio < 0.86 or ratio > 1.16:
+                issues.append("Photo aspect ratio looks unusual for a standard 2x2 portrait. Use a square crop.")
+
+            duplicate_info = _track_photo_duplicate(filepath, doc_type=doc_type)
+            if duplicate_info and duplicate_info.get("duplicate"):
+                issues.append("This image appears to be a duplicate of a previously uploaded photo.")
+
+            face_metrics = _analyze_id_photo_face_features(img, gray, w, h)
+            photo_checks = {
+                "face_detected": bool(face_metrics.get("face_detected")),
+                "face_width_ratio": round(float(face_metrics.get("face_width_ratio") or 0.0), 3),
+                "face_center_offset": round(float(face_metrics.get("face_center_offset") or 1.0), 3),
+                "contrast": round(contrast, 2),
+                "background_clutter": bool(face_metrics.get("background_clutter")),
+            }
+            if face_metrics.get("face_detected"):
+                if face_metrics.get("face_width_ratio", 0.0) < 0.14 or face_metrics.get("face_width_ratio", 0.0) > 0.52:
+                    issues.append("The face appears too small or too large for a standard 2x2 photo.")
+                if float(face_metrics.get("face_center_offset") or 1.0) > 0.20:
+                    issues.append("The face is not centered well in the frame. Reposition the head so it is centered.")
+                if face_metrics.get("background_clutter"):
+                    issues.append("The background is too busy or textured. Use a plain light background.")
+            else:
+                warnings.append("Face detection could not confirm a clear portrait. Retake with the face fully visible.")
+        else:
+            photo_checks = {}
+
         score = _clamp01(lap_var / (min_lap * 2.2))
         passed = len(issues) == 0
-        warnings: list[str] = []
         if passed:
             if min_lap * 0.82 <= lap_var < min_lap:
                 warnings.append(
@@ -339,6 +478,7 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             "message": "Image quality OK." if passed else issues[0],
             "issues": issues,
             "warnings": warnings,
+            "photo_checks": photo_checks,
         }
     except Exception as e:
         return {
@@ -348,6 +488,7 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             "message": "Quality check skipped (engine unavailable).",
             "issues": [f"Quality check warning: {type(e).__name__}"],
             "warnings": [],
+            "photo_checks": {},
         }
 
 
@@ -1847,6 +1988,258 @@ def _academic_learner_zone_y_bounds(
     if y_max <= y_min:
         y_max = ih * 0.55
     return y_min, y_max
+
+
+def _union_bbox_boxes(items: list[dict]) -> dict | None:
+    if not items:
+        return None
+    x1 = min(float(it["x"]) for it in items)
+    y1 = min(float(it["y"]) for it in items)
+    x2 = max(float(it["x"]) + float(it["w"]) for it in items)
+    y2 = max(float(it["y"]) + float(it["h"]) for it in items)
+    return {"x": x1, "y": y1, "w": max(1.0, x2 - x1), "h": max(1.0, y2 - y1)}
+
+
+def _sf9_is_report_card(normed: list[dict] | None) -> bool:
+    if not normed:
+        return False
+    _iw, ih = _boxes_image_size(normed)
+    ih_f = float(ih or 1400)
+    has_report = False
+    has_card = False
+    for b in normed:
+        t = str(b.get("t") or "").upper()
+        y = float(b.get("y", 0))
+        if "REPORT CARD" in t or "FORM 138" in t or re.search(r"\bSF\s*9\b", t):
+            return True
+        if "REPORT" in t and "CARD" in t:
+            return True
+        if y > ih_f * 0.30:
+            continue
+        if "REPORT" in t:
+            has_report = True
+        if re.search(r"\bCARD\b", t):
+            has_card = True
+    if has_report and has_card:
+        return True
+    if _sf9_learner_row_markers(normed, ih_f):
+        return True
+    return False
+
+
+def _sf9_learner_row_markers(normed: list[dict] | None, ih: float) -> list[dict]:
+    """NAME / LRN / SCHOOL YEAR / SEX rows on SF9 — not title headers."""
+    markers: list[dict] = []
+    y_floor = ih * 0.14
+    y_ceil = ih * 0.62
+    for b in normed or []:
+        t = _norm_ocr_text(str(b.get("t") or ""))
+        y = float(b.get("y", 0))
+        if y < y_floor or y > y_ceil:
+            continue
+        if re.fullmatch(r"NAME\s*:?", t) or re.match(r"^NAME\s*:", t):
+            markers.append(b)
+        elif _is_lrn_label_text(t):
+            markers.append(b)
+        elif re.search(r"\bSCHOOL\s*YEAR\b", t) or re.fullmatch(r"SY\s*:?", t):
+            markers.append(b)
+        elif re.search(r"\bSEX\s*:?", t):
+            markers.append(b)
+        elif re.search(r"\bAGE\s*:?", t):
+            markers.append(b)
+        elif "SECTION" in t and (":" in t or len(t) <= 24):
+            markers.append(b)
+    return markers
+
+
+def _sf9_learner_block_y_bounds(
+    normed: list[dict] | None,
+    image_h: int | None,
+) -> tuple[float, float]:
+    """Y band for SF9 learner info — anchored on field rows, not title QUARTER tokens."""
+    _iw, ih_box = _boxes_image_size(normed)
+    ih = float(image_h or ih_box or 1400)
+    markers = _sf9_learner_row_markers(normed, ih)
+    if markers:
+        y_lo = min(float(b.get("y", 0)) for b in markers) - max(12.0, ih * 0.012)
+        y_hi = max(float(b.get("y", 0)) + float(b.get("h", 0)) for b in markers) + max(24.0, ih * 0.04)
+        return max(ih * 0.18, y_lo), min(ih * 0.58, max(y_hi, y_lo + 48.0))
+
+    header_bottom = ih * 0.12
+    for b in normed or []:
+        t = str(b.get("t") or "").upper()
+        y = float(b.get("y", 0))
+        if y > ih * 0.28:
+            continue
+        if any(k in t for k in ("REPORT CARD", "FORM 138", "SF9", "FORM 138-E")):
+            header_bottom = max(header_bottom, y + float(b.get("h", 0)))
+        elif "REPORT" in t and y < ih * 0.20:
+            header_bottom = max(header_bottom, y + float(b.get("h", 0)) * 0.9)
+        elif "LEARNER" in t and y < ih * 0.22:
+            header_bottom = max(header_bottom, y + float(b.get("h", 0)) * 0.9)
+
+    y_lo = header_bottom + 8.0
+    y_hi = ih * 0.52
+    stop_y: list[float] = []
+    for b in normed or []:
+        t = str(b.get("t") or "").upper()
+        y = float(b.get("y", 0))
+        if y < y_lo + max(36.0, ih * 0.04):
+            continue
+        if ("SCHOLASTIC" in t or "ELIGIBILITY" in t) or ("LEARNING" in t and "AREA" in t):
+            stop_y.append(y)
+        elif "GENERAL AVERAGE" in t:
+            stop_y.append(y)
+        elif re.search(r"\bQUARTER\b", t) and y > y_lo + max(80.0, ih * 0.08):
+            stop_y.append(y)
+    if stop_y:
+        y_hi = min(y_hi, min(stop_y) - 6.0)
+    if y_hi <= y_lo:
+        y_hi = ih * 0.52
+    return y_lo, y_hi
+
+
+def _academic_field_zone_y_bounds(
+    normed: list[dict] | None,
+    image_h: int | None,
+) -> tuple[float, float]:
+    _iw, ih_box = _boxes_image_size(normed)
+    ih = float(image_h or ih_box or 1400)
+    if _sf9_is_report_card(normed) or _sf9_learner_row_markers(normed, ih):
+        return _sf9_learner_block_y_bounds(normed, image_h)
+    return _academic_learner_zone_y_bounds(normed, image_h)
+
+
+def _academic_label_box_matches(box_text: str, variant: str) -> bool:
+    """Match learner-field labels — reject title/header OCR that embeds similar words."""
+    v = str(variant or "").strip().upper()
+    t = _norm_ocr_text(str(box_text or ""))
+    if not v or not t:
+        return False
+    if len(t) > 42 and v in ("NAME", "SY", "LRN"):
+        return False
+    if any(n in t for n in ("PROGRESS", "ACHIEVEMENT", "ATTENDANCE", "REPORT ON", "DEPARTMENT")):
+        return False
+    if v == "NAME":
+        if re.fullmatch(r"NAME\s*:?", t):
+            return True
+        if re.match(r"^NAME\s*:", t):
+            return True
+        if re.match(r"^NAME\s+OF\s+(LEARNER|CHILD|PUPIL|STUDENT)\b", t):
+            return True
+        return False
+    if v in ("LRN", "IRN", "URN"):
+        return _is_lrn_label_text(t) and len(t) <= 36
+    if v in ("SCHOOL YEAR", "SY"):
+        if re.search(r"\bSCHOOL\s*YEAR\b", t):
+            return len(t) <= 28
+        if re.fullmatch(r"SY\s*:?", t):
+            return True
+        return bool(re.match(r"^SY\s*:", t))
+    if len(v) <= 5:
+        return re.search(rf"\b{re.escape(v)}\b", t) is not None
+    return v in t
+
+
+def _value_bbox_for_academic_label(
+    normed: list[dict],
+    label_variants: list[str],
+    *,
+    y_min: float | None = None,
+    y_max: float | None = None,
+    max_neighbors: int = 5,
+) -> dict | None:
+    """Bounding box for the value beside a learner-field label — not the label box itself."""
+    labels = [
+        b
+        for b in normed
+        if any(_academic_label_box_matches(b.get("t") or "", v) for v in label_variants)
+        and (y_min is None or float(b.get("y", 0)) >= y_min)
+        and (y_max is None or float(b.get("y", 0)) <= y_max)
+    ]
+    if not labels:
+        return None
+    labels.sort(key=lambda b: (float(b.get("y", 0)), float(b.get("x", 0))))
+    for lb in labels:
+        t = str(lb.get("t") or "")
+        m_inline = re.match(r"^(NAME|SCHOOL\s*YEAR|SY|[LIU]RN)\s*:?\s*(.+)$", t, re.I)
+        if m_inline:
+            inline = (m_inline.group(2) or "").strip(" _:-")
+            if inline and len(inline) >= 2:
+                return {"x": lb["x"], "y": lb["y"], "w": lb["w"], "h": lb["h"]}
+        cy = float(lb["y"]) + float(lb["h"]) / 2.0
+        band = max(14.0, float(lb["h"]) * 1.15)
+        same_row = [
+            b
+            for b in normed
+            if b is not lb
+            and float(b.get("x", 0)) > float(lb["x"]) + max(4.0, float(lb["w"]) * 0.35)
+            and abs((float(b.get("y", 0)) + float(b.get("h", 0)) / 2.0) - cy) <= band
+            and (y_min is None or float(b.get("y", 0)) >= y_min - 4)
+            and (y_max is None or float(b.get("y", 0)) <= y_max + 4)
+        ]
+        if same_row:
+            same_row.sort(key=lambda b: float(b.get("x", 0)))
+            return _union_bbox_boxes(same_row[:max_neighbors])
+        below = [
+            b
+            for b in normed
+            if b is not lb
+            and float(b.get("y", 0)) > float(lb["y"]) + float(lb["h"]) * 0.35
+            and float(b.get("y", 0)) < float(lb["y"]) + float(lb["h"]) * 2.8
+            and abs(float(b.get("x", 0)) - float(lb["x"])) < max(160.0, float(lb.get("w", 0)) * 3)
+        ]
+        if below:
+            below.sort(key=lambda b: (float(b.get("y", 0)), float(b.get("x", 0))))
+            return _union_bbox_boxes(below[:max_neighbors])
+    return None
+
+
+def _lrn_value_bbox_from_boxes(
+    normed: list[dict] | None,
+    image_h: int | None,
+) -> dict | None:
+    y_min, y_max = _academic_field_zone_y_bounds(normed, image_h)
+    bb = _value_bbox_for_academic_label(
+        normed or [],
+        ["LRN", "IRN", "URN", "LEARNER REFERENCE", "(LRN)"],
+        y_min=y_min,
+        y_max=y_max,
+    )
+    if bb:
+        return bb
+    for b in normed or []:
+        y = float(b.get("y", 0))
+        if y < y_min or y > y_max:
+            continue
+        digits = re.sub(r"\D+", "", str(b.get("t") or ""))
+        if 10 <= len(digits) <= 12:
+            return {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
+    return None
+
+
+def _school_year_value_bbox_from_boxes(
+    normed: list[dict] | None,
+    image_h: int | None,
+) -> dict | None:
+    y_min, y_max = _academic_field_zone_y_bounds(normed, image_h)
+    bb = _value_bbox_for_academic_label(
+        normed or [],
+        ["SCHOOL YEAR", "SY"],
+        y_min=y_min,
+        y_max=y_max,
+    )
+    if bb:
+        return bb
+    y_min_wide = max(0.0, y_min - max(24.0, (y_max - y_min) * 0.15))
+    y_max_wide = y_max + max(24.0, (y_max - y_min) * 0.12)
+    for b in normed or []:
+        y = float(b.get("y", 0))
+        if y < y_min_wide or y > y_max_wide:
+            continue
+        if re.search(r"\b20[0-9]{2}\s*[-/]\s*20[0-9]{2}\b", str(b.get("t") or "")):
+            return {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
+    return None
 
 
 def _ocr_psa_child_fields_pass_on_image(ocr_path: str) -> tuple[str, list[dict], float]:
@@ -6753,29 +7146,13 @@ def _evaluate(
                 normed: list[dict],
                 image_h: int | None,
             ) -> tuple[float, float]:
-                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
-                header_rows = [
-                    b
-                    for b in normed
-                    if any(k in b["t"] for k in ("REPORT CARD", "FORM 138", "SF9", "REPORT ON"))
-                ]
-                y_lo = max((b["y"] + b["h"] for b in header_rows), default=ih * 0.12) + 6.0
-                stop_rows = [
-                    b
-                    for b in normed
-                    if ("LEARNING" in b["t"] and "AREA" in b["t"])
-                    or re.search(r"\bQUARTER\b", b["t"])
-                    or "GENERAL AVERAGE" in b["t"]
-                ]
-                y_hi = min((b["y"] for b in stop_rows), default=ih * 0.42) - 8.0
-                if y_hi <= y_lo:
-                    y_hi = ih * 0.42
-                return y_lo, y_hi
+                return _sf9_learner_block_y_bounds(normed, image_h)
 
             def _detect_sf9_report_card_name_from_boxes(
                 normed: list[dict],
                 image_h: int | None,
                 image_w: int | None,
+                expected_name: str = "",
             ) -> tuple[str, dict | None]:
                 """SF9 report card: read NAME: value row — never the school title header."""
                 if not normed:
@@ -6783,16 +7160,41 @@ def _evaluate(
                 ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
                 iw = float(image_w or _infer_image_size_from_boxes(normed)[0] or 1000)
                 y_lo, y_hi = _sf9_learner_block_y(normed, image_h)
+                exp_tokens = [t for t in norm_simple(expected_name).split(" ") if len(t) >= 2]
+
+                def _score_name_candidate(val: str) -> float:
+                    if not val or not exp_tokens:
+                        return 0.0
+                    ok, ratio, missing, _hits = _name_tokens_match(expected_name, val)
+                    return float(ratio) if ok else max(0.0, 1.0 - len(missing) / max(1, len(exp_tokens)))
+
+                best_name = ""
+                best_bb: dict | None = None
+                best_score = -1.0
+
+                def _consider(val: str, bb: dict | None, *, base_score: float = 0.0) -> None:
+                    nonlocal best_name, best_bb, best_score
+                    if not val or not _candidate_name_is_plausible(val):
+                        return
+                    score = base_score + _score_name_candidate(val)
+                    if score > best_score:
+                        best_score = score
+                        best_name = val[:64]
+                        best_bb = bb
 
                 for b in normed:
                     if not (y_lo <= b["y"] <= y_hi):
                         continue
-                    m = re.search(r"NAME\s*:?\s*(.+)$", b["t"], re.I)
-                    if not m:
-                        continue
-                    val = _normalize_person_name_display(m.group(1))
-                    if val and _candidate_name_is_plausible(val):
-                        return val[:64], b
+                    raw = str(b.get("t") or "")
+                    if "," in raw:
+                        val = _normalize_comma_person_name(raw)
+                        if val and _candidate_name_is_plausible(val):
+                            _consider(val, b, base_score=0.15)
+                    m = re.search(r"NAME\s*:?\s*(.+)$", raw, re.I)
+                    if m:
+                        val = _normalize_person_name_display(m.group(1))
+                        if val:
+                            _consider(val, b, base_score=0.2)
 
                 name_labels = [
                     b
@@ -6826,10 +7228,27 @@ def _evaluate(
                     if not candidates:
                         continue
                     candidates.sort(key=lambda b: (b["y"], b["x"]))
-                    picked = candidates[:3]
+                    picked: list[dict] = []
+                    for b in candidates[:6]:
+                        part = _strip_name_field_labels(b["t"])
+                        if not part or not _box_looks_like_person_name_part(part):
+                            break
+                        picked.append(b)
+                        if len(picked) >= 4:
+                            break
+                    if not picked:
+                        continue
                     full = _normalize_person_name_display(" ".join(b["t"] for b in picked))
-                    if _candidate_name_is_plausible(full):
-                        return full[:64], _union_bbox(picked)
+                    if "," in full:
+                        full = _normalize_comma_person_name(full)
+                    lead = _leading_name_words(full, max_parts=4)
+                    if lead:
+                        full = lead
+                    if full:
+                        _consider(full, _union_bbox(picked), base_score=0.25)
+
+                if best_name and (best_score >= 0.34 or not exp_tokens):
+                    return best_name, best_bb
                 return "", None
 
             def _extract_sf9_name_from_lines(
@@ -7233,13 +7652,14 @@ def _evaluate(
                 doc_kind: str,
                 image_h: int | None,
                 image_w: int | None = None,
+                expected_name: str = "",
             ) -> tuple[str, dict | None]:
                 """Read child/learner name from OCR boxes near the correct label (not parent rows)."""
                 _academic = doc_kind in ("sf9", "report_card", "sf10", "form137", "form157")
                 iw = image_w or _infer_image_size_from_boxes(normed)[0]
                 if doc_kind in ("sf9", "report_card"):
                     sf9_name, sf9_bb = _detect_sf9_report_card_name_from_boxes(
-                        normed, image_h=image_h, image_w=iw
+                        normed, image_h=image_h, image_w=iw, expected_name=expected_name
                     )
                     if sf9_name:
                         return sf9_name, sf9_bb
@@ -7257,11 +7677,13 @@ def _evaluate(
                     if psa_name:
                         return psa_name, psa_bb
                 y_cut = None
+                y_lo_academic: float | None = None
+                y_hi_academic: float | None = None
                 if image_h and image_h > 0:
                     if _birth:
                         y_cut = _psa_child_name_y_max(normed, image_h)
                     elif _academic:
-                        y_cut = float(image_h) * 0.16
+                        y_lo_academic, y_hi_academic = _academic_field_zone_y_bounds(normed, image_h)
                 label_variants = _name_label_variants_for_doc(doc_kind)
                 exclude_in_label = (
                     "FATHER",
@@ -7300,8 +7722,13 @@ def _evaluate(
                         return False
                     if any(x in t for x in exclude_in_label):
                         return False
-                    if y_cut is not None and b["y"] > y_cut:
+                    if y_lo_academic is not None and y_hi_academic is not None:
+                        if b["y"] < y_lo_academic or b["y"] > y_hi_academic:
+                            return False
+                    elif y_cut is not None and b["y"] > y_cut:
                         return False
+                    if _academic:
+                        return any(_academic_label_box_matches(t, v) for v in label_variants)
                     return any(v in t for v in label_variants)
 
                 labels = [b for b in normed if _label_ok(b)]
@@ -8329,6 +8756,16 @@ def _evaluate(
                 y_max: float | None = None,
             ) -> dict | None:
                 """Find the bounding area of the value(s) next to a label keyword."""
+                if y_min is not None and y_max is not None:
+                    bb = _value_bbox_for_academic_label(
+                        normed,
+                        label_variants,
+                        y_min=y_min,
+                        y_max=y_max,
+                        max_neighbors=max_neighbors,
+                    )
+                    if bb:
+                        return bb
                 labels = [
                     b
                     for b in normed
@@ -8364,20 +8801,19 @@ def _evaluate(
                 if below:
                     below.sort(key=lambda b: (b["y"], b["x"]))
                     return _union_bbox(below[:max_neighbors])
-                # Fallback: the label itself.
-                return {"x": lb["x"], "y": lb["y"], "w": lb["w"], "h": lb["h"]}
+                return None
 
             def _academic_learner_zone_y(
                 normed: list[dict],
                 image_h: int | None,
             ) -> tuple[float | None, float | None]:
-                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
-                if any("REPORT CARD" in b["t"] for b in normed):
-                    return _sf9_learner_block_y(normed, image_h)
-                return _academic_learner_zone_y_bounds(normed, image_h)
+                return _academic_field_zone_y_bounds(normed, image_h)
 
             def _find_lrn_box(normed: list[dict], image_h: int | None = None) -> dict | None:
                 """Use the LRN value area in the learner block; fallback to any 12-digit token there."""
+                bb = _lrn_value_bbox_from_boxes(normed, image_h)
+                if bb:
+                    return bb
                 y_min, y_max = _academic_learner_zone_y(normed, image_h)
                 bb = _value_area_for_label(
                     normed,
@@ -8387,12 +8823,12 @@ def _evaluate(
                 )
                 if bb:
                     return bb
-                ih = float(image_h or _infer_image_size_from_boxes(normed)[1] or 1400)
-                y_cap = ih * 0.62
                 for b in normed:
-                    if float(b.get("y", 0)) > y_cap:
+                    y = float(b.get("y", 0))
+                    if y < y_min or y > y_max:
                         continue
-                    if re.search(r"\b[0-9]{12}\b", b["t"]):
+                    digits = re.sub(r"\D+", "", b["t"])
+                    if 10 <= len(digits) <= 12:
                         return {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
                 return None
 
@@ -8414,7 +8850,8 @@ def _evaluate(
                 lrn_digits = re.sub(r"\D+", "", str(detected_lrn or ""))
                 ok_lrn = _lrn_enrollment_match(exp_lrn, lrn_digits)
                 row = {"field": "LRN", "expected": exp_lrn, "detected": detected_lrn or "", "ok": ok_lrn}
-                _attach_bbox(row, _find_lrn_box(normed_boxes, img_h))
+                lrn_bb = _find_lrn_box(normed_boxes, img_h)
+                _attach_bbox(row, lrn_bb)
                 checks.append(row)
                 if not ok_lrn:
                     issues.append("Mismatch: LRN in the document does not match the student's input.")
@@ -8439,7 +8876,7 @@ def _evaluate(
                 elif _academic_doc:
                     doc_kind = doc_type if doc_type in ("sf9", "report_card", "sf10", "form137", "form157") else "sf9"
                     box_name, name_bbox = _detect_name_from_boxes(
-                        normed_boxes, doc_kind=doc_kind, image_h=img_h
+                        normed_boxes, doc_kind=doc_kind, image_h=img_h, expected_name=exp_name
                     )
                     if box_name:
                         refined_box = _refine_detected_person_name(exp_name, box_name)
@@ -8511,6 +8948,10 @@ def _evaluate(
                                 break
                 if not _candidate_name_is_plausible(detected_name):
                     detected_name = ""
+                if detected_name and exp_name:
+                    detected_name = _normalize_person_name_display(
+                        _refine_detected_person_name(exp_name, detected_name)
+                    )
                 if _birth_doc and detected_name and exp_name:
                     if _psa_reject_parent_name(
                         detected_name,
@@ -8537,7 +8978,16 @@ def _evaluate(
                     if doc_kind in ("birth_certificate", "birthcert"):
                         _attach_bbox(row, _detect_name_from_boxes(normed_boxes, doc_kind=doc_kind, image_h=img_h)[1])
                     elif doc_kind in ("sf9", "report_card", "sf10", "form137", "form157"):
-                        _attach_bbox(row, _detect_name_from_boxes(normed_boxes, doc_kind=doc_kind, image_h=img_h)[1])
+                        y_min, y_max = _academic_learner_zone_y(normed_boxes, img_h)
+                        _attach_bbox(
+                            row,
+                            _detect_name_from_boxes(
+                                normed_boxes, doc_kind=doc_kind, image_h=img_h, expected_name=exp_name
+                            )[1]
+                            or _value_bbox_for_academic_label(
+                                normed_boxes, ["NAME"], y_min=y_min, y_max=y_max
+                            ),
+                        )
                     elif _moral_doc:
                         _attach_bbox(
                             row,
@@ -8612,16 +9062,7 @@ def _evaluate(
                     "match_ratio": 1.0 if sy_ok else 0.0,
                 }
                 if _academic_doc:
-                    y_min, y_max = _academic_learner_zone_y(normed_boxes, img_h)
-                    _attach_bbox(
-                        row,
-                        _value_area_for_label(
-                            normed_boxes,
-                            ["SCHOOL YEAR", "SY"],
-                            y_min=y_min,
-                            y_max=y_max,
-                        ),
-                    )
+                    _attach_bbox(row, _school_year_value_bbox_from_boxes(normed_boxes, img_h))
                 else:
                     _attach_bbox(row, _value_area_for_label(normed_boxes, ["SCHOOL YEAR", "SY"]))
                 checks.append(row)
