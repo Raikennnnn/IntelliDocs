@@ -15,7 +15,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 46
+AI_VERIFY_PAYLOAD_VERSION = 47
 
 
 def _staging_upload_path(file) -> str:
@@ -920,7 +920,9 @@ def _signature_roi_handwriting_like(
                 return False
         return True
     except Exception:
-        return stroke_components >= 3 and ink_ratio >= 0.018
+        if allow_cursive_blob and stroke_components >= 2 and 0.024 <= ink_ratio <= 0.10:
+            return True
+        return stroke_components >= 3 and ink_ratio >= 0.025
 
 
 def _signature_roi_looks_like_printed_text(
@@ -1096,15 +1098,53 @@ def _gray_image_for_scan(filepath: str) -> tuple["object|None", int, int]:
         return None, 0, 0
 
 
-def _score_signature_roi(
+def _count_ink_stroke_components(binary_mask, roi_w: int, roi_h: int) -> int:
+    """Count ink blobs in a binary mask (OpenCV when available, else NumPy flood-fill)."""
+    try:
+        import cv2
+        import numpy as np
+
+        mask = (np.asarray(binary_mask) > 0).astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cap = max(800, int(roi_w * roi_h * 0.35))
+        return sum(1 for c in contours if 8 <= cv2.contourArea(c) <= cap)
+    except Exception:
+        pass
+    try:
+        import numpy as np
+
+        mask = np.asarray(binary_mask, dtype=np.uint8) > 0
+        h, w = mask.shape[:2]
+        visited = np.zeros_like(mask, dtype=bool)
+        cap = max(800, int(roi_w * roi_h * 0.35))
+        count = 0
+        for sy in range(h):
+            for sx in range(w):
+                if not mask[sy, sx] or visited[sy, sx]:
+                    continue
+                stack = [(sy, sx)]
+                visited[sy, sx] = True
+                area = 0
+                while stack:
+                    cy, cx = stack.pop()
+                    area += 1
+                    for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                        if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not visited[ny, nx]:
+                            visited[ny, nx] = True
+                            stack.append((ny, nx))
+                if 8 <= area <= cap:
+                    count += 1
+        return count
+    except Exception:
+        return 0
+
+
+def _signature_roi_ink_features(
     gray_roi,
     roi_w: int,
     roi_h: int,
-    *,
-    allow_printed: bool = False,
-    allow_cursive_blob: bool = False,
-) -> tuple[float, bool, float, int]:
-    """Return confidence, detected, ink_ratio, stroke_components for a grayscale ROI."""
+) -> tuple[float, float, float, int]:
+    """Return ink_ratio, edge_ratio, variance, stroke_components for a grayscale ROI."""
     try:
         import cv2
         import numpy as np
@@ -1116,26 +1156,55 @@ def _score_signature_roi(
         edges = cv2.Canny(gray, 40, 120)
         edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
         variance = float(np.var(gray))
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        stroke_components = sum(
-            1
-            for c in contours
-            if 8 <= cv2.contourArea(c) <= max(800, (roi_w * roi_h) * 0.35)
-        )
+        stroke_components = _count_ink_stroke_components(binary, roi_w, roi_h)
+        return ink_ratio, edge_ratio, variance, stroke_components
     except Exception:
-        try:
-            import numpy as np
+        import numpy as np
 
-            gray = np.asarray(gray_roi, dtype=np.float32)
-            thresh = float(np.median(gray)) * 0.92
-            binary = (gray < thresh).astype(np.uint8)
-            ink_ratio = float(binary.mean())
-            gy, gx = np.gradient(gray)
-            edge_ratio = float((np.hypot(gx, gy) > 22.0).mean())
-            variance = float(gray.var())
-            stroke_components = 2 if ink_ratio >= 0.004 else (1 if ink_ratio >= 0.0025 else 0)
-        except Exception:
-            return 0.0, False, 0.0, 0
+        gray = np.asarray(gray_roi, dtype=np.float32)
+        thresh = float(np.median(gray)) * 0.88
+        binary = (gray < thresh).astype(np.uint8)
+        ink_ratio = float(binary.mean())
+        gy, gx = np.gradient(gray)
+        edge_ratio = float((np.hypot(gx, gy) > 22.0).mean())
+        variance = float(gray.var())
+        stroke_components = _count_ink_stroke_components(binary, roi_w, roi_h)
+        if stroke_components <= 0 and ink_ratio >= 0.012:
+            stroke_components = max(1, min(14, int(round(ink_ratio * 120))))
+        return ink_ratio, edge_ratio, variance, stroke_components
+
+
+def _signature_bottom_right_probe_regions(
+    img_w: int,
+    img_h: int,
+) -> list[tuple[int, int, int, int]]:
+    """Fixed lower-right windows where PH school-head signatures usually appear."""
+    band_top = int(img_h * 0.56)
+    band_bottom = min(img_h - 8, int(img_h * 0.86))
+    band_h = max(36, band_bottom - band_top)
+    win_w = max(52, int(img_w * 0.30))
+    win_h = max(32, int(band_h * 0.88))
+    regions: list[tuple[int, int, int, int]] = []
+    for x_frac in (0.46, 0.56, 0.66):
+        x = max(0, min(int(img_w * x_frac), img_w - win_w))
+        region = _clamp_signature_region(x, band_top, win_w, win_h, img_w, img_h)
+        if region:
+            regions.append(region)
+    return regions
+
+
+def _score_signature_roi(
+    gray_roi,
+    roi_w: int,
+    roi_h: int,
+    *,
+    allow_printed: bool = False,
+    allow_cursive_blob: bool = False,
+) -> tuple[float, bool, float, int]:
+    """Return confidence, detected, ink_ratio, stroke_components for a grayscale ROI."""
+    ink_ratio, edge_ratio, variance, stroke_components = _signature_roi_ink_features(
+        gray_roi, roi_w, roi_h
+    )
 
     score = 0.0
     if ink_ratio >= 0.0025:
@@ -1271,6 +1340,10 @@ def _scan_handwritten_signature(
                 if kind == "anchor":
                     continue
                 _try_region(x, y, w, h, kind=kind)
+
+        if not best["detected"]:
+            for x, y, w, h in _signature_bottom_right_probe_regions(img_w, img_h):
+                _try_region(x, y, w, h, kind="gap")
 
         if best["bbox"] is None:
             return fallback
