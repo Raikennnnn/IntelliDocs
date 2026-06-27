@@ -15,7 +15,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 45
+AI_VERIFY_PAYLOAD_VERSION = 46
 
 
 def _staging_upload_path(file) -> str:
@@ -835,7 +835,7 @@ def _signature_structured_gap_regions(
         return []
     sig_w = max(int(img_w * 0.22), min(int(img_w * 0.36), int(img_w * 0.42)))
     regions: list[tuple[int, int, int, int, str]] = []
-    for x_frac in (0.40, 0.50, 0.60):
+    for x_frac in (0.35, 0.45, 0.55, 0.65, 0.75):
         x = max(0, min(int(img_w * x_frac), img_w - sig_w))
         region = _clamp_signature_region(x, gap_top, sig_w, gap_h, img_w, img_h)
         if region:
@@ -849,11 +849,13 @@ def _signature_roi_handwriting_like(
     roi_h: int,
     stroke_components: int,
     ink_ratio: float,
+    *,
+    allow_cursive_blob: bool = False,
 ) -> bool:
     """Ink blobs that look like handwriting rather than printed lines or scan speckle."""
-    if stroke_components < 3 or stroke_components > 14:
+    if stroke_components < 1 or stroke_components > 14:
         return False
-    if ink_ratio < 0.020 or ink_ratio > 0.060:
+    if ink_ratio < 0.025 or ink_ratio > 0.10:
         return False
     try:
         import cv2
@@ -865,6 +867,35 @@ def _signature_roi_handwriting_like(
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         areas = [cv2.contourArea(c) for c in contours if cv2.contourArea(c) >= 8]
         if not areas:
+            return False
+        # Cursive signatures often merge into one or two large blobs inside a tight gap crop.
+        if stroke_components <= 2:
+            if not allow_cursive_blob:
+                return False
+            max_area = max(areas)
+            min_blob = max(100, (roi_w * roi_h) * 0.006)
+            if max_area < min_blob:
+                return False
+            y_tops: list[float] = []
+            y_bottoms: list[float] = []
+            x_lefts: list[float] = []
+            x_rights: list[float] = []
+            for c in contours:
+                if cv2.contourArea(c) < 40:
+                    continue
+                _bx, by, bw, bh = cv2.boundingRect(c)
+                y_tops.append(by)
+                y_bottoms.append(by + bh)
+                x_lefts.append(_bx)
+                x_rights.append(_bx + bw)
+            if not y_tops:
+                return False
+            y_span = max(y_bottoms) - min(y_tops)
+            x_span = max(x_rights) - min(x_lefts)
+            if y_span >= max(10, roi_h * 0.12) and x_span >= max(20, roi_w * 0.10):
+                return True
+            return False
+        if stroke_components < 3:
             return False
         tiny = sum(1 for a in areas if a < 35)
         if len(areas) >= 2 and tiny / len(areas) > 0.65 and max(areas) < 100:
@@ -1071,6 +1102,7 @@ def _score_signature_roi(
     roi_h: int,
     *,
     allow_printed: bool = False,
+    allow_cursive_blob: bool = False,
 ) -> tuple[float, bool, float, int]:
     """Return confidence, detected, ink_ratio, stroke_components for a grayscale ROI."""
     try:
@@ -1128,7 +1160,7 @@ def _score_signature_roi(
     ):
         return confidence, False, ink_ratio, stroke_components
     handwriting_like = _signature_roi_handwriting_like(
-        gray_roi, roi_w, roi_h, stroke_components, ink_ratio
+        gray_roi, roi_w, roi_h, stroke_components, ink_ratio, allow_cursive_blob=allow_cursive_blob
     )
     detected = (
         confidence >= 0.42
@@ -1186,50 +1218,59 @@ def _scan_handwritten_signature(
                 return
             if _signature_roi_overlaps_authority_print(x, y, w, h, boxes, img_h):
                 return
-            x = max(0, min(x, img_w - 1))
-            y = max(0, min(y, img_h - 1))
-            w = max(8, min(w, img_w - x))
-            h = max(8, min(h, img_h - y))
-            roi = gray_full[y : y + h, x : x + w]
-            if roi.size == 0:
-                return
-            confidence, detected, ink_ratio, stroke_components = _score_signature_roi(roi, w, h)
-            if kind == "fallback" and (not detected or confidence < 0.50):
-                return
-            if confidence > best["confidence"] or (detected and not best["detected"]):
-                best = {
-                    "detected": detected,
-                    "confidence": confidence,
-                    "bbox": {"x": float(x), "y": float(y), "w": float(w), "h": float(h)},
-                    "note": (
-                        f"Ink {ink_ratio * 100:.1f}% · {stroke_components} stroke(s)"
-                        if detected
-                        else "No clear handwritten strokes in signature area"
-                    ),
-                    "ink_ratio": ink_ratio,
-                    "stroke_components": stroke_components,
-                }
+
+            def _score_at(rx: int, ry: int, rw: int, rh: int, *, cursive_blob: bool = False) -> None:
+                nonlocal best
+                rx = max(0, min(rx, img_w - 1))
+                ry = max(0, min(ry, img_h - 1))
+                rw = max(8, min(rw, img_w - rx))
+                rh = max(8, min(rh, img_h - ry))
+                roi = gray_full[ry : ry + rh, rx : rx + rw]
+                if roi.size == 0:
+                    return
+                confidence, detected, ink_ratio, stroke_components = _score_signature_roi(
+                    roi, rw, rh, allow_cursive_blob=cursive_blob
+                )
+                if kind == "fallback" and (not detected or confidence < 0.50):
+                    return
+                if confidence > best["confidence"] or (detected and not best["detected"]):
+                    best = {
+                        "detected": detected,
+                        "confidence": confidence,
+                        "bbox": {"x": float(rx), "y": float(ry), "w": float(rw), "h": float(rh)},
+                        "note": (
+                            f"Ink {ink_ratio * 100:.1f}% · {stroke_components} stroke(s)"
+                            if detected
+                            else "No clear handwritten strokes in signature area"
+                        ),
+                        "ink_ratio": ink_ratio,
+                        "stroke_components": stroke_components,
+                    }
+
+            _score_at(x, y, w, h)
+            # Wide gap ROIs dilute cursive ink — scan tighter sub-windows inside the band.
+            if kind == "gap" and w >= int(img_w * 0.20):
+                sub_w = max(48, int(w * 0.55))
+                sub_h = max(28, int(h * 0.85))
+                step_x = max(20, int((w - sub_w) / 2)) if w > sub_w else 0
+                for sx in range(x, x + w - sub_w + 1, max(step_x, 1)):
+                    _score_at(sx, y, sub_w, sub_h, cursive_blob=True)
+                    if best["detected"]:
+                        break
 
         if structured_gaps:
             for x, y, w, h, kind in structured_gaps:
                 _try_region(x, y, w, h, kind=kind)
-            if not best["detected"]:
-                return {
-                    "detected": False,
-                    "confidence": round(float(best["confidence"]), 2) if best["confidence"] else 0.0,
-                    "bbox": None,
-                    "note": "No handwritten signature in signatory gap",
-                    "scan_method": "visual",
-                }
-        else:
+
+        if not best["detected"]:
             for x, y, w, h, kind in _signature_candidate_regions(boxes, img_w, img_h, anchor_only=True):
                 _try_region(x, y, w, h, kind=kind)
 
-            if not best["detected"]:
-                for x, y, w, h, kind in _signature_candidate_regions(boxes, img_w, img_h):
-                    if kind == "anchor":
-                        continue
-                    _try_region(x, y, w, h, kind=kind)
+        if not best["detected"]:
+            for x, y, w, h, kind in _signature_candidate_regions(boxes, img_w, img_h):
+                if kind == "anchor":
+                    continue
+                _try_region(x, y, w, h, kind=kind)
 
         if best["bbox"] is None:
             return fallback
