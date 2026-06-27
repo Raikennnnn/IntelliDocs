@@ -15,7 +15,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 44
+AI_VERIFY_PAYLOAD_VERSION = 45
 
 
 def _staging_upload_path(file) -> str:
@@ -5036,17 +5036,12 @@ def _name_tokens_match_robust(
     if certificate_style and not last_ok and cand_first:
         # Surname-first certs: Reyes, Kyle … or REYES KYLE … before canonicalize.
         last_ok = _fuzzy_name_token_match(last_tok, cand_first, [cand_first])
-    if certificate_style or len(exp_tokens) <= 2:
-        ok = first_ok and last_ok
-        if ok and ratio < 0.67:
+    # PH school documents often drop middle names or use initials — first + last is the anchor.
+    if first_ok and last_ok:
+        ok = True
+        if ratio < 0.50:
             ratio = max(ratio, round(2.0 / max(1, len(exp_tokens)), 2))
-        if certificate_style and first_ok and last_ok and ratio >= 0.50:
-            ok = True
     else:
-        ok = first_ok and last_ok and ratio >= 0.50
-        if len(exp_tokens) >= 3 and first_ok and last_ok and ratio >= 0.67:
-            ok = True
-    if not first_ok or not last_ok:
         ok = False
         if not first_ok and not last_ok:
             ratio = 0.0
@@ -5141,6 +5136,44 @@ def _distinctive_school_tokens(name: str) -> list[str]:
     return out
 
 
+# Minimum token overlap to treat a failed strict check as a partial pass (ok=true, low concern).
+_PARTIAL_FIELD_MATCH_MIN_RATIO: dict[str, float] = {
+    "name": 0.50,
+    "previous school": 0.67,
+    "strand / track": 0.35,
+}
+
+
+def _resolve_partial_field_ok(row: dict) -> dict:
+    """
+    When OCR/enrollment text is substantially the same but optional tokens differ
+    (middle names, SANTA/STA, strand abbreviations), mark the field as matched.
+    """
+    if row.get("ok") is not False:
+        return row
+    field = str(row.get("field") or "").strip().lower()
+    ratio = row.get("match_ratio")
+    if not isinstance(ratio, (int, float)):
+        return row
+    ratio_f = float(ratio)
+    min_ratio = _PARTIAL_FIELD_MATCH_MIN_RATIO.get(field)
+    if min_ratio is None or ratio_f < min_ratio:
+        return row
+    if field == "name":
+        missing = {str(t).upper() for t in (row.get("missing_tokens") or [])}
+        exp_tokens = _norm_simple_name_tokens(str(row.get("expected") or ""))
+        if exp_tokens:
+            first, last = exp_tokens[0].upper(), exp_tokens[-1].upper()
+            if first in missing or last in missing:
+                return row
+    row = dict(row)
+    row["ok"] = True
+    note = str(row.get("note") or "").strip()
+    partial_note = "Partial match — optional tokens differ (middle name, abbreviation, or OCR)."
+    row["note"] = f"{note} {partial_note}".strip() if note else partial_note
+    return row
+
+
 def _field_row_concern_pct(
     ok: bool | None,
     match_ratio: float | int | None,
@@ -5165,6 +5198,7 @@ def _field_row_concern_pct(
 
 
 def _finalize_field_check_concern(row: dict) -> dict:
+    row = _resolve_partial_field_ok(row)
     ok = row.get("ok")
     ok_flag = ok if ok is None or isinstance(ok, bool) else bool(ok)
     row["concern_pct"] = _field_row_concern_pct(
@@ -5246,9 +5280,11 @@ def _school_names_match_robust(expected: str, detected: str) -> tuple[bool, floa
     if len(exp_tokens) == 1:
         ok = len(hits) == 1
     elif len(exp_tokens) == 2:
-        ok = len(hits) >= 2
+        ok = len(hits) >= 1 and ratio >= 0.50
     else:
-        ok = len(hits) >= max(2, len(exp_tokens) - 1) and ratio >= 0.75
+        ok = (len(hits) >= max(2, len(exp_tokens) - 1) and ratio >= 0.67) or (
+            len(hits) >= max(1, len(exp_tokens) - 2) and ratio >= 0.75
+        )
     return ok, float(ratio), missing[:6]
 
 
@@ -7598,9 +7634,22 @@ def _evaluate(
                     best_hits = [t for t in exp_tokens if t in clean_full]
                     best_ratio = len(best_hits) / max(1, len(exp_tokens))
                 missing = [t for t in exp_tokens if t not in best_hits]
-                first_tok, last_tok = exp_tokens[0], exp_tokens[-1]
-                ok = first_tok in _strip_name_field_labels(u_full) and last_tok in _strip_name_field_labels(u_full) and best_ratio >= 0.67
-                return ok, float(best_ratio), missing[:6]
+                ok, ratio, missing, _hits = _name_tokens_match_robust(
+                    expected_name, _strip_name_field_labels(u_full), certificate_style=False
+                )
+                if not ok and u_lines:
+                    for ln in u_lines:
+                        if not ln or _name_line_is_noise(ln):
+                            continue
+                        clean = _strip_name_field_labels(ln)
+                        if not clean:
+                            continue
+                        ok_ln, ratio_ln, missing_ln, _ = _name_tokens_match_robust(
+                            expected_name, clean, certificate_style=False
+                        )
+                        if ratio_ln > ratio:
+                            ok, ratio, missing = ok_ln, ratio_ln, missing_ln
+                return ok, float(ratio), missing[:6]
 
             def name_match_good_moral(
                 expected_name: str,
