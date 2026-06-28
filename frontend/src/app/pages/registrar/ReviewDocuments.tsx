@@ -141,6 +141,9 @@ type AiVerifyResponse = {
   document_slot_mismatch?: boolean;
   document_slot_expected?: string;
   document_slot_detected?: string;
+  layout_recognition_warning?: boolean;
+  layout_recognition_note?: string;
+  refine_v?: number;
   v?: number;
   tamper_cells?: Array<{
     text: string;
@@ -351,7 +354,7 @@ function resolveApplicationVerifyFields(app: any) {
   };
 }
 
-const AI_VERIFY_PAYLOAD_VERSION = 49;
+const AI_VERIFY_PAYLOAD_VERSION = 50;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -425,6 +428,16 @@ function singleFieldCheckConcernPct(fc: FieldCheckRow): number {
     return Math.max(1, 100 - Math.round(fc.match_ratio * 100));
   }
   return 100;
+}
+
+function fieldCheckStatusLabel(c: EnrollmentCrossRow): string {
+  if (c.ok === null) {
+    return "unreadable on this layout";
+  }
+  if (String(c.field).toLowerCase() === "signature") {
+    return c.ok ? "detected on scan" : "not detected on scan";
+  }
+  return c.ok ? "match" : "mismatch";
 }
 
 function fieldCheckConcernLabel(fc: Pick<FieldCheckRow, "ok" | "match_ratio" | "concern_pct">): string {
@@ -2966,24 +2979,30 @@ export function ReviewDocuments() {
                       const raw = aiResultsByDocId[id];
                       const slotMsg = documentSlotMismatchMessage(raw);
                       const effective = resolveEffectiveDocType(selectedDocument, raw);
-                      if (!slotMsg) {
-                        if (raw?.resolved_doc_type && effective !== mapDocType(selectedDocument)) {
-                          return (
+                      const layoutNote = String(raw?.layout_recognition_note ?? "").trim();
+                      return (
+                        <>
+                          {slotMsg ? (
+                            <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">
+                              <p className="font-semibold">Wrong document in this slot</p>
+                              <p className="mt-1 text-xs leading-relaxed">{slotMsg}</p>
+                            </div>
+                          ) : null}
+                          {raw?.layout_recognition_warning && layoutNote ? (
+                            <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                              <p className="font-semibold">Different school form layout</p>
+                              <p className="mt-1 text-xs leading-relaxed">{layoutNote}</p>
+                            </div>
+                          ) : null}
+                          {!slotMsg && raw?.resolved_doc_type && effective !== mapDocType(selectedDocument) ? (
                             <p className="mb-2 text-xs text-gray-600">
                               Detected on scan:{" "}
                               <span className="font-medium text-gray-800">
                                 {docCheckShortTitle(effective)}
                               </span>
                             </p>
-                          );
-                        }
-                        return null;
-                      }
-                      return (
-                        <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-900">
-                          <p className="font-semibold">Wrong document in this slot</p>
-                          <p className="mt-1 text-xs leading-relaxed">{slotMsg}</p>
-                        </div>
+                          ) : null}
+                        </>
                       );
                     })()}
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -3580,17 +3599,9 @@ export function ReviewDocuments() {
                                         }
                                       >
                                         {" "}
-                                        {c.ok === null
-                                          ? "pending AI check"
-                                          : String(c.field).toLowerCase() === "signature"
-                                            ? c.ok
-                                              ? "detected on scan"
-                                              : "not detected on scan"
-                                            : c.ok
-                                              ? "match"
-                                              : "mismatch"}
+                                        {fieldCheckStatusLabel(c)}
                                         {" "}
-                                        · {fieldCheckConcernLabel(c)}
+                                        · {c.ok === null ? "manual review" : fieldCheckConcernLabel(c)}
                                       </span>
                                       <span className="block text-gray-600">
                                         Form: {String(c.expected).trim()}

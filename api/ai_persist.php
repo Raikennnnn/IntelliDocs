@@ -5,7 +5,7 @@ declare(strict_types=1);
  * Persist AI verification results on the documents row.
  */
 
-const AI_VERIFY_PAYLOAD_VERSION = 49;
+const AI_VERIFY_PAYLOAD_VERSION = 50;
 
 /**
  * Cached AI envelopes below the current version must be re-verified (signature/seal fixes, etc.).
@@ -20,7 +20,7 @@ function aiPersistedEnvelopeIsStale(?array $envelope): bool
         return true;
     }
 
-    if ($v < AI_VERIFY_PAYLOAD_VERSION) {
+    if ($v < 49) {
         return true;
     }
 
@@ -197,6 +197,9 @@ function buildPersistedAiVerifyEnvelope(array $result, ?string $fileFingerprint 
         'image_height' => $result['image_height'] ?? null,
         'requested_doc_type' => $result['requested_doc_type'] ?? null,
         'resolved_doc_type' => $result['resolved_doc_type'] ?? null,
+        'layout_recognition_warning' => $result['layout_recognition_warning'] ?? null,
+        'layout_recognition_note' => $result['layout_recognition_note'] ?? null,
+        'refine_v' => (int)($result['refine_v'] ?? 1),
     ];
     if ($fileFingerprint !== null && trim($fileFingerprint) !== '') {
         $envelope['file_fingerprint'] = trim($fileFingerprint);
@@ -407,6 +410,9 @@ function reconstructAiVerifyApiResult(array $envelope, ?float $aiScorePct, strin
         'image_height' => $envelope['image_height'] ?? null,
         'requested_doc_type' => $envelope['requested_doc_type'] ?? null,
         'resolved_doc_type' => $envelope['resolved_doc_type'] ?? null,
+        'layout_recognition_warning' => $envelope['layout_recognition_warning'] ?? null,
+        'layout_recognition_note' => $envelope['layout_recognition_note'] ?? null,
+        'refine_v' => (int)($envelope['refine_v'] ?? 0),
         '_cached' => true,
     ];
 }

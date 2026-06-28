@@ -19,6 +19,7 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 
 require_once __DIR__ . '/user_role.php';
 require_once __DIR__ . '/ai_persist.php';
+require_once __DIR__ . '/ai_verify_refine.php';
 require_once __DIR__ . '/enrollment_status_helpers.php';
 require_once __DIR__ . '/ai_http.php';
 
@@ -188,9 +189,21 @@ if (isset($row['ai_score']) && $row['ai_score'] !== '' && is_numeric($row['ai_sc
     $scorePct = (float)$row['ai_score'];
 }
 
+$expectedContext = aiRefineExpectedContextFromAuto([
+    'expected_name' => $expectedName,
+    'expected_lrn' => $expectedLrn,
+    'expected_sex' => $expectedSex,
+    'expected_school_year' => $expectedSchoolYear,
+    'expected_prev_school' => $expectedPrevSchool,
+    'expected_dob' => $expectedDob,
+    'expected_birth_place' => $expectedBirthPlace,
+]);
+
 if (documentHasPersistedAiArtifacts($aiStatusRaw, isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null, $row['ai_score'] ?? null)) {
     if (!$forceRerun && !aiPersistedEnvelopeIsStale($storedEnvelope)) {
         $cached = reconstructAiVerifyFromLockedRow($aiStatusRaw, $scorePct, $storedEnvelope);
+        $cached = refineAiVerifyResult($cached, $docType, $fullPath, $expectedContext);
+        $cached['v'] = AI_VERIFY_PAYLOAD_VERSION;
         echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
         exit;
     }
@@ -294,6 +307,7 @@ if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
 }
 
 $decoded = $aiRes['body'];
+$decoded = refineAiVerifyResult($decoded, $docType, $fullPath, $expectedContext);
 $decoded['v'] = AI_VERIFY_PAYLOAD_VERSION;
 
 try {

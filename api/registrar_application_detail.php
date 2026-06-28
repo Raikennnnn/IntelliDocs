@@ -16,6 +16,7 @@ require_once __DIR__ . '/enrollment_status_helpers.php';
 require_once __DIR__ . '/cohort_helpers.php';
 require_once __DIR__ . '/physical_docs_helpers.php';
 require_once __DIR__ . '/ai_persist.php';
+require_once __DIR__ . '/ai_verify_refine.php';
 
 ensureDocumentAiPersistenceSchema($pdo);
 
@@ -164,9 +165,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $hasDocDecision = columnExists($pdo, 'documents', 'registrar_doc_decision');
             $hasDocRemarks = columnExists($pdo, 'documents', 'registrar_doc_remarks');
             $hasAiSecurityJson = columnExists($pdo, 'documents', 'ai_security_json');
+            $hasFilePath = columnExists($pdo, 'documents', 'file_path');
 
             $selectType = $hasType ? 'type' : 'NULL AS type';
             $selectOriginalName = $hasOriginalName ? 'original_name' : 'NULL AS original_name';
+            $selectFilePath = $hasFilePath ? 'file_path' : 'NULL AS file_path';
             $selectAiStatus = $hasAiStatus ? 'ai_status' : '\'pending\' AS ai_status';
             $selectAiScore = $hasAiScore ? 'ai_score' : 'NULL AS ai_score';
             $selectUploadedAt = $hasUploadedAt ? 'uploaded_at' : 'NULL AS uploaded_at';
@@ -179,12 +182,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $selectAiSecurityJson = $hasAiSecurityJson ? 'ai_security_json' : 'NULL AS ai_security_json';
 
             if (columnExists($pdo, 'documents', 'enrollment_id')) {
-                $d = $pdo->prepare("SELECT id, {$selectType}, {$selectOriginalName}, {$selectAiStatus}, {$selectAiScore}, {$selectUploadedAt}, {$selectMime}, {$selectReviewed}, {$selectReviewedAt}, {$selectReviewedBy}, {$selectDecision}, {$selectDocRemarks}, {$selectAiSecurityJson} FROM documents WHERE enrollment_id = :eid ORDER BY id DESC");
+                $d = $pdo->prepare("SELECT id, {$selectType}, {$selectOriginalName}, {$selectFilePath}, {$selectAiStatus}, {$selectAiScore}, {$selectUploadedAt}, {$selectMime}, {$selectReviewed}, {$selectReviewedAt}, {$selectReviewedBy}, {$selectDecision}, {$selectDocRemarks}, {$selectAiSecurityJson} FROM documents WHERE enrollment_id = :eid ORDER BY id DESC");
                 $d->execute([':eid' => $enrollmentId]);
                 $docs = $d->fetchAll() ?: [];
             } elseif (tableExists($pdo, 'students') && columnExists($pdo, 'documents', 'student_id')) {
                 $d = $pdo->prepare('
-                    SELECT d.id, ' . $selectType . ', ' . $selectOriginalName . ', ' . $selectAiStatus . ', ' . $selectAiScore . ', ' . $selectUploadedAt . ', ' . $selectMime . ', ' . $selectReviewed . ', ' . $selectReviewedAt . ', ' . $selectReviewedBy . ', ' . $selectDecision . ', ' . $selectDocRemarks . ', ' . $selectAiSecurityJson . '
+                    SELECT d.id, ' . $selectType . ', ' . $selectOriginalName . ', ' . $selectFilePath . ', ' . $selectAiStatus . ', ' . $selectAiScore . ', ' . $selectUploadedAt . ', ' . $selectMime . ', ' . $selectReviewed . ', ' . $selectReviewedAt . ', ' . $selectReviewedBy . ', ' . $selectDecision . ', ' . $selectDocRemarks . ', ' . $selectAiSecurityJson . '
                     FROM students s
                     INNER JOIN documents d ON d.student_id = s.id
                     WHERE s.user_id = :uid
@@ -254,6 +257,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 $aiVerify = null;
                 if ($parsedEnvelope !== null && !aiPersistedEnvelopeIsStale($parsedEnvelope)) {
                     $aiVerify = reconstructAiVerifyApiResult($parsedEnvelope, $scoreFloat, $aiStatusRaw);
+                    $docTypeForAi = mapDocumentTypeForAi($typeLabel);
+                    $userContext = [
+                        'full_name' => (string)($row['full_name'] ?? ''),
+                        'first_name' => (string)($row['first_name'] ?? ''),
+                        'middle_name' => (string)($row['middle_name'] ?? ''),
+                        'last_name' => (string)($row['last_name'] ?? ''),
+                        'extension_name' => (string)($row['extension_name'] ?? ''),
+                    ];
+                    $enrollmentContext = [
+                        'grade_level' => (string)($row['grade_level'] ?? ''),
+                        'strand' => (string)($row['strand'] ?? ''),
+                    ];
+                    $autoExpected = buildAiExpectedVerifyFieldsForDocument($form, $docTypeForAi, $userContext, $enrollmentContext);
+                    $fullPath = aiRefineResolveDocumentPath((string)($doc['file_path'] ?? ''));
+                    $aiVerify = refineAiVerifyResult(
+                        $aiVerify,
+                        $docTypeForAi,
+                        $fullPath,
+                        aiRefineExpectedContextFromAuto($autoExpected)
+                    );
                 } elseif ($scoreFloat !== null && ($parsedEnvelope === null || aiPersistedEnvelopeIsStale($parsedEnvelope))) {
                     // Legacy score-only rows or stale envelopes — UI will re-run AI.
                     $aiVerify = null;
