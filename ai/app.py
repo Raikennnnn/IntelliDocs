@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 56
+AI_VERIFY_PAYLOAD_VERSION = 57
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -319,6 +319,65 @@ def _track_photo_duplicate(filepath: str, *, doc_type: str) -> dict | None:
     return {"duplicate": False, "hash": digest}
 
 
+def _photo_face_anomaly_flags(img, gray, face_bbox: dict | None) -> dict:
+    """
+    Detect partial face cover, blank patches, and left/right inconsistencies
+    common in edited or incomplete 2×2 ID photos.
+    """
+    out = {
+        "face_occluded": False,
+        "face_blank_patch": False,
+        "face_asymmetric": False,
+        "flat_patch_ratio": 0.0,
+    }
+    if not face_bbox:
+        return out
+    try:
+        import cv2
+        import numpy as np
+
+        x = int(face_bbox.get("x") or 0)
+        y = int(face_bbox.get("y") or 0)
+        w = int(face_bbox.get("w") or 0)
+        h = int(face_bbox.get("h") or 0)
+        if w < 20 or h < 20:
+            return out
+        face_gray = gray[y : y + h, x : x + w]
+        face_bgr = img[y : y + h, x : x + w]
+        if face_gray.size < 100:
+            return out
+
+        mid = max(1, w // 2)
+        left_std = float(np.std(face_gray[:, :mid]))
+        right_std = float(np.std(face_gray[:, mid:]))
+        if min(left_std, right_std) < 7.0 and max(left_std, right_std) > 18.0:
+            out["face_asymmetric"] = True
+            out["face_occluded"] = True
+
+        if face_bgr.ndim == 3:
+            white = (
+                (face_bgr[:, :, 0] >= 238)
+                & (face_bgr[:, :, 1] >= 238)
+                & (face_bgr[:, :, 2] >= 238)
+            )
+            flat_ratio = float(np.mean(white))
+            out["flat_patch_ratio"] = round(flat_ratio, 3)
+            if flat_ratio >= 0.10:
+                out["face_blank_patch"] = True
+                out["face_occluded"] = True
+
+        edges = cv2.Canny(face_gray, 40, 120)
+        left_e = float(np.mean(edges[:, :mid] > 0))
+        right_e = float(np.mean(edges[:, mid:] > 0))
+        peak_e = max(left_e, right_e)
+        if peak_e > 0.02 and min(left_e, right_e) / peak_e < 0.35:
+            out["face_asymmetric"] = True
+            out["face_occluded"] = True
+    except Exception:
+        pass
+    return out
+
+
 def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> dict:
     try:
         import cv2
@@ -371,6 +430,8 @@ def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> di
         background_edge_ratio = float(np.mean(bg_edges > 0)) if bg_edges.size else 0.0
         background_clutter = background_std > 36.0 and background_edge_ratio > 0.04
 
+        face_anomaly = _photo_face_anomaly_flags(img, gray, {"x": x, "y": y, "w": w, "h": h})
+
         return {
             "face_detected": True,
             "face_bbox": {"x": x, "y": y, "w": w, "h": h},
@@ -379,6 +440,8 @@ def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> di
             "background_std": background_std,
             "background_edge_ratio": background_edge_ratio,
             "background_clutter": background_clutter,
+            "face_anomaly": face_anomaly,
+            "face_occluded": bool(face_anomaly.get("face_occluded")),
         }
     except Exception:
         return {
@@ -455,6 +518,8 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
                 "face_center_offset": round(float(face_metrics.get("face_center_offset") or 1.0), 3),
                 "contrast": round(contrast, 2),
                 "background_clutter": bool(face_metrics.get("background_clutter")),
+                "face_occluded": bool(face_metrics.get("face_occluded")),
+                "face_anomaly": face_metrics.get("face_anomaly") or {},
             }
             if face_metrics.get("face_detected"):
                 if face_metrics.get("face_width_ratio", 0.0) < 0.14 or face_metrics.get("face_width_ratio", 0.0) > 0.52:
@@ -463,6 +528,11 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
                     issues.append("The face is not centered well in the frame. Reposition the head so it is centered.")
                 if face_metrics.get("background_clutter"):
                     issues.append("The background is too busy or textured. Use a plain light background.")
+                if face_metrics.get("face_occluded"):
+                    issues.append(
+                        "Part of the face appears covered, cropped, or digitally altered. "
+                        "Upload a clear, unedited 2×2 photo with the full face visible."
+                    )
             else:
                 warnings.append("Face detection could not confirm a clear portrait. Retake with the face fully visible.")
         else:
@@ -3895,14 +3965,26 @@ def _build_security_levels(
         high_risk = any(str(c.get("risk")) == "high" for c in cells) or any(
             str(f.get("risk")) == "high" for f in fields
         )
+        tamper_signals = list(payload.get("tamper_signals") or [])
+        edit_meta = any("edited with software" in (s or "").lower() for s in tamper_signals)
+        photo_occluded = bool((quality.get("photo_checks") or {}).get("face_occluded"))
+        if edit_meta:
+            tamper_score = min(float(tamper_score), 0.42)
         combined_integrity = min(_clamp01(tamper_score), _clamp01(syn_score))
         ai_pass = (
             tamper_score >= 0.50
             and syn_score >= 0.72
             and not (high_risk and combined_integrity < 0.65)
+            and not edit_meta
+            and not photo_occluded
         )
         ai_concern = _concern_display_score(ai_pass, int(round(combined_integrity * 100)))
-        ai_issues = (list(payload.get("tamper_signals") or []) + syn_signals)[:6]
+        ai_issues = (tamper_signals + syn_signals)[:6]
+        if photo_occluded:
+            ai_issues = (
+                ["Face area appears partially covered or inconsistently edited — review the portrait."]
+                + ai_issues
+            )[:6]
         if ai_pass:
             ai_summary = "AI tamper and synthetic check clear — 0% concern."
         else:
@@ -4798,13 +4880,7 @@ def _merge_localized_tamper_score(
     fields = fields or []
     merged = list(cells) + list(fields)
     if is_photo:
-        # Portrait guide box is informational only; do not penalize normal ID photos.
-        merged = [
-            x
-            for x in merged
-            if str(x.get("risk") or "").lower() in ("high", "warning")
-            and str(x.get("field") or "") not in ("Portrait", "REGION")
-        ]
+        merged = [x for x in merged if str(x.get("risk") or "").lower() in ("high", "warning")]
     if not merged:
         return s, []
 
@@ -10573,9 +10649,9 @@ def verify_doc():
                 pass
 
         if is_photo_verify and img_w and img_h:
-            photo_regions = _photo_integrity_regions(scan_path, img_w, img_h)
-            if photo_regions:
-                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + photo_regions
+            photo_tamper = _photo_portrait_tamper(scan_path, img_w, img_h)
+            if photo_tamper:
+                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + photo_tamper
 
         # Merge localized tamper hotspots into headline tamper_score (global-only check often stayed at 100%).
         cells_all = list(payload.get("tamper_cells") or [])
