@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 52
+AI_VERIFY_PAYLOAD_VERSION = 53
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -2375,6 +2375,59 @@ def _ocr_psa_sex_row_pass_on_image(ocr_path: str) -> tuple[str, list[dict], floa
         return "", [], 0.0
 
 
+def _ocr_upper_half_pass_on_image(
+    ocr_path: str,
+    *,
+    y_end_ratio: float = 0.50,
+) -> tuple[str, list[dict], float]:
+    """
+    High-quality OCR on the top half of the page (full width).
+    Primary source for identity fields: name, LRN, sex, date of birth.
+    """
+    if not _tesseract_available or not ocr_path:
+        return "", [], 0.0
+    try:
+        from PIL import Image
+    except ImportError:
+        return "", [], 0.0
+    try:
+        im = Image.open(ocr_path).convert("RGB")
+        w, h = im.size
+        x1 = 0
+        x2 = w
+        y1 = 0
+        y2 = max(1, int(h * max(0.35, min(0.55, float(y_end_ratio)))))
+        crop = im.crop((x1, y1, x2, y2))
+        zoom = 2 if max(crop.size) < 1600 else 1
+        if zoom > 1:
+            crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
+        texts: list[str] = []
+        confs: list[float] = []
+        all_boxes: list[dict] = []
+        for psm in (6, 4, 11):
+            t, c, boxes = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
+            if (t or "").strip():
+                texts.append(t.strip())
+                confs.append(float(c))
+            for b in boxes or []:
+                all_boxes.append(
+                    {
+                        "text": b["text"],
+                        "x": int(float(b["x"]) / zoom) + x1,
+                        "y": int(float(b["y"]) / zoom) + y1,
+                        "w": max(1, int(float(b["w"]) / zoom)),
+                        "h": max(1, int(float(b["h"]) / zoom)),
+                        "conf": b.get("conf"),
+                    }
+                )
+        merged = "\n".join(texts)
+        avg_conf = sum(confs) / len(confs) if confs else 0.0
+        return merged, all_boxes, avg_conf
+    except Exception as exc:
+        print(f"[IntelliDocs AI] Upper-half OCR failed: {exc}", flush=True)
+        return "", [], 0.0
+
+
 def _ocr_academic_full_page_pass_on_image(ocr_path: str) -> tuple[str, list[dict], float]:
     """Light OCR on the upper page when learner-band crops miss the name."""
     if not _tesseract_available or not ocr_path:
@@ -4460,6 +4513,7 @@ def _ocr_read_document(
         candidates.append((engine, label, text, conf, boxes))
 
     try:
+        upper_half_text = ""
         # Level 1 — primary
         if _ocr_primary == "easyocr" and _easyocr_available and _easyocr_reader is not None:
             t1, c1, b1 = _ocr_easyocr(ocr_path)
@@ -4519,10 +4573,25 @@ def _ocr_read_document(
                     except Exception as exc:
                         print(f"[IntelliDocs AI] OCR fallback ({tag}) failed: {exc}", flush=True)
 
+        _identity_doc_types = (
+            "birth_certificate",
+            "birthcert",
+            "sf9",
+            "report_card",
+            "sf10",
+            "form137",
+            "form157",
+            "good_moral",
+            "goodmoral",
+        )
+        if _normalize_doc_type_key(doc_type) in _identity_doc_types:
+            uh_text, uh_boxes, uh_conf = _ocr_upper_half_pass_on_image(ocr_path)
+            if (uh_text or "").strip():
+                _run(2, "tesseract", "upper_half", uh_text, uh_conf, uh_boxes)
+                upper_half_text = uh_text.strip()
+                best_text = f"{upper_half_text}\n{(best_text or '').strip()}".strip()
+
         if _normalize_doc_type_key(doc_type) in ("birth_certificate", "birthcert"):
-            child_text, child_boxes, child_conf = _ocr_psa_child_fields_pass_on_image(ocr_path)
-            if (child_text or "").strip():
-                _run(2, "tesseract", "psa_child_band", child_text, child_conf, child_boxes)
             sex_text, sex_boxes, sex_conf = _ocr_psa_sex_row_pass_on_image(ocr_path)
             if (sex_text or "").strip():
                 _run(2, "tesseract", "psa_sex_row", sex_text, sex_conf, sex_boxes)
@@ -4530,34 +4599,22 @@ def _ocr_read_document(
             header_extra = _ocr_birth_cert_header_text(ocr_path)
             if (header_extra or "").strip():
                 best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
-            if (child_text or "").strip():
-                best_text = f"{(best_text or '').strip()}\n{child_text.strip()}".strip()
 
         if _normalize_doc_type_key(doc_type) in ("sf9", "report_card", "sf10", "form137", "form157"):
-            band_text, band_boxes, band_conf = _ocr_academic_learner_band_pass_on_image(ocr_path)
-            if (band_text or "").strip():
-                _run(2, "tesseract", "academic_learner_band", band_text, band_conf, band_boxes)
-                best_text = f"{(best_text or '').strip()}\n{band_text.strip()}".strip()
-            if _normalize_doc_type_key(doc_type) in ("sf9", "report_card"):
-                center_text, center_boxes, center_conf = _ocr_sf9_center_header_pass_on_image(ocr_path)
-                if (center_text or "").strip():
-                    _run(2, "tesseract", "sf9_center_header", center_text, center_conf, center_boxes)
-                    best_text = f"{(best_text or '').strip()}\n{center_text.strip()}".strip()
-            full_text, full_boxes, full_conf = _ocr_academic_full_page_pass_on_image(ocr_path)
-            if (full_text or "").strip():
-                _run(2, "tesseract", "academic_full_page", full_text, full_conf, full_boxes)
-                best_text = f"{(best_text or '').strip()}\n{full_text.strip()}".strip()
+            if not upper_half_text:
+                band_text, band_boxes, band_conf = _ocr_academic_learner_band_pass_on_image(ocr_path)
+                if (band_text or "").strip():
+                    _run(2, "tesseract", "academic_learner_band", band_text, band_conf, band_boxes)
+                    best_text = f"{(best_text or '').strip()}\n{band_text.strip()}".strip()
 
         if _ocr_merge_results(doc_type) and len(candidates) > 1:
             best_text, best_conf, best_boxes, best_label = _ocr_merge_candidates(candidates, doc_type)
 
         for _eng, label, _txt, _conf, box_pool in candidates:
             if label in (
-                "psa_child_band",
+                "upper_half",
                 "psa_sex_row",
                 "academic_learner_band",
-                "academic_full_page",
-                "sf9_center_header",
             ) and box_pool:
                 best_boxes = _ocr_merge_box_pools(best_boxes, box_pool)
 
@@ -4576,6 +4633,7 @@ def _ocr_read_document(
             "ocr_scale": round(float(ocr_scale), 4),
             "original_width": orig_w or None,
             "original_height": orig_h or None,
+            "upper_half_text": upper_half_text or None,
         }
         return best_text, best_conf, best_boxes, meta
     finally:
@@ -6624,6 +6682,7 @@ def _evaluate(
     expected: dict | None = None,
     filepath: str | None = None,
     img_w: int | None = None,
+    upper_half_text: str | None = None,
 ) -> dict:
     def clamp01(x: float) -> float:
         return max(0.0, min(1.0, float(x)))
@@ -6920,6 +6979,16 @@ def _evaluate(
             raw_lines = [x for x in (text or "").splitlines() if (x or "").strip()]
             norm_lines = [normalize(x) for x in raw_lines]
             simple_lines = [norm_simple(x) for x in raw_lines]
+
+            identity_blob = (upper_half_text or "").strip()
+            if identity_blob:
+                identity_raw_lines = [x for x in identity_blob.splitlines() if (x or "").strip()]
+                identity_norm_lines = [normalize(x) for x in identity_raw_lines]
+                identity_simple_lines = [norm_simple(x) for x in identity_raw_lines]
+            else:
+                identity_raw_lines = raw_lines
+                identity_norm_lines = norm_lines
+                identity_simple_lines = simple_lines
 
             _LOCATION_STOPWORDS = {
                 "CITY", "PROVINCE", "MUNICIPALITY", "MUNICIPAL", "BARANGAY", "BRGY",
@@ -9388,12 +9457,14 @@ def _evaluate(
                 name_bbox: dict | None = None
                 if _birth_doc:
                     ok_name, ratio, missing, detected_name, name_bbox = name_match_birth_certificate(
-                        exp_name, simple_lines, norm_lines, normed_boxes, img_h
+                        exp_name, identity_simple_lines, identity_norm_lines, normed_boxes, img_h
                     )
                     if not detected_name or _psa_child_name_line_noise(detected_name):
-                        fallback = _best_psa_child_name_line(simple_lines, norm_lines, exp_name)
+                        fallback = _best_psa_child_name_line(
+                            identity_simple_lines, identity_norm_lines, exp_name
+                        )
                         if not fallback:
-                            fallback = _best_psa_child_name_line(simple_lines, norm_lines, "")
+                            fallback = _best_psa_child_name_line(identity_simple_lines, identity_norm_lines, "")
                         if fallback:
                             detected_name = fallback
                             ok_name, ratio, missing, _hits = _name_tokens_match_robust(
@@ -9417,19 +9488,23 @@ def _evaluate(
                         ok_name, ratio, missing = ok_n, ratio_n, missing_n
                         return bool(detected_name)
 
-                    header_line_cap = max(24, int(len(simple_lines or []) * 0.42))
-                    header_lines = (simple_lines or [])[:header_line_cap]
+                    header_line_cap = max(24, len(identity_simple_lines or []))
+                    header_lines = identity_simple_lines or []
 
-                    full_name = _extract_academic_name_from_full_text(norm_text, exp_name)
+                    full_name = _extract_academic_name_from_full_text(
+                        identity_blob or norm_text, exp_name
+                    )
                     if not _apply_academic_name_candidate(full_name):
                         box_name, name_bbox = _detect_name_from_boxes(
                             normed_boxes, doc_kind=doc_kind, image_h=img_h, expected_name=exp_name
                         )
                         if not _apply_academic_name_candidate(box_name):
-                            line_name = _extract_academic_name_from_labeled_text(norm_text)
+                            line_name = _extract_academic_name_from_labeled_text(identity_blob or norm_text)
                             if not _apply_academic_name_candidate(line_name):
                                 if doc_kind in ("sf9", "report_card"):
-                                    line_name = _extract_sf9_name_from_lines(header_lines, norm_lines)
+                                    line_name = _extract_sf9_name_from_lines(
+                                        header_lines, identity_norm_lines
+                                    )
                                     if not _apply_academic_name_candidate(line_name):
                                         for ln in header_lines:
                                             if "," not in (ln or ""):
@@ -9478,7 +9553,7 @@ def _evaluate(
                         ok_name = False
                 elif _moral_doc:
                     ok_name, ratio, missing, detected_name, name_bbox = name_match_good_moral(
-                        exp_name, simple_lines, norm_lines, normed_boxes, img_h
+                        exp_name, identity_simple_lines, identity_norm_lines, normed_boxes, img_h
                     )
                 else:
                     ok_name, ratio, missing = name_match(exp_name, norm_text, simple_lines)
@@ -9572,7 +9647,12 @@ def _evaluate(
                     penalize(0.18)
 
             if run_sex_check and exp_sex:
-                sm, detected_sex, detected_sex_box = sex_match(exp_sex, text, norm_text, boxes)
+                sm, detected_sex, detected_sex_box = sex_match(
+                    exp_sex,
+                    identity_blob or text,
+                    identity_norm_lines if identity_blob else norm_text,
+                    boxes,
+                )
                 if sm is None:
                     row = {
                         "field": "Sex",
@@ -9789,9 +9869,10 @@ def _evaluate(
             # supported on any doc that has those labels).
             # -----------------------------------------------------------
             if run_dob_check and exp_dob:
-                dob_ok, dob_detected = _match_expected_dob_in_lines(exp_dob, norm_lines)
+                dob_lines = identity_norm_lines if identity_blob else norm_lines
+                dob_ok, dob_detected = _match_expected_dob_in_lines(exp_dob, dob_lines)
                 if not dob_detected:
-                    dob_detected = _extract_birth_date_snippet_from_lines(norm_lines)
+                    dob_detected = _extract_birth_date_snippet_from_lines(dob_lines)
                 row = {
                     "field": "Date of birth",
                     "expected": exp_dob,
@@ -10174,6 +10255,7 @@ def verify_doc():
             expected=expected,
             filepath=scan_path,
             img_w=img_w,
+            upper_half_text=str(ocr_meta.get("upper_half_text") or "") or None,
         )
         payload["ocr_engine"] = ocr_meta.get("engine")
         payload["ocr_primary"] = ocr_meta.get("primary_engine")
