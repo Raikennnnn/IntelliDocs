@@ -136,7 +136,10 @@ function aiRefineFieldChecksForTemplate(array $fieldChecks, float $ocrConfidence
             if ($garbage || ($overlap < 0.2 && $lowRead)) {
                 $row['ok'] = null;
                 $row['detected'] = $detected !== '' ? $detected : 'Unreadable on this layout';
-                $row['note'] = 'Different school form layout or unclear scan — compare the preview manually.';
+                $row['note'] = match ($fieldKey) {
+                    'name', 'sex', 'date of birth', 'place of birth' => 'Unclear scan — identity field not readable enough to compare.',
+                    default => 'Different school form layout or unclear scan — compare the preview manually.',
+                };
                 $row['refined_reason'] = 'template_unreadable';
                 unset($row['x'], $row['y'], $row['w'], $row['h'], $row['concern_pct']);
                 $uncertainCount++;
@@ -409,7 +412,11 @@ function refineAiVerifyResult(array $result, string $docType, ?string $imagePath
         $result['field_checks'] = $checks;
 
         if ($uncertainCount > 0) {
-            $note = 'Some fields could not be read on this school\'s form layout. Compare the preview manually or request a clearer upload.';
+            $note = match ($dt) {
+                'birth_certificate' => 'Some identity fields could not be read on this scan (OCR readability is low). Compare the preview manually or ask for a clearer photo.',
+                'good_moral' => 'Some certificate fields could not be read on this school\'s layout or scan. Compare the preview manually or request a clearer upload.',
+                default => 'Some fields could not be read on this school\'s form layout. Compare the preview manually or request a clearer upload.',
+            };
             $result['layout_recognition_warning'] = true;
             $result['layout_recognition_note'] = $note;
             $issues = is_array($result['issues'] ?? null) ? $result['issues'] : [];

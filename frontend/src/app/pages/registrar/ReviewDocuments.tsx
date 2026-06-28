@@ -2990,7 +2990,11 @@ export function ReviewDocuments() {
                           ) : null}
                           {raw?.layout_recognition_warning && layoutNote ? (
                             <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-                              <p className="font-semibold">Different school form layout</p>
+                              <p className="font-semibold">
+                                {effective === "birth_certificate"
+                                  ? "Scan hard to read"
+                                  : "Different school form layout"}
+                              </p>
                               <p className="mt-1 text-xs leading-relaxed">{layoutNote}</p>
                             </div>
                           ) : null}
