@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 54
+AI_VERIFY_PAYLOAD_VERSION = 55
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -258,6 +258,10 @@ def _normalize_doc_type_key(doc_type: str) -> str:
 def _ocr_priority_doc(doc_type: str) -> bool:
     """All document scans except ID photos use multi-pass OCR + merge."""
     return _normalize_doc_type_key(doc_type) not in PHOTO_DOC_TYPES
+
+
+def _is_psa_birth_doc(doc_type: str) -> bool:
+    return _normalize_doc_type_key(doc_type) in ("birth_certificate", "birthcert")
 
 
 def _ocr_merge_results(doc_type: str) -> bool:
@@ -2270,7 +2274,7 @@ def _ocr_psa_child_fields_pass_on_image(ocr_path: str) -> tuple[str, list[dict],
         texts: list[str] = []
         confs: list[float] = []
         all_boxes: list[dict] = []
-        for psm in (4, 6, 11):
+        for psm in (6, 4):
             t, c, boxes = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
             if (t or "").strip():
                 texts.append(t.strip())
@@ -2361,7 +2365,7 @@ def _ocr_psa_sex_row_pass_on_image(ocr_path: str) -> tuple[str, list[dict], floa
         texts: list[str] = []
         confs: list[float] = []
         all_boxes: list[dict] = []
-        for psm in (6, 4, 11):
+        for psm in (6, 4):
             t, c, boxes = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
             if (t or "").strip():
                 texts.append(t.strip())
@@ -4525,6 +4529,8 @@ def _ocr_read_document(
 
     try:
         upper_half_text = ""
+        dt_key = _normalize_doc_type_key(doc_type)
+        _is_psa = _is_psa_birth_doc(doc_type)
         # Level 1 — primary
         if _ocr_primary == "easyocr" and _easyocr_available and _easyocr_reader is not None:
             t1, c1, b1 = _ocr_easyocr(ocr_path)
@@ -4542,7 +4548,10 @@ def _ocr_read_document(
         best_engine, best_label, best_text, best_conf, best_boxes = best
 
         _priority_doc = _ocr_priority_doc(doc_type)
-        needs_enhanced = _ocr_needs_fallback(best_text, best_conf, doc_type) or _priority_doc
+        # PSA: skip full-page multi-PSM passes — focused child/sex bands are faster and more accurate.
+        needs_enhanced = _ocr_needs_fallback(best_text, best_conf, doc_type) or (
+            _priority_doc and not _is_psa
+        )
 
         if needs_enhanced:
             from PIL import Image
@@ -4551,7 +4560,12 @@ def _ocr_read_document(
             if _tesseract_available:
                 try:
                     base = Image.open(ocr_path)
-                    for psm, tag in ((6, "tesseract_enhanced_psm6"), (11, "tesseract_enhanced_psm11"), (4, "tesseract_enhanced_psm4")):
+                    psms = ((6, "tesseract_enhanced_psm6"),) if _is_psa else (
+                        (6, "tesseract_enhanced_psm6"),
+                        (11, "tesseract_enhanced_psm11"),
+                        (4, "tesseract_enhanced_psm4"),
+                    )
+                    for psm, tag in psms:
                         t2, c2, b2 = _ocr_tesseract_image(base, psm=psm, enhanced=True)
                         _run(level, "tesseract", tag, t2, c2, b2)
                         level += 1
@@ -4560,11 +4574,13 @@ def _ocr_read_document(
                             best_engine, best_label, best_text, best_conf, best_boxes = cand
                         if not _priority_doc and not _ocr_needs_fallback(best_text, best_conf, doc_type):
                             break
+                        if _is_psa:
+                            break
                 except Exception as exc:
                     print(f"[IntelliDocs AI] Enhanced Tesseract fallback failed: {exc}", flush=True)
 
-            # Level 3 — secondary engine
-            if _ocr_needs_fallback(best_text, best_conf, doc_type):
+            # Level 3 — secondary engine (skip for PSA — child-band OCR covers identity fields)
+            if _ocr_needs_fallback(best_text, best_conf, doc_type) and not _is_psa:
                 secondary: list[tuple[str, str, object]] = []
                 if best_engine != "easyocr" and _ensure_easyocr_loaded():
                     secondary.append(("easyocr", "easyocr_fallback", lambda: _ocr_easyocr(ocr_path)))
@@ -4596,13 +4612,7 @@ def _ocr_read_document(
             "goodmoral",
         )
         identity_chunks: list[str] = []
-        if _normalize_doc_type_key(doc_type) in _identity_doc_types:
-            uh_text, uh_boxes, uh_conf = _ocr_upper_half_pass_on_image(ocr_path, y_end_ratio=0.58)
-            if (uh_text or "").strip():
-                _run(2, "tesseract", "upper_half", uh_text, uh_conf, uh_boxes)
-                identity_chunks.append(uh_text.strip())
-
-        if _normalize_doc_type_key(doc_type) in ("birth_certificate", "birthcert"):
+        if _is_psa:
             child_text, child_boxes, child_conf = _ocr_psa_child_fields_pass_on_image(ocr_path)
             if (child_text or "").strip():
                 _run(2, "tesseract", "psa_child_band", child_text, child_conf, child_boxes)
@@ -4611,10 +4621,14 @@ def _ocr_read_document(
             if (sex_text or "").strip():
                 _run(2, "tesseract", "psa_sex_row", sex_text, sex_conf, sex_boxes)
                 identity_chunks.append(sex_text.strip())
-                best_text = f"{(best_text or '').strip()}\n{sex_text.strip()}".strip()
-            header_extra = _ocr_birth_cert_header_text(ocr_path)
-            if (header_extra or "").strip():
-                best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
+            upper_half_text = "\n".join(identity_chunks).strip()
+            if upper_half_text:
+                best_text = f"{upper_half_text}\n{(best_text or '').strip()}".strip()
+        elif dt_key in _identity_doc_types:
+            uh_text, uh_boxes, uh_conf = _ocr_upper_half_pass_on_image(ocr_path, y_end_ratio=0.58)
+            if (uh_text or "").strip():
+                _run(2, "tesseract", "upper_half", uh_text, uh_conf, uh_boxes)
+                identity_chunks.append(uh_text.strip())
 
         if _normalize_doc_type_key(doc_type) in ("sf9", "report_card"):
             center_text, center_boxes, center_conf = _ocr_sf9_center_header_pass_on_image(ocr_path)
@@ -4622,7 +4636,7 @@ def _ocr_read_document(
                 _run(2, "tesseract", "center_name_lane", center_text, center_conf, center_boxes)
                 identity_chunks.append(center_text.strip())
 
-        if _normalize_doc_type_key(doc_type) in _identity_doc_types:
+        if dt_key in _identity_doc_types and not _is_psa:
             upper_half_text = "\n".join(identity_chunks).strip()
             if upper_half_text:
                 best_text = f"{upper_half_text}\n{(best_text or '').strip()}".strip()
@@ -5204,6 +5218,16 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
     if not lines:
         return None
     child_pool = lines[: max(8, int(len(lines) * 0.48))]
+    sex_focus = [
+        ln
+        for ln in lines
+        if re.search(r"\bSEX\b", (ln or "").upper())
+        or (
+            re.search(r"\b[12]\b", (ln or "").upper())
+            and ("MALE" in (ln or "").upper() or "FEMALE" in (ln or "").upper())
+        )
+    ]
+    tail_pool = lines[max(0, len(lines) - 24) :]
 
     def _psa_sex_on_line(ln: str) -> str | None:
         u = (ln or "").upper()
@@ -5266,18 +5290,32 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
             if re.search(r"\b1\b", window) and "MALE" in u[pos : pos + 32]:
                 if not fem or abs(pos - mal.start()) < abs(pos - fem.start()):
                     return "MALE"
-        # Template line with only one gender word listed.
+        # Template line with only one gender word — require checkbox mark or SEX field context.
         if fem and not mal:
-            return "FEMALE"
+            if re.search(r"[X✓V]", u) or (re.search(r"\b2\b", u) and "SEX" in u):
+                return "FEMALE"
         if mal and not fem:
-            return "MALE"
+            if re.search(r"[X✓V]", u) or (re.search(r"\b1\b", u) and "SEX" in u):
+                return "MALE"
         return None
 
-    for ln in child_pool:
-        hit = _psa_sex_on_line(ln)
-        if hit:
-            return hit
-    return _psa_sex_on_line(" ".join(child_pool))
+    search_pools = [sex_focus, child_pool, tail_pool]
+    seen: set[str] = set()
+    for pool in search_pools:
+        for ln in pool:
+            if ln in seen:
+                continue
+            seen.add(ln)
+            hit = _psa_sex_on_line(ln)
+            if hit:
+                return hit
+    for pool in search_pools:
+        compact = " ".join(pool[:8]).strip()
+        if compact:
+            hit = _psa_sex_on_line(compact)
+            if hit:
+                return hit
+    return None
 
 
 def _name_looks_like_address_or_place(name: str) -> bool:
@@ -9307,13 +9345,31 @@ def _evaluate(
                 if doc_type in ("birth_certificate", "birthcert"):
                     try:
                         lines = [ln for ln in (raw_text or "").splitlines() if (ln or "").strip()]
+                        sex_lines = [
+                            ln
+                            for ln in lines
+                            if "SEX" in (ln or "").upper()
+                            or (
+                                re.search(r"\b[12]\b", (ln or "").upper())
+                                and (
+                                    "MALE" in (ln or "").upper()
+                                    or "FEMALE" in (ln or "").upper()
+                                )
+                            )
+                        ]
+                        chunks = []
+                        if sex_lines:
+                            chunks.append("\n".join(sex_lines[:10]))
                         upper_n = max(10, int(len(lines) * 0.55))
-                        line_text = "\n".join(lines[:upper_n])
+                        chunks.append("\n".join(lines[:upper_n]))
+                        if len(lines) > upper_n:
+                            chunks.append("\n".join(lines[-24:]))
                     except Exception:
-                        line_text = raw_text
-                    psa_sex = _detect_psa_child_sex_from_text(line_text)
-                    if psa_sex:
-                        return (psa_sex == exp), psa_sex, None
+                        chunks = [raw_text or ""]
+                    for chunk in chunks:
+                        psa_sex = _detect_psa_child_sex_from_text(chunk)
+                        if psa_sex:
+                            return (psa_sex == exp), psa_sex, None
                     return None, "", None
                 line_detected = _detect_sex_from_lines(line_text)
                 detected, bbox = _detect_sex_from_boxes(ocr_boxes)
