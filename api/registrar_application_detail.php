@@ -16,6 +16,7 @@ require_once __DIR__ . '/enrollment_status_helpers.php';
 require_once __DIR__ . '/cohort_helpers.php';
 require_once __DIR__ . '/physical_docs_helpers.php';
 require_once __DIR__ . '/ai_persist.php';
+require_once __DIR__ . '/ai_http.php';
 require_once __DIR__ . '/ai_verify_refine.php';
 
 ensureDocumentAiPersistenceSchema($pdo);
