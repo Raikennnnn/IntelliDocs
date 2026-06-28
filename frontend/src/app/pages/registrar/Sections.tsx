@@ -520,20 +520,18 @@ function sectionOptionLabel(section: Section, includeStrand: boolean): string {
   return includeStrand ? `${section.strand} · ${base}` : base;
 }
 
-function buildSectionsSchoolYearQuery(
-  filter: "current" | "ongoing" | string,
-  enrollmentSchoolYearLabel: string | null,
-): string {
+type RosterYearFilter = "ongoing" | "enrollment" | "all" | string;
+
+function rosterYearFilterToApiParam(filter: RosterYearFilter): string {
+  if (filter === "ongoing") return "ongoing";
+  if (filter === "enrollment" || filter === "current") return "enrollment";
+  if (filter === "all") return "all";
+  return filter;
+}
+
+function buildSectionsSchoolYearQuery(filter: RosterYearFilter): string {
   const params = new URLSearchParams();
-  if (filter === "current") {
-    if (enrollmentSchoolYearLabel) {
-      params.set("school_year", "current");
-    }
-  } else if (filter === "ongoing") {
-    params.set("school_year", "ongoing");
-  } else {
-    params.set("school_year", filter);
-  }
+  params.set("school_year", rosterYearFilterToApiParam(filter));
   const qs = params.toString();
   return qs ? `?${qs}` : "";
 }
@@ -653,11 +651,9 @@ export function Sections() {
   const [rosterSchoolYearEnded, setRosterSchoolYearEnded] = useState(false);
   const [grade12DeclineSchoolYear, setGrade12DeclineSchoolYear] = useState<string | null>(null);
 
-  const { enrollmentSchoolYearLabel, ongoingSchoolYearLabel, endedSchoolYears, settingsLoaded } =
+  const { enrollmentSchoolYearLabel, ongoingSchoolYearLabel, endedSchoolYears } =
     useSchoolYear();
-  const [enrollmentYearFilter, setEnrollmentYearFilter] = useState<"current" | "ongoing" | string>(
-    "current",
-  );
+  const [rosterYearFilter, setRosterYearFilter] = useState<RosterYearFilter>("ongoing");
   const [apiSchoolYearOptions, setApiSchoolYearOptions] = useState<string[]>([]);
   const [apiEndedSchoolYears, setApiEndedSchoolYears] = useState<string[]>([]);
   const [gradeFilter, setGradeFilter] = useState<"all" | SectionGradeLevel>("all");
@@ -665,34 +661,45 @@ export function Sections() {
   const [sectionFilter, setSectionFilter] = useState<string>("all");
 
   const schoolYearQuery = useMemo(
-    () => buildSectionsSchoolYearQuery(enrollmentYearFilter, enrollmentSchoolYearLabel),
-    [enrollmentYearFilter, enrollmentSchoolYearLabel],
+    () => buildSectionsSchoolYearQuery(rosterYearFilter),
+    [rosterYearFilter],
   );
 
-  const appliedEnrollmentYearLabel = useMemo(() => {
-    if (enrollmentYearFilter === "ongoing") {
+  const appliedRosterYearLabel = useMemo(() => {
+    if (rosterYearFilter === "ongoing") {
       return ongoingSchoolYearLabel
-        ? `SY ${ongoingSchoolYearLabel} (ongoing)`
+        ? `SY ${ongoingSchoolYearLabel} — current classes`
         : "Ongoing school year";
     }
-    if (enrollmentYearFilter === "current") {
+    if (rosterYearFilter === "enrollment" || rosterYearFilter === "current") {
       return enrollmentSchoolYearLabel
-        ? `SY ${enrollmentSchoolYearLabel} (active enrollment)`
-        : "Active enrollment year";
+        ? `SY ${enrollmentSchoolYearLabel} — new applicants`
+        : "Open enrollment year";
     }
-    return `SY ${enrollmentYearFilter}`;
-  }, [enrollmentYearFilter, enrollmentSchoolYearLabel, ongoingSchoolYearLabel]);
+    if (rosterYearFilter === "all") {
+      return "All school years";
+    }
+    return `SY ${rosterYearFilter}`;
+  }, [rosterYearFilter, enrollmentSchoolYearLabel, ongoingSchoolYearLabel]);
 
-  /** Resolved YYYY-YYYY sent to the sections roster API. */
-  const resolvedEnrollmentSchoolYear = useMemo(() => {
-    if (enrollmentYearFilter === "ongoing") {
+  /** Resolved YYYY-YYYY label for the roster filter (empty when showing all years). */
+  const resolvedRosterSchoolYear = useMemo(() => {
+    if (rosterYearFilter === "ongoing") {
       return ongoingSchoolYearLabel ?? "";
     }
-    if (enrollmentYearFilter === "current") {
+    if (rosterYearFilter === "enrollment" || rosterYearFilter === "current") {
       return enrollmentSchoolYearLabel ?? "";
     }
-    return enrollmentYearFilter;
-  }, [enrollmentYearFilter, enrollmentSchoolYearLabel, ongoingSchoolYearLabel]);
+    if (rosterYearFilter === "all") {
+      return "";
+    }
+    return rosterYearFilter;
+  }, [rosterYearFilter, enrollmentSchoolYearLabel, ongoingSchoolYearLabel]);
+
+  const ongoingDiffersFromEnrollment =
+    Boolean(ongoingSchoolYearLabel) &&
+    Boolean(enrollmentSchoolYearLabel) &&
+    ongoingSchoolYearLabel !== enrollmentSchoolYearLabel;
 
   const effectiveEndedSchoolYears =
     apiEndedSchoolYears.length > 0 ? apiEndedSchoolYears : endedSchoolYears;
@@ -709,14 +716,6 @@ export function Sections() {
     enrollmentSchoolYearLabel,
     effectiveEndedSchoolYears,
   ]);
-
-  useEffect(() => {
-    if (!settingsLoaded) return;
-    setEnrollmentYearFilter((prev) => {
-      if (prev !== "current") return prev;
-      return ongoingSchoolYearLabel ? "ongoing" : "current";
-    });
-  }, [settingsLoaded, ongoingSchoolYearLabel]);
 
   const loadSections = useCallback(async () => {
     setLoading(true);
@@ -857,21 +856,15 @@ export function Sections() {
     setRosterError(null);
     setRosterStudents([]);
     setRosterArchived(false);
-    setRosterSchoolYear(resolvedEnrollmentSchoolYear);
+    setRosterSchoolYear(resolvedRosterSchoolYear);
     setRosterSchoolYearEnded(
-      resolvedEnrollmentSchoolYear !== "" &&
-        effectiveEndedSchoolYears.includes(resolvedEnrollmentSchoolYear),
+      resolvedRosterSchoolYear !== "" &&
+        effectiveEndedSchoolYears.includes(resolvedRosterSchoolYear),
     );
     setGrade12DeclineSchoolYear(null);
     try {
       const rosterQuery = new URLSearchParams({ section_id: String(section.id) });
-      if (enrollmentYearFilter === "current") {
-        if (enrollmentSchoolYearLabel) {
-          rosterQuery.set("school_year", "current");
-        }
-      } else {
-        rosterQuery.set("school_year", enrollmentYearFilter);
-      }
+      rosterQuery.set("school_year", rosterYearFilterToApiParam(rosterYearFilter));
       const res = await apiFetch(`/api/registrar/sections?${rosterQuery.toString()}`);
       const text = await res.text();
       let json: SectionRosterResponse | { success: false; error?: string } = {
@@ -895,7 +888,7 @@ export function Sections() {
       const list = Array.isArray(json.students) ? json.students : [];
       setRosterStudents(list);
       const sy =
-        resolvedEnrollmentSchoolYear ||
+        resolvedRosterSchoolYear ||
         (json.rosterSchoolYear ?? json.section?.rosterSchoolYear ?? "").trim() ||
         (() => {
           const counts = new Map<string, number>();
@@ -915,8 +908,8 @@ export function Sections() {
         })();
       setRosterSchoolYear(sy);
       const yearEnded =
-        resolvedEnrollmentSchoolYear !== ""
-          ? effectiveEndedSchoolYears.includes(resolvedEnrollmentSchoolYear)
+        resolvedRosterSchoolYear !== ""
+          ? effectiveEndedSchoolYears.includes(resolvedRosterSchoolYear)
           : Boolean(
               json.rosterSchoolYearEnded ??
                 json.section?.rosterSchoolYearEnded ??
@@ -1035,30 +1028,31 @@ export function Sections() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="min-w-0">
             <label
-              htmlFor="sections-enrollment-year"
+              htmlFor="sections-roster-year"
               className="text-xs font-medium text-gray-600 mb-1.5 flex items-center gap-1.5"
             >
               <Calendar className="w-3.5 h-3.5" />
-              School year
+              Roster school year
             </label>
             <select
-              id="sections-enrollment-year"
-              value={enrollmentYearFilter}
-              onChange={(e) => setEnrollmentYearFilter(e.target.value)}
+              id="sections-roster-year"
+              value={rosterYearFilter}
+              onChange={(e) => setRosterYearFilter(e.target.value)}
               className="w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
             >
               {ongoingSchoolYearLabel && (
                 <option value="ongoing">
-                  Ongoing ({ongoingSchoolYearLabel})
+                  Current classes — ongoing ({ongoingSchoolYearLabel})
                 </option>
               )}
               {enrollmentSchoolYearLabel && (
-                <option value="current">
-                  Active enrollment ({enrollmentSchoolYearLabel})
+                <option value="enrollment">
+                  New applicants — enrollment ({enrollmentSchoolYearLabel})
                 </option>
               )}
+              <option value="all">All school years (combined)</option>
               {!enrollmentSchoolYearLabel && !ongoingSchoolYearLabel && (
-                <option value="current">Current school year</option>
+                <option value="ongoing">Current school year</option>
               )}
               {schoolYearOptions
                 .filter(
@@ -1073,6 +1067,9 @@ export function Sections() {
                 </option>
               ))}
             </select>
+            <p className="text-[11px] text-gray-500 mt-1 leading-snug">
+              Counts students whose enrollment record matches this school year.
+            </p>
           </div>
           <div className="min-w-0">
             <label
@@ -1142,7 +1139,7 @@ export function Sections() {
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t border-gray-100">
           <p className="text-xs text-gray-500">
-            Sectioning · {appliedEnrollmentYearLabel}
+            Sectioning · {appliedRosterYearLabel}
             {filteredSections.length !== sections.length
               ? ` · Showing ${filteredSections.length} of ${sections.length} sections`
               : sections.length > 0
@@ -1171,6 +1168,27 @@ export function Sections() {
         <Alert className="border-red-300 bg-red-50">
           <AlertCircle className="h-4 w-4 text-red-700" />
           <AlertDescription className="text-red-900">{error}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {ongoingDiffersFromEnrollment ? (
+        <Alert className="border-violet-200 bg-violet-50">
+          <Info className="h-4 w-4 text-violet-700" />
+          <AlertDescription className="text-violet-900 space-y-1">
+            <div>
+              <span className="font-semibold">Ongoing ({ongoingSchoolYearLabel})</span> is the
+              current academic year — use this to see students already in class.
+            </div>
+            <div>
+              <span className="font-semibold">Enrollment ({enrollmentSchoolYearLabel})</span> is the
+              year accepting new applications — use this to see newly approved students for that
+              intake only.
+            </div>
+            <div className="text-sm">
+              Section counts follow the <span className="font-semibold">Roster school year</span>{" "}
+              filter above, not the open-enrollment setting on its own.
+            </div>
+          </AlertDescription>
         </Alert>
       ) : null}
 

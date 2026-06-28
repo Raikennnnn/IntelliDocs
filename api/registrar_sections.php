@@ -219,19 +219,24 @@ function normaliseStrand(string $raw): string
 
 /**
  * Resolve which enrollment school year drives roster joins and live counts.
- * Mirrors the registrar Students tab (`school_year=current|all|YYYY-YYYY`).
+ *
+ * Sections default to the ongoing academic year (current classes). Use
+ * `school_year=enrollment` (alias: `current`) for the open-enrollment intake year.
  */
 function resolveSectionsRosterSchoolYear(PDO $pdo, ?string $raw): string
 {
     $param = strtolower(trim((string)($raw ?? '')));
-    if ($param === 'ongoing') {
+    if ($param === 'all') {
+        return '';
+    }
+    if ($param === 'ongoing' || $param === '' || $param === 'default') {
         $ongoingSy = getOngoingSchoolYear($pdo);
         if ($ongoingSy !== null && trim($ongoingSy) !== '') {
             return trim($ongoingSy);
         }
-        $param = 'current';
+        $param = 'enrollment';
     }
-    if ($param === '' || $param === 'current') {
+    if ($param === 'enrollment' || $param === 'current') {
         $enrollmentSy = getEnrollmentSchoolYear($pdo);
         if ($enrollmentSy !== null && trim($enrollmentSy) !== '') {
             return trim($enrollmentSy);
@@ -243,9 +248,6 @@ function resolveSectionsRosterSchoolYear(PDO $pdo, ?string $raw): string
         $ctx = rosterEnrollmentContext($pdo);
 
         return trim((string)($ctx['school_year'] ?? ''));
-    }
-    if ($param === 'all') {
-        return '';
     }
 
     $normalized = normalizeSchoolYearValue(trim((string)$raw));
@@ -324,7 +326,7 @@ if ($method === 'GET' && (int)($_GET['section_id'] ?? $_GET['id'] ?? 0) > 0) {
         }
         $sectionGrade = normaliseGradeLevel((string)($sec['grade_level'] ?? SECTION_DEFAULT_GRADE));
         $gradeKeyExpr = sqlEnrollmentGradeKeyOrDefault($pdo, $sectionGrade);
-        $rosterSy = resolveSectionsRosterSchoolYear($pdo, (string)($_GET['school_year'] ?? 'current'));
+        $rosterSy = resolveSectionsRosterSchoolYear($pdo, (string)($_GET['school_year'] ?? 'ongoing'));
         $enrollmentJoin = $hasEnrollments
             ? sqlEnrolledEnrollmentJoin('s.user_id', $sectionGrade)
             : 'LEFT JOIN enrollments e ON 1=0';
@@ -546,7 +548,7 @@ if ($method === 'GET') {
         $shiftExpr = studentShiftSqlExpr($pdo);
         $countsByKey = [];
         $gradeKeyExpr = sqlEnrollmentGradeKeyOrDefault($pdo);
-        $rosterSy = resolveSectionsRosterSchoolYear($pdo, (string)($_GET['school_year'] ?? 'current'));
+        $rosterSy = resolveSectionsRosterSchoolYear($pdo, (string)($_GET['school_year'] ?? 'ongoing'));
         if (tableExists($pdo, 'students') && columnExists($pdo, 'students', 'section')) {
             $enrollmentJoinCounts = tableExists($pdo, 'enrollments')
                 ? sqlEnrolledEnrollmentJoin('s.user_id')
