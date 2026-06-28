@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 49
+AI_VERIFY_PAYLOAD_VERSION = 52
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -1148,9 +1148,9 @@ def _signature_candidate_regions(
             seen.add(region)
             candidates.append((*region, kind))
 
-    lower_start = int(img_h * 0.45)
-    sig_h = max(28, int(img_h * 0.11))
-    sig_w = max(int(img_w * 0.34), int(img_w * 0.42))
+    lower_start = int(img_h * 0.38)
+    sig_h = max(32, int(img_h * 0.14))
+    sig_w = max(int(img_w * 0.40), int(img_w * 0.48))
 
     body_kw = ("CERTIFY", "CERTIFIES", "MORAL", "CHARACTER", "GRADE", "STUDENT", "SCHOOL", "HEREBY")
     body_boxes: list[dict] = []
@@ -1162,7 +1162,7 @@ def _signature_candidate_regions(
             by = float(b.get("y", 0))
             bh = float(b.get("h", 0))
             cy = by + bh / 2.0
-            if img_h * 0.30 < cy < img_h * 0.86 and any(k in t for k in body_kw):
+            if img_h * 0.22 < cy < img_h * 0.90 and any(k in t for k in body_kw):
                 body_boxes.append(b)
 
     # 1) Just below the last certification sentence (most common on good-moral forms).
@@ -1197,17 +1197,17 @@ def _signature_candidate_regions(
         return candidates
 
     # 3) Lower band fallbacks — signatures often sit bottom-left or bottom-right.
-    band_y = int(img_h * 0.58)
-    _add(int(img_w * 0.06), band_y, sig_w, sig_h, "fallback")
-    _add(int(img_w * 0.28), int(img_h * 0.62), sig_w, sig_h, "fallback")
-    _add(int(img_w * 0.50), int(img_h * 0.60), sig_w, sig_h, "fallback")
-    _add(int(img_w * 0.58), int(img_h * 0.64), sig_w, sig_h, "fallback")
+    band_y = int(img_h * 0.52)
+    _add(int(img_w * 0.04), band_y, sig_w, sig_h, "fallback")
+    _add(int(img_w * 0.22), int(img_h * 0.56), sig_w, sig_h, "fallback")
+    _add(int(img_w * 0.44), int(img_h * 0.54), sig_w, sig_h, "fallback")
+    _add(int(img_w * 0.54), int(img_h * 0.58), sig_w, sig_h, "fallback")
 
     # 4) Full lower-third sweep when OCR anchors are weak (phone photos, cropped scans).
-    sweep_top = int(img_h * 0.62)
-    sweep_h = max(sig_h, int(img_h * 0.22))
-    col_w = max(sig_w, int(img_w * 0.36))
-    for x_frac in (0.04, 0.30, 0.54):
+    sweep_top = int(img_h * 0.55)
+    sweep_h = max(sig_h, int(img_h * 0.28))
+    col_w = max(sig_w, int(img_w * 0.40))
+    for x_frac in (0.02, 0.22, 0.42, 0.58):
         _add(int(img_w * x_frac), sweep_top, col_w, sweep_h, "fallback")
     # 5) Bottom-right strip — common for school-head signatures (e.g. MR. … / School Head).
     foot_h = max(sig_h, int(img_h * 0.20))
@@ -2081,7 +2081,7 @@ def _sf9_learner_block_y_bounds(
             header_bottom = max(header_bottom, y + float(b.get("h", 0)) * 0.9)
 
     y_lo = header_bottom + 8.0
-    y_hi = ih * 0.52
+    y_hi = ih * 0.40 if _sf9_is_report_card(normed) else ih * 0.52
     stop_y: list[float] = []
     for b in normed or []:
         t = str(b.get("t") or "").upper()
@@ -2290,6 +2290,88 @@ def _ocr_psa_child_fields_pass_on_image(ocr_path: str) -> tuple[str, list[dict],
         return merged, all_boxes, avg_conf
     except Exception as exc:
         print(f"[IntelliDocs AI] PSA child-band OCR failed: {exc}", flush=True)
+        return "", [], 0.0
+
+
+def _ocr_sf9_center_header_pass_on_image(ocr_path: str) -> tuple[str, list[dict], float]:
+    """Center header band where SF9/Form 138 prints the learner name (below school title)."""
+    if not _tesseract_available or not ocr_path:
+        return "", [], 0.0
+    try:
+        from PIL import Image
+    except ImportError:
+        return "", [], 0.0
+    try:
+        im = Image.open(ocr_path).convert("RGB")
+        w, h = im.size
+        x1 = max(0, int(w * 0.06))
+        x2 = max(x1 + 1, int(w * 0.94))
+        y1 = max(0, int(h * 0.08))
+        y2 = max(y1 + 1, int(h * 0.42))
+        crop = im.crop((x1, y1, x2, y2))
+        zoom = 2 if max(crop.size) < 1400 else 1
+        if zoom > 1:
+            crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
+        texts: list[str] = []
+        confs: list[float] = []
+        all_boxes: list[dict] = []
+        for psm in (6, 4, 11):
+            t, c, boxes = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
+            if (t or "").strip():
+                texts.append(t.strip())
+                confs.append(float(c))
+            for b in boxes or []:
+                all_boxes.append(
+                    {
+                        "text": b["text"],
+                        "x": int(float(b["x"]) / zoom) + x1,
+                        "y": int(float(b["y"]) / zoom) + y1,
+                        "w": max(1, int(float(b["w"]) / zoom)),
+                        "h": max(1, int(float(b["h"]) / zoom)),
+                        "conf": b.get("conf"),
+                    }
+                )
+        merged = "\n".join(texts)
+        avg_conf = sum(confs) / len(confs) if confs else 0.0
+        return merged, all_boxes, avg_conf
+    except Exception:
+        return "", [], 0.0
+
+
+def _ocr_psa_sex_row_pass_on_image(ocr_path: str) -> tuple[str, list[dict], float]:
+    """Tight OCR on PSA field 2 (sex row) where checkbox marks sit before the label."""
+    if not _tesseract_available or not ocr_path:
+        return "", [], 0.0
+    try:
+        from PIL import Image
+    except ImportError:
+        return "", [], 0.0
+    try:
+        im = Image.open(ocr_path).convert("RGB")
+        w, h = im.size
+        y1 = max(0, int(h * 0.14))
+        y2 = max(y1 + 1, int(h * 0.30))
+        x1 = max(0, int(w * 0.04))
+        x2 = max(x1 + 1, int(w * 0.96))
+        crop = im.crop((x1, y1, x2, y2))
+        zoom = 2 if max(crop.size) < 1200 else 1
+        if zoom > 1:
+            crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
+        t, c, boxes = _ocr_tesseract_image(crop, psm=6, enhanced=True)
+        scaled_boxes: list[dict] = []
+        for b in boxes or []:
+            scaled_boxes.append(
+                {
+                    "text": b["text"],
+                    "x": int(float(b["x"]) / zoom) + x1,
+                    "y": int(float(b["y"]) / zoom) + y1,
+                    "w": max(1, int(float(b["w"]) / zoom)),
+                    "h": max(1, int(float(b["h"]) / zoom)),
+                    "conf": b.get("conf"),
+                }
+            )
+        return (t or "").strip(), scaled_boxes, float(c)
+    except Exception:
         return "", [], 0.0
 
 
@@ -2618,6 +2700,8 @@ def _person_name_plausible(name: str) -> bool:
         if t.replace(".", "").isalpha()
     ]
     if len(tokens) < 2 or len(tokens[0]) < 2 or len(tokens[-1]) < 2:
+        return False
+    if _name_looks_like_ocr_garbage(name):
         return False
     noise = frozenset(
         {"SCHOOL", "GRADE", "REPORT", "FORM", "CERTIFICATE", "STUDENT", "MORAL", "GOOD"}
@@ -4439,6 +4523,10 @@ def _ocr_read_document(
             child_text, child_boxes, child_conf = _ocr_psa_child_fields_pass_on_image(ocr_path)
             if (child_text or "").strip():
                 _run(2, "tesseract", "psa_child_band", child_text, child_conf, child_boxes)
+            sex_text, sex_boxes, sex_conf = _ocr_psa_sex_row_pass_on_image(ocr_path)
+            if (sex_text or "").strip():
+                _run(2, "tesseract", "psa_sex_row", sex_text, sex_conf, sex_boxes)
+                best_text = f"{(best_text or '').strip()}\n{sex_text.strip()}".strip()
             header_extra = _ocr_birth_cert_header_text(ocr_path)
             if (header_extra or "").strip():
                 best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
@@ -4450,6 +4538,11 @@ def _ocr_read_document(
             if (band_text or "").strip():
                 _run(2, "tesseract", "academic_learner_band", band_text, band_conf, band_boxes)
                 best_text = f"{(best_text or '').strip()}\n{band_text.strip()}".strip()
+            if _normalize_doc_type_key(doc_type) in ("sf9", "report_card"):
+                center_text, center_boxes, center_conf = _ocr_sf9_center_header_pass_on_image(ocr_path)
+                if (center_text or "").strip():
+                    _run(2, "tesseract", "sf9_center_header", center_text, center_conf, center_boxes)
+                    best_text = f"{(best_text or '').strip()}\n{center_text.strip()}".strip()
             full_text, full_boxes, full_conf = _ocr_academic_full_page_pass_on_image(ocr_path)
             if (full_text or "").strip():
                 _run(2, "tesseract", "academic_full_page", full_text, full_conf, full_boxes)
@@ -4459,7 +4552,13 @@ def _ocr_read_document(
             best_text, best_conf, best_boxes, best_label = _ocr_merge_candidates(candidates, doc_type)
 
         for _eng, label, _txt, _conf, box_pool in candidates:
-            if label in ("psa_child_band", "academic_learner_band", "academic_full_page") and box_pool:
+            if label in (
+                "psa_child_band",
+                "psa_sex_row",
+                "academic_learner_band",
+                "academic_full_page",
+                "sf9_center_header",
+            ) and box_pool:
                 best_boxes = _ocr_merge_box_pools(best_boxes, box_pool)
 
         best_boxes = _ocr_scale_boxes_to_original(best_boxes, ocr_scale)
@@ -5002,6 +5101,88 @@ def _sex_flags_in_text(t: str) -> tuple[bool, bool]:
         elif compact in {"M", "MALE"}:
             has_m = True
     return has_m, has_f
+
+
+def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
+    """
+    PSA birth certificates place the check mark BEFORE the option (e.g. X 2 Female),
+    not after the word. Parse field 2 SEX from the child block only.
+    """
+    import re
+
+    try:
+        lines = [_norm_ocr_text(x) for x in (raw_text or "").splitlines() if (x or "").strip()]
+    except Exception:
+        return None
+    if not lines:
+        return None
+    child_pool = lines[: max(8, int(len(lines) * 0.48))]
+
+    def _psa_sex_on_line(ln: str) -> str | None:
+        u = (ln or "").upper()
+        if "SEX" not in u and not re.search(r"\b[12]\b", u):
+            return None
+        if "FEMALE" not in u and "MALE" not in u:
+            return None
+        # Mark before option number (PSA layout: [X] 2 Female).
+        if re.search(r"[X✓V][)\s]*\s*2\b", u) and "FEMALE" in u:
+            return "FEMALE"
+        if re.search(r"[X✓V][)\s]*\s*1\b", u) and "MALE" in u:
+            return "MALE"
+        if re.search(r"\b2\b\s*FEMALE", u) and re.search(r"[X✓V]\s*2\b", u):
+            return "FEMALE"
+        if re.search(r"\b1\b\s*MALE", u) and re.search(r"[X✓V]\s*1\b", u):
+            return "MALE"
+        fem = re.search(r"\bFEMALE\b", u)
+        mal = re.search(r"\bMALE\b", u)
+        for mark in re.finditer(r"[X✓V]", u):
+            pos = mark.start()
+            window = u[pos : pos + 28]
+            if re.search(r"\b2\b", window) and "FEMALE" in u[pos : pos + 40]:
+                if not mal or abs(pos - fem.start()) < abs(pos - mal.start()):
+                    return "FEMALE"
+            if re.search(r"\b1\b", window) and "MALE" in u[pos : pos + 32]:
+                if not fem or abs(pos - mal.start()) < abs(pos - fem.start()):
+                    return "MALE"
+        # Template line with both options — only accept a lone checked side.
+        if fem and mal:
+            return None
+        if fem and not mal:
+            return "FEMALE"
+        if mal and not fem:
+            return "MALE"
+        return None
+
+    for ln in child_pool:
+        hit = _psa_sex_on_line(ln)
+        if hit:
+            return hit
+    return _psa_sex_on_line(" ".join(child_pool))
+
+
+def _name_looks_like_ocr_garbage(name: str) -> bool:
+    """Reject table-noise strings mistaken for person names."""
+    import re
+
+    u = re.sub(r"\s+", " ", (name or "").strip().upper())
+    if len(u) < 4:
+        return False
+    words = [w for w in u.split() if w]
+    if len(words) >= 2 and len(set(words)) == 1:
+        return True
+    if len(words) >= 3 and len(set(words)) <= max(1, len(words) // 2):
+        return True
+    for w in words:
+        if len(w) >= 11 and len(set(w)) / max(1, len(w)) < 0.42:
+            return True
+    if re.search(r"[BCDFGHJKLMNPQRSTVWXYZ]{7,}", u):
+        return True
+    letters = [c for c in u if c.isalpha()]
+    if len(letters) >= 10:
+        vowels = sum(1 for c in letters if c in "AEIOU")
+        if vowels / len(letters) < 0.18:
+            return True
+    return False
 
 
 def _sf9_cell_tamper(diff_arr: "object|None", boxes: list[dict]) -> list[dict]:
@@ -6916,6 +7097,8 @@ def _evaluate(
             def _candidate_name_is_plausible(name: str) -> bool:
                 clean = _normalize_person_name_display(name or "")
                 if len(clean) < 3:
+                    return False
+                if _name_looks_like_ocr_garbage(clean):
                     return False
                 if (
                     _name_line_is_noise(clean)
@@ -8906,8 +9089,16 @@ def _evaluate(
                         if hf and not hm:
                             return "FEMALE", {"x": b["x"], "y": b["y"], "w": b["w"], "h": b["h"]}
                     # OCR may split 'FEMALE' across multiple boxes.
-                    picked = candidates[:4]
+                    picked = candidates[:6]
                     joined = " ".join(b["t"] for b in picked)
+                    if doc_type in ("birth_certificate", "birthcert"):
+                        psa_hit = _detect_psa_child_sex_from_text(joined)
+                        if psa_hit:
+                            x1 = min(b["x"] for b in picked)
+                            y1 = min(b["y"] for b in picked)
+                            x2 = max(b["x"] + b["w"] for b in picked)
+                            y2 = max(b["y"] + b["h"] for b in picked)
+                            return psa_hit, {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
                     has_m, has_f = _sex_flags_in_text(joined)
                     if has_m and not has_f:
                         x1 = min(b["x"] for b in picked)
@@ -8942,15 +9133,26 @@ def _evaluate(
                 if doc_type in ("birth_certificate", "birthcert"):
                     try:
                         lines = [ln for ln in (raw_text or "").splitlines() if (ln or "").strip()]
-                        upper_n = max(10, int(len(lines) * 0.45))
+                        upper_n = max(10, int(len(lines) * 0.48))
                         line_text = "\n".join(lines[:upper_n])
                     except Exception:
                         line_text = raw_text
+                    psa_sex = _detect_psa_child_sex_from_text(line_text)
+                    if psa_sex:
+                        return (psa_sex == exp), psa_sex, None
                 line_detected = _detect_sex_from_lines(line_text)
                 detected, bbox = _detect_sex_from_boxes(ocr_boxes)
+                if doc_type in ("birth_certificate", "birthcert") and not detected:
+                    psa_sex = _detect_psa_child_sex_from_text(line_text)
+                    if psa_sex:
+                        detected = psa_sex
                 if line_detected and detected and line_detected != detected:
-                    # Label-row text beats a stray same-row OCR box (common on SF9 headers).
-                    detected = line_detected
+                    if doc_type in ("birth_certificate", "birthcert"):
+                        psa_sex = _detect_psa_child_sex_from_text(line_text)
+                        detected = psa_sex or line_detected
+                    else:
+                        # Label-row text beats a stray same-row OCR box (common on SF9 headers).
+                        detected = line_detected
                 elif not detected:
                     detected = line_detected
                 if not detected:
@@ -9199,58 +9401,81 @@ def _evaluate(
                             )
                 elif _academic_doc:
                     doc_kind = doc_type if doc_type in ("sf9", "report_card", "sf10", "form137", "form157") else "sf9"
-                    box_name, name_bbox = _detect_name_from_boxes(
-                        normed_boxes, doc_kind=doc_kind, image_h=img_h, expected_name=exp_name
-                    )
-                    if box_name:
-                        refined_box = _refine_detected_person_name(exp_name, box_name)
-                        ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, refined_box)
-                        detected_name = _normalize_person_name_display(refined_box)
-                    else:
-                        line_name = _extract_academic_name_from_labeled_text(norm_text)
-                        if line_name:
-                            refined_line = _refine_detected_person_name(exp_name, line_name)
-                            ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, refined_line)
-                            detected_name = _normalize_person_name_display(refined_line)
-                        elif doc_kind in ("sf9", "report_card"):
-                            line_name = _extract_sf9_name_from_lines(simple_lines, norm_lines)
-                            if line_name:
-                                ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, line_name)
-                                detected_name = line_name
-                        if not detected_name:
-                            full_name = _extract_academic_name_from_full_text(norm_text, exp_name)
-                            if full_name:
-                                refined_full = _refine_detected_person_name(exp_name, full_name)
-                                ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, refined_full)
-                                detected_name = _normalize_person_name_display(refined_full)
-                        if not detected_name:
-                            clean_lines = [
-                                _strip_name_field_labels(ln)
-                                for ln in simple_lines
-                                if not _name_line_is_noise(ln) and _strip_name_field_labels(ln)
-                            ]
-                            ok_name, ratio, missing = name_match(exp_name, norm_text, clean_lines)
-                            if not ok_name:
-                                exp_tokens = [t for t in norm_simple(exp_name).split(" ") if len(t) >= 2]
-                                best_line_ratio = -1.0
-                                for ln in clean_lines:
-                                    if not _candidate_name_is_plausible(ln):
-                                        continue
-                                    hits = [t for t in exp_tokens if t in ln]
-                                    line_ratio = len(hits) / max(1, len(exp_tokens))
-                                    if line_ratio > best_line_ratio:
-                                        best_line_ratio = line_ratio
-                                        detected_name = ln.strip()[:64]
-                                if best_line_ratio <= 0:
-                                    detected_name = ""
-                            elif not detected_name:
-                                exp_tokens = [t for t in norm_simple(exp_name).split(" ") if len(t) >= 2]
-                                for ln in clean_lines:
-                                    if not _candidate_name_is_plausible(ln):
-                                        continue
-                                    if exp_tokens and all(t in ln for t in [exp_tokens[0], exp_tokens[-1]]):
-                                        detected_name = ln.strip()[:64]
-                                        break
+                    ok_name = False
+                    ratio = 0.0
+                    missing: list[str] = []
+
+                    def _apply_academic_name_candidate(raw_name: str) -> bool:
+                        nonlocal detected_name, ok_name, ratio, missing, name_bbox
+                        if not raw_name or _name_looks_like_ocr_garbage(raw_name):
+                            return False
+                        refined = _refine_detected_person_name(exp_name, raw_name)
+                        if not refined or not _candidate_name_is_plausible(refined):
+                            return False
+                        ok_n, ratio_n, missing_n, _hits = _name_tokens_match(exp_name, refined)
+                        detected_name = _normalize_person_name_display(refined)
+                        ok_name, ratio, missing = ok_n, ratio_n, missing_n
+                        return bool(detected_name)
+
+                    header_line_cap = max(24, int(len(simple_lines or []) * 0.42))
+                    header_lines = (simple_lines or [])[:header_line_cap]
+
+                    full_name = _extract_academic_name_from_full_text(norm_text, exp_name)
+                    if not _apply_academic_name_candidate(full_name):
+                        box_name, name_bbox = _detect_name_from_boxes(
+                            normed_boxes, doc_kind=doc_kind, image_h=img_h, expected_name=exp_name
+                        )
+                        if not _apply_academic_name_candidate(box_name):
+                            line_name = _extract_academic_name_from_labeled_text(norm_text)
+                            if not _apply_academic_name_candidate(line_name):
+                                if doc_kind in ("sf9", "report_card"):
+                                    line_name = _extract_sf9_name_from_lines(header_lines, norm_lines)
+                                    if not _apply_academic_name_candidate(line_name):
+                                        for ln in header_lines:
+                                            if "," not in (ln or ""):
+                                                continue
+                                            cand = _normalize_comma_person_name(ln)
+                                            if _apply_academic_name_candidate(cand):
+                                                break
+                                if not detected_name:
+                                    clean_lines = [
+                                        _strip_name_field_labels(ln)
+                                        for ln in header_lines
+                                        if not _name_line_is_noise(ln) and _strip_name_field_labels(ln)
+                                    ]
+                                    ok_name, ratio, missing = name_match(exp_name, norm_text, clean_lines)
+                                    if not ok_name:
+                                        exp_tokens = [
+                                            t for t in norm_simple(exp_name).split(" ") if len(t) >= 2
+                                        ]
+                                        best_line_ratio = -1.0
+                                        for ln in clean_lines:
+                                            if not _candidate_name_is_plausible(ln):
+                                                continue
+                                            hits = [t for t in exp_tokens if t in ln]
+                                            line_ratio = len(hits) / max(1, len(exp_tokens))
+                                            if line_ratio > best_line_ratio:
+                                                best_line_ratio = line_ratio
+                                                detected_name = ln.strip()[:64]
+                                        if best_line_ratio <= 0 or _name_looks_like_ocr_garbage(
+                                            detected_name
+                                        ):
+                                            detected_name = ""
+                                    elif not detected_name:
+                                        exp_tokens = [
+                                            t for t in norm_simple(exp_name).split(" ") if len(t) >= 2
+                                        ]
+                                        for ln in clean_lines:
+                                            if not _candidate_name_is_plausible(ln):
+                                                continue
+                                            if exp_tokens and all(
+                                                t in ln for t in [exp_tokens[0], exp_tokens[-1]]
+                                            ):
+                                                detected_name = ln.strip()[:64]
+                                                break
+                    if detected_name and _name_looks_like_ocr_garbage(detected_name):
+                        detected_name = ""
+                        ok_name = False
                 elif _moral_doc:
                     ok_name, ratio, missing, detected_name, name_bbox = name_match_good_moral(
                         exp_name, simple_lines, norm_lines, normed_boxes, img_h
