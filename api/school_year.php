@@ -57,11 +57,13 @@ function countApprovedEnrollmentsForYear(PDO $pdo, string $year): int
 
 function listSchoolYearRecords(PDO $pdo, ?string $activeYear, bool $includeArchived = true): array
 {
-    ensureSchoolYearsTable($pdo);
+    ensureSchoolYearsTableExists($pdo);
     syncSchoolYearCatalogFromSettings($pdo);
-    $sql = 'SELECT id, year, start_date, end_date, created_by_name, created_at, COALESCE(archived, 0) AS archived
-            FROM school_years';
-    if (!$includeArchived) {
+    $hasArchived = schoolYearsHasArchivedColumn($pdo);
+    $archivedSelect = $hasArchived ? 'COALESCE(archived, 0) AS archived' : '0 AS archived';
+    $sql = "SELECT id, year, start_date, end_date, created_by_name, created_at, {$archivedSelect}
+            FROM school_years";
+    if (!$includeArchived && $hasArchived) {
         $sql .= ' WHERE COALESCE(archived, 0) = 0';
     }
     $sql .= ' ORDER BY year DESC';
@@ -120,21 +122,14 @@ if ($method === 'GET') {
     ];
 
     require_once __DIR__ . '/session_token.php';
-    $actor = tryResolveActorFromRequest($pdo, 'school-year');
-    $actorId = $actor !== null ? (int)$actor['id'] : 0;
-    $canManageCatalog = $actorId > 0 && userCanManageSchoolYearSettings($pdo, $actorId);
-    if (!$canManageCatalog && $actorId > 0) {
-        $role = getUserRole($pdo, $actorId);
-        $canManageCatalog = $role === 'admin' && !userIsInStudentTable($pdo, $actorId);
-    }
-    if ($canManageCatalog) {
-        require_once __DIR__ . '/permission_guard.php';
-        requireActorPermission($pdo, $actor, 'configureSystem', true);
-        ensureSchoolYearsTable($pdo);
-        syncSchoolYearCatalogFromSettings($pdo);
-        $payload['ended_school_years'] = getEndedSchoolYears($pdo);
-        $payload['school_year_catalog_stats'] = getSchoolYearCatalogStats($pdo);
-        $payload['school_years'] = listSchoolYearRecords($pdo, $enrollment);
+    $actorId = resolveSchoolYearAdminActorId($pdo);
+    if ($actorId > 0 && actorMayViewSchoolYearCatalog($pdo, $actorId)) {
+        if ($actorId > 0) {
+            require_once __DIR__ . '/permission_guard.php';
+            $actor = ['id' => $actorId, 'role' => getUserRole($pdo, $actorId)];
+            requireActorPermission($pdo, $actor, 'configureSystem', true);
+        }
+        attachSchoolYearCatalogPayload($pdo, $payload, $enrollment);
     } elseif ($actorId > 0 && getUserRole($pdo, $actorId) === 'student') {
         // Enrollment portal only — no admin management fields.
     } else {
@@ -202,7 +197,11 @@ if ($method === 'POST') {
         echo json_encode(['success' => false, 'error' => 'School year could not be created.']);
         exit;
     }
-    $logAction = $result['action'] === 'restored' ? 'admin_school_year_restore' : 'admin_school_year_create';
+    $logAction = match ($result['action']) {
+        'restored' => 'admin_school_year_restore',
+        'updated' => 'admin_school_year_update',
+        default => 'admin_school_year_create',
+    };
     appLogEvent($pdo, $logAction, 'admin', 'success', $actorId, 'school_years', $year, $result);
     $ongoing = getOngoingSchoolYear($pdo);
     $enrollment = getEnrollmentSchoolYear($pdo);

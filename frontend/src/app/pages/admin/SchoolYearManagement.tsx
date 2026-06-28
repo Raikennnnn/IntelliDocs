@@ -99,7 +99,7 @@ export function SchoolYearManagement() {
   const [selectedReopenYear, setSelectedReopenYear] = useState<{ year: string } | null>(null);
   const [isCloseEnrollmentDialogOpen, setIsCloseEnrollmentDialogOpen] = useState(false);
   const [selectedCloseYear, setSelectedCloseYear] = useState<{ year: string } | null>(null);
-  const [showHiddenArchived, setShowHiddenArchived] = useState(false);
+  const [showHiddenArchived, setShowHiddenArchived] = useState(true);
   const [isArchiveDialogOpen, setIsArchiveDialogOpen] = useState(false);
   const [selectedArchiveYear, setSelectedArchiveYear] = useState<{ year: string } | null>(null);
   const [isUnarchiveDialogOpen, setIsUnarchiveDialogOpen] = useState(false);
@@ -192,14 +192,14 @@ export function SchoolYearManagement() {
         if (!res.ok || !j.success) {
           const err = j.error || 'Failed to create school year';
           toast.error(err);
-          if (res.status === 409 || j.code === 'school_year_exists') {
-            setShowHiddenArchived(true);
-            await reloadSchoolYearSettings();
-          }
+          setShowHiddenArchived(true);
+          await reloadSchoolYearSettings();
           return;
         }
         if (j.action === 'restored') {
           toast.success(`School year ${newSchoolYear.year.trim()} was hidden — it has been restored.`);
+        } else if (j.action === 'updated') {
+          toast.success(`School year ${newSchoolYear.year.trim()} already existed — dates updated.`);
         } else {
           toast.success(`School year ${newSchoolYear.year.trim()} created`);
         }
@@ -213,7 +213,9 @@ export function SchoolYearManagement() {
         await reloadSchoolYearSettings();
         window.dispatchEvent(new Event('school-year-settings-changed'));
       } catch {
-        toast.error('Failed to create school year');
+        toast.error('Failed to create school year — check your connection and try again.');
+        setShowHiddenArchived(true);
+        await reloadSchoolYearSettings();
       } finally {
         setIsSaving(false);
       }

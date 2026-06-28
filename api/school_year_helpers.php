@@ -2,8 +2,7 @@
 declare(strict_types=1);
 
 /**
- * School year settings are stored in app_settings.
- *
+ * School year settings are stored in app_settings. *
  * - ongoing_school_year: the current academic year being displayed by default
  * - enrollment_school_year: the year currently accepting new enrollments
  *
@@ -14,6 +13,31 @@ declare(strict_types=1);
  * - If a setting row exists and is an empty string, that feature is explicitly disabled by admin.
  * - If a setting row is missing entirely, the year is treated as not configured (null).
  */
+
+if (!function_exists('tableExists')) {
+    function tableExists(PDO $pdo, string $table): bool
+    {
+        $stmt = $pdo->prepare(
+            'SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table LIMIT 1'
+        );
+        $stmt->execute([':table' => $table]);
+
+        return (bool)$stmt->fetchColumn();
+    }
+}
+
+if (!function_exists('columnExists')) {
+    function columnExists(PDO $pdo, string $table, string $column): bool
+    {
+        $stmt = $pdo->prepare(
+            'SELECT 1 FROM information_schema.columns
+              WHERE table_schema = DATABASE() AND table_name = :table AND column_name = :column LIMIT 1'
+        );
+        $stmt->execute([':table' => $table, ':column' => $column]);
+
+        return (bool)$stmt->fetchColumn();
+    }
+}
 
 function ensureAppSettingsTable(PDO $pdo): void
 {
@@ -304,15 +328,108 @@ function reopenSchoolYear(PDO $pdo, string $year): void
 
 function ensureSchoolYearsArchivedColumn(PDO $pdo): void
 {
-    if (!function_exists('tableExists')) {
-        require_once __DIR__ . '/user_role.php';
-    }
     if (!tableExists($pdo, 'school_years')) {
         return;
     }
     if (!columnExists($pdo, 'school_years', 'archived')) {
         $pdo->exec('ALTER TABLE school_years ADD COLUMN archived TINYINT(1) NOT NULL DEFAULT 0');
     }
+}
+
+function schoolYearsHasArchivedColumn(PDO $pdo): bool
+{
+    if (!function_exists('tableExists')) {
+        require_once __DIR__ . '/user_role.php';
+    }
+    ensureSchoolYearsArchivedColumn($pdo);
+
+    return tableExists($pdo, 'school_years') && columnExists($pdo, 'school_years', 'archived');
+}
+
+function schoolYearIsArchived(PDO $pdo, string $year): bool
+{
+    if (!schoolYearsHasArchivedColumn($pdo)) {
+        return false;
+    }
+    $stmt = $pdo->prepare(
+        'SELECT COALESCE(archived, 0) FROM school_years WHERE year = :year LIMIT 1'
+    );
+    $stmt->execute([':year' => trim($year)]);
+
+    return (int)$stmt->fetchColumn() === 1;
+}
+
+/**
+ * Admin actor for school-year catalog reads (Bearer token or legacy X-User-Id).
+ */
+function resolveSchoolYearAdminActorId(PDO $pdo): int
+{
+    require_once __DIR__ . '/session_token.php';
+    $actor = tryResolveActorFromRequest($pdo, 'school-year');
+    if ($actor !== null) {
+        return (int)$actor['id'];
+    }
+    $legacy = (int)($_SERVER['HTTP_X_USER_ID'] ?? 0);
+    if ($legacy <= 0) {
+        return 0;
+    }
+    if (!function_exists('tableExists')) {
+        require_once __DIR__ . '/user_role.php';
+    }
+    if (!tableExists($pdo, 'users')) {
+        return 0;
+    }
+    $stmt = $pdo->prepare('SELECT id FROM users WHERE id = :id LIMIT 1');
+    $stmt->execute([':id' => $legacy]);
+
+    return $stmt->fetchColumn() ? $legacy : 0;
+}
+
+function actorMayViewSchoolYearCatalog(PDO $pdo, int $actorId): bool
+{
+    if ($actorId <= 0) {
+        return false;
+    }
+    if (userIsInStudentTable($pdo, $actorId)) {
+        return false;
+    }
+    if (userCanManageSchoolYearSettings($pdo, $actorId)) {
+        return true;
+    }
+
+    return getUserRole($pdo, $actorId) === 'admin';
+}
+
+function attachSchoolYearCatalogPayload(PDO $pdo, array &$payload, ?string $enrollment): void
+{
+    ensureSchoolYearsTableExists($pdo);
+    syncSchoolYearCatalogFromSettings($pdo);
+    $payload['ended_school_years'] = getEndedSchoolYears($pdo);
+    $payload['school_year_catalog_stats'] = getSchoolYearCatalogStats($pdo);
+    $payload['school_years'] = listSchoolYearRecords($pdo, $enrollment);
+}
+
+function ensureSchoolYearsTableExists(PDO $pdo): void
+{
+    if (function_exists('ensureSchoolYearsTable')) {
+        ensureSchoolYearsTable($pdo);
+
+        return;
+    }
+    $pdo->exec('
+        CREATE TABLE IF NOT EXISTS school_years (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            year VARCHAR(9) NOT NULL UNIQUE,
+            start_date DATE NULL,
+            end_date DATE NULL,
+            created_by_user_id INT NULL,
+            created_by_name VARCHAR(120) NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            archived TINYINT(1) NOT NULL DEFAULT 0,
+            INDEX idx_school_years_year (year)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    ');
+    ensureSchoolYearsArchivedColumn($pdo);
 }
 
 /**
@@ -326,7 +443,7 @@ function schoolYearFilterOptions(PDO $pdo, bool $includeArchivedCatalog = false)
     ensureSchoolYearsArchivedColumn($pdo);
     if (tableExists($pdo, 'school_years') && columnExists($pdo, 'school_years', 'year')) {
         $sql = 'SELECT year FROM school_years';
-        if (!$includeArchivedCatalog) {
+        if (!$includeArchivedCatalog && schoolYearsHasArchivedColumn($pdo)) {
             $sql .= ' WHERE COALESCE(archived, 0) = 0';
         }
         $sql .= ' ORDER BY year DESC';
@@ -500,9 +617,12 @@ function getSchoolYearCatalogStats(PDO $pdo): array
     }
     ensureSchoolYearsArchivedColumn($pdo);
     $total = (int)$pdo->query('SELECT COUNT(*) FROM school_years')->fetchColumn();
-    $hidden = (int)$pdo->query(
-        'SELECT COUNT(*) FROM school_years WHERE COALESCE(archived, 0) = 1'
-    )->fetchColumn();
+    $hidden = 0;
+    if (schoolYearsHasArchivedColumn($pdo)) {
+        $hidden = (int)$pdo->query(
+            'SELECT COUNT(*) FROM school_years WHERE COALESCE(archived, 0) = 1'
+        )->fetchColumn();
+    }
 
     return [
         'total' => $total,
@@ -536,37 +656,30 @@ function createOrRestoreSchoolYearRecord(
         throw new RuntimeException('School years catalog table is not available.');
     }
 
-    $stmt = $pdo->prepare(
-        'SELECT id, COALESCE(archived, 0) AS archived FROM school_years WHERE year = :year LIMIT 1'
-    );
+    $stmt = $pdo->prepare('SELECT id FROM school_years WHERE year = :year LIMIT 1');
     $stmt->execute([':year' => $y]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($row !== false) {
-        $archived = (int)($row['archived'] ?? 0) === 1;
-        if ($archived) {
-            $upd = $pdo->prepare('
-                UPDATE school_years
-                   SET archived = 0,
-                       start_date = COALESCE(:start_date, start_date),
-                       end_date = COALESCE(:end_date, end_date),
-                       created_by_user_id = :uid,
-                       created_by_name = :name
-                 WHERE year = :year
-            ');
-            $upd->execute([
-                ':start_date' => $startDate,
-                ':end_date' => $endDate,
-                ':uid' => $actorUserId,
-                ':name' => $creatorName,
-                ':year' => $y,
-            ]);
+        $archived = schoolYearIsArchived($pdo, $y);
+        $upd = $pdo->prepare('
+            UPDATE school_years
+               SET start_date = COALESCE(:start_date, start_date),
+                   end_date = COALESCE(:end_date, end_date),
+                   created_by_user_id = :uid,
+                   created_by_name = :name
+                   ' . (schoolYearsHasArchivedColumn($pdo) ? ', archived = 0' : '') . '
+             WHERE year = :year
+        ');
+        $upd->execute([
+            ':start_date' => $startDate,
+            ':end_date' => $endDate,
+            ':uid' => $actorUserId,
+            ':name' => $creatorName,
+            ':year' => $y,
+        ]);
 
-            return ['action' => 'restored', 'year' => $y];
-        }
-        throw new InvalidArgumentException(
-            "School year {$y} already exists. Use “Show hidden” if it does not appear in the list."
-        );
+        return ['action' => $archived ? 'restored' : 'updated', 'year' => $y];
     }
 
     $ins = $pdo->prepare('
