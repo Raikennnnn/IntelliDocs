@@ -270,7 +270,7 @@ function normalizeDocumentRequirementKey(string $type): string
     if (in_array($t, ['good_moral', 'goodmoral'], true)) {
         return 'good_moral';
     }
-    if (in_array($t, ['sf9', 'report_card'], true)) {
+    if (in_array($t, ['sf9', 'report_card', 'tor', 'transcript', 'transcript_of_records'], true)) {
         return 'sf9';
     }
     if (in_array($t, ['sf10', 'form137', 'form_137'], true)) {
@@ -288,6 +288,9 @@ function normalizeDocumentRequirementKey(string $type): string
     }
     if (str_contains($t, 'psa') || str_contains($t, 'live birth')) {
         return 'birth_certificate';
+    }
+    if (str_contains($t, 'transcript') || preg_match('/\btor\b/', $t)) {
+        return 'sf9';
     }
     if (str_contains($t, 'sf9') || str_contains($t, 'report card')) {
         return 'sf9';

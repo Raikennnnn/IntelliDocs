@@ -176,7 +176,7 @@ function reportDocumentTypeLabel(string $type): string
     $t = strtolower(trim($type));
     return match ($t) {
         'birth_certificate', 'psa' => 'PSA Birth Certificate',
-        'sf9', 'report_card' => 'Grade 10 Report Card (SF9)',
+        'sf9', 'report_card', 'tor', 'transcript' => 'Grade 10 Report Card / TOR (SF9)',
         'good_moral', 'goodmoral' => 'Good Moral Certificate',
         'form137', 'sf10' => 'SF10 / Form 137',
         'id_picture', 'id' => '2x2 Picture',
@@ -205,7 +205,7 @@ function reportNormalizeDocumentTypeKey(string $type): string
     if (in_array($t, ['good_moral', 'goodmoral'], true)) {
         return 'good_moral';
     }
-    if (in_array($t, ['sf9', 'report_card'], true)) {
+    if (in_array($t, ['sf9', 'report_card', 'tor', 'transcript', 'transcript_of_records'], true)) {
         return 'sf9';
     }
     if (in_array($t, ['form137', 'sf10', 'form_137'], true)) {
@@ -213,6 +213,9 @@ function reportNormalizeDocumentTypeKey(string $type): string
     }
     if (in_array($t, ['id_picture', 'id'], true)) {
         return 'id_picture';
+    }
+    if (str_contains($t, 'transcript') || preg_match('/\btor\b/', $t)) {
+        return 'sf9';
     }
     if (str_contains($t, 'sf9') || str_contains($t, 'report card')) {
         return 'sf9';

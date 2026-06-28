@@ -51,6 +51,9 @@ export function resolveVerificationDocCategory(doc: {
   if (label.includes("sf9") || label.includes("report card")) {
     return "sf9";
   }
+  if (label.includes("transcript") || /\btor\b/.test(label)) {
+    return "sf9";
+  }
   if (label.includes("good moral")) {
     return "good_moral";
   }

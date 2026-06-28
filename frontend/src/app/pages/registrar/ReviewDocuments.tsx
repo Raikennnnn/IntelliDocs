@@ -576,7 +576,7 @@ function aiDocTypeFromResolved(resolved: string): AiDocType | null {
   const r = resolved.toLowerCase().trim();
   if (r === "birth_certificate" || r === "birthcert") return "birth_certificate";
   if (r === "good_moral" || r === "goodmoral") return "good_moral";
-  if (r === "sf9" || r === "report_card") return "sf9";
+  if (r === "sf9" || r === "report_card" || r === "tor" || r === "transcript") return "sf9";
   if (r === "sf10" || r === "form137" || r === "form157") return "form137";
   if (r === "photo_2x2" || r === "2x2" || r === "id_photo" || r === "photo") return "photo_2x2";
   return null;
@@ -589,6 +589,7 @@ function normalizeDocTypeFromLabel(label: string): AiDocType {
   if (l.includes("psa") || l.includes("birth")) return "birth_certificate";
   if (l.includes("good moral")) return "good_moral";
   if (l.includes("sf9") || l.includes("report card")) return "sf9";
+  if (l.includes("transcript") || /\btor\b/.test(l)) return "sf9";
   if (l.includes("form 137") || l.includes("form137") || l.includes("sf10")) return "form137";
   return "other";
 }
@@ -604,7 +605,7 @@ function normalizeAiDocTypeKey(docType: string): string {
   const t = docType.toLowerCase().trim();
   if (t === "birthcert") return "birth_certificate";
   if (t === "sf10" || t === "form137" || t === "form157") return "form137";
-  if (t === "report_card") return "sf9";
+  if (t === "report_card" || t === "tor" || t === "transcript") return "sf9";
   if (t === "goodmoral") return "good_moral";
   return t || "other";
 }

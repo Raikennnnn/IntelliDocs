@@ -246,7 +246,9 @@ def _normalize_doc_type_key(doc_type: str) -> str:
         return "birth_certificate"
     if t in ("sf10", "form137", "form157"):
         return "form137"
-    if t in ("report_card",):
+    if t in ("report_card", "tor", "transcript", "transcript_of_records"):
+        return "sf9"
+    if "transcript" in t or t == "tor":
         return "sf9"
     if t in ("goodmoral",):
         return "good_moral"
@@ -268,7 +270,7 @@ def _doc_type_display_label(doc_type: str) -> str:
     labels = {
         "birth_certificate": "PSA birth certificate",
         "form137": "SF10 / Form 137",
-        "sf9": "SF9 / Report card",
+        "sf9": "SF9 / Report card / TOR",
         "good_moral": "Good moral certificate",
         "photo_2x2": "2×2 ID photo",
     }

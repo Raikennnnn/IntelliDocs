@@ -151,7 +151,7 @@ interface DocumentUpload {
   file: File | null;
   status: 'missing' | 'uploaded';
   required: boolean;
-  requiredFor?: 'all' | 'transferee';
+  requiredFor?: 'all' | 'transferee' | 'non_transferee';
   uploadedId?: number;
   uploadedAt?: string;
   /** Latest AI status (verified|failed|rejected|pending|…). Used to lock approved files during resubmission. */
@@ -181,6 +181,24 @@ interface DocumentUpload {
 /** Maximum number of times a student may upload a single requirement. */
 const UPLOAD_ATTEMPT_LIMIT = 5;
 
+/** Slot key for matching API rows to enrollment upload labels (TOR is separate from SF9 in the UI). */
+function slotKeyFromApiType(type: string): string {
+  const t = type.trim().toLowerCase();
+  if (!t) return "";
+  if (t.includes("transcript") || /\btor\b/.test(t)) return "tor";
+  return normalizeRequirementKey(type);
+}
+
+function shouldShowDocumentRequirement(
+  doc: DocumentUpload,
+  enrollmentStatus: string,
+): boolean {
+  if (doc.requiredFor === "all") return true;
+  if (doc.requiredFor === "transferee") return enrollmentStatus === "transferee";
+  if (doc.requiredFor === "non_transferee") return enrollmentStatus !== "transferee";
+  return false;
+}
+
 /** Match API document rows to enrollment step labels (PSA vs birth_certificate, etc.). */
 function normalizeRequirementKey(label: string): string {
   const t = label.trim().toLowerCase();
@@ -188,10 +206,12 @@ function normalizeRequirementKey(label: string): string {
   if (["birth_certificate", "birthcert", "psa"].includes(t)) return "birth_certificate";
   if (["good_moral", "goodmoral"].includes(t)) return "good_moral";
   if (["sf9", "report_card"].includes(t)) return "sf9";
+  if (["tor", "transcript", "transcript_of_records"].includes(t)) return "tor";
   if (["sf10", "form137", "form_137"].includes(t)) return "sf10";
   if (["photo_2x2", "id_picture", "picture_2x2"].includes(t)) return "photo_2x2";
   if (t.includes("2x2") || (t.includes("picture") && t.includes("white"))) return "photo_2x2";
   if (t.includes("good moral")) return "good_moral";
+  if (t.includes("transcript") || /\btor\b/.test(t)) return "tor";
   if (t.includes("sf9") || t.includes("report card")) return "sf9";
   if (t.includes("form 137") || t.includes("form137") || t.includes("sf10")) return "sf10";
   if (t.includes("birth")) return "birth_certificate";
@@ -390,7 +410,7 @@ function documentRowFromApiHit(doc: DocumentUpload, hit: ApiDocumentRow): Docume
 function mergeDocumentsFromApiRows(prev: DocumentUpload[], rows: ApiDocumentRow[]): DocumentUpload[] {
   const mapByType = new Map<string, ApiDocumentRow>();
   for (const d of rows) {
-    const key = normalizeRequirementKey(String(d.type || ""));
+    const key = slotKeyFromApiType(String(d.type || ""));
     if (key && !mapByType.has(key)) {
       mapByType.set(key, d);
     }
@@ -692,7 +712,7 @@ export function StudentEnrollment() {
 
   const [documents, setDocuments] = useState<DocumentUpload[]>([
     { name: 'PSA Birth Certificate', file: null, status: 'missing', required: true, requiredFor: 'all' },
-    { name: 'Grade 10 Report Card (SF9)', file: null, status: 'missing', required: true, requiredFor: 'all' },
+    { name: 'Grade 10 Report Card (SF9)', file: null, status: 'missing', required: true, requiredFor: 'non_transferee' },
     { name: 'Good Moral Certificate', file: null, status: 'missing', required: true, requiredFor: 'all' },
     { name: 'SF10 / Form 137', file: null, status: 'missing', required: true, requiredFor: 'all' },
     { name: 'Transcript of Records (TOR)', file: null, status: 'missing', required: true, requiredFor: 'transferee' },
@@ -1769,11 +1789,9 @@ export function StudentEnrollment() {
   };
 
   const validateStep4 = () => {
-    const requiredDocs = documents.filter(doc => {
-      if (doc.requiredFor === 'all') return true;
-      if (doc.requiredFor === 'transferee' && formData.enrollmentStatus === 'transferee') return true;
-      return false;
-    });
+    const requiredDocs = documents.filter((doc) =>
+      shouldShowDocumentRequirement(doc, formData.enrollmentStatus),
+    );
 
     const missingDocs = requiredDocs.filter(doc => doc.status !== 'uploaded');
     
@@ -3011,8 +3029,7 @@ export function StudentEnrollment() {
 
                 {documents.map((doc, index) => {
                   // Check if document should be displayed
-                  const shouldShow = doc.requiredFor === 'all' ||
-                    (doc.requiredFor === 'transferee' && formData.enrollmentStatus === 'transferee');
+                  const shouldShow = shouldShowDocumentRequirement(doc, formData.enrollmentStatus);
 
                   if (!shouldShow) return null;
 
