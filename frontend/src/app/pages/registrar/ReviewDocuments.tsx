@@ -2961,7 +2961,7 @@ export function ReviewDocuments() {
           </DialogHeader>
           {selectedDocument && (
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
-              <div className="border rounded-lg p-4">
+              <div className="shrink-0 overflow-y-auto overscroll-contain rounded-lg border p-4 max-h-[min(340px,36dvh)]">
                 <div className="flex items-start gap-3 flex-1">
                   {selectedDocument.status === "Verified" ? (
                     <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
@@ -3664,7 +3664,7 @@ export function ReviewDocuments() {
                 </div>
 
               {/* Document Preview — fetched with apiFetch so X-User-Id is sent (img src alone cannot) */}
-              <div className="flex min-h-[280px] min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-gray-50 p-4 lg:min-h-0">
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain rounded-lg border bg-gray-50 p-4 lg:min-h-0">
                 <div className="mb-3 flex shrink-0 items-center justify-between">
                   <h4 className="text-base font-semibold text-gray-900">Uploaded Document</h4>
                   <Button
@@ -3796,7 +3796,7 @@ export function ReviewDocuments() {
                       alt={selectedDocument.fileName || selectedDocument.name}
                       loading={previewLoading}
                       error={previewError}
-                      fitHeightClass="h-[min(560px,58vh)] min-h-[280px]"
+                      fitHeightClass="h-[min(480px,calc(96dvh-18rem))] min-h-[220px]"
                       onLightboxOpenChange={setPreviewLightboxOpen}
                       imageRef={previewImgRef}
                       onImageLoad={() => {
