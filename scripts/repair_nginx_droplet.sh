@@ -82,6 +82,18 @@ server {
         try_files \$uri /index.php?\$query_string;
     }
 
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header Pragma "no-cache";
+        add_header Expires "0";
+        try_files \$uri =404;
+    }
+
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files \$uri =404;
+    }
+
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:${PHP_SOCK};
@@ -95,7 +107,7 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
-    location ~* \.(js|css|png|jpg|jpeg|gif|webp|svg|ico|woff2?)\$ {
+    location ~* \.(png|jpg|jpeg|gif|webp|svg|ico|woff2?)\$ {
         expires 7d;
         add_header Cache-Control "public";
         try_files \$uri =404;

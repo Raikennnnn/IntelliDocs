@@ -1,11 +1,14 @@
 import { useRouteError, useNavigate } from 'react-router';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
-import { AlertTriangle, Home } from 'lucide-react';
+import { AlertTriangle, Home, RefreshCw } from 'lucide-react';
+import { isChunkLoadError } from '../lib/chunkLoadRecovery';
 
 export function ErrorBoundary() {
-  const error = useRouteError() as any;
+  const error = useRouteError() as { status?: number; statusText?: string; message?: string };
   const navigate = useNavigate();
+  const errorMessage = String(error?.statusText || error?.message || 'An unexpected error occurred');
+  const staleBundle = isChunkLoadError(errorMessage);
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -23,10 +26,24 @@ export function ErrorBoundary() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              {error?.statusText || error?.message || 'An unexpected error occurred'}
-            </p>
-            <div className="flex gap-2">
+            {staleBundle ? (
+              <p className="text-sm text-gray-600">
+                The app was updated on the server but your browser still has an older copy.
+                Reload the page to load the latest files.
+              </p>
+            ) : (
+              <p className="text-sm text-gray-600">{errorMessage}</p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {staleBundle ? (
+                <Button
+                  onClick={() => window.location.reload()}
+                  className="bg-[#8B1538] hover:bg-[#8B1538]/90"
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Reload app
+                </Button>
+              ) : null}
               <Button onClick={() => navigate(-1)} variant="outline">
                 Go Back
               </Button>
