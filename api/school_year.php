@@ -58,6 +58,7 @@ function countApprovedEnrollmentsForYear(PDO $pdo, string $year): int
 function listSchoolYearRecords(PDO $pdo, ?string $activeYear, bool $includeArchived = true): array
 {
     ensureSchoolYearsTable($pdo);
+    syncSchoolYearCatalogFromSettings($pdo);
     $sql = 'SELECT id, year, start_date, end_date, created_by_name, created_at, COALESCE(archived, 0) AS archived
             FROM school_years';
     if (!$includeArchived) {
@@ -66,9 +67,10 @@ function listSchoolYearRecords(PDO $pdo, ?string $activeYear, bool $includeArchi
     $sql .= ' ORDER BY year DESC';
     $rows = $pdo->query($sql)->fetchAll() ?: [];
     $out = [];
+    $byYear = [];
     foreach ($rows as $r) {
         $year = (string)($r['year'] ?? '');
-        $out[] = [
+        $row = [
             'id' => (int)($r['id'] ?? 0),
             'year' => $year,
             'startDate' => (string)($r['start_date'] ?? ''),
@@ -79,7 +81,30 @@ function listSchoolYearRecords(PDO $pdo, ?string $activeYear, bool $includeArchi
             'createdDate' => (string)($r['created_at'] ?? ''),
             'archived' => (int)($r['archived'] ?? 0) === 1,
         ];
+        $byYear[$year] = $row;
     }
+    foreach (collectSchoolYearLabelsForCatalog($pdo) as $year) {
+        if ($year === '' || isset($byYear[$year])) {
+            continue;
+        }
+        if (!$includeArchived) {
+            continue;
+        }
+        $byYear[$year] = [
+            'id' => 0,
+            'year' => $year,
+            'startDate' => '',
+            'endDate' => '',
+            'status' => ($activeYear !== null && $year === $activeYear) ? 'Active' : 'Inactive',
+            'enrolledStudents' => countApprovedEnrollmentsForYear($pdo, $year),
+            'createdBy' => 'System',
+            'createdDate' => '',
+            'archived' => false,
+        ];
+    }
+    $out = array_values($byYear);
+    usort($out, static fn (array $a, array $b): int => strcmp((string)$b['year'], (string)$a['year']));
+
     return $out;
 }
 
@@ -99,7 +124,9 @@ if ($method === 'GET') {
     $actorId = $actor !== null ? (int)$actor['id'] : 0;
     if ($actorId > 0 && userIsAdmin($pdo, $actorId)) {
         require_once __DIR__ . '/permission_guard.php';
-        requireActorPermission($pdo, $actor, 'configureSystem', false);
+        requireActorPermission($pdo, $actor, 'configureSystem', true);
+        ensureSchoolYearsTable($pdo);
+        syncSchoolYearCatalogFromSettings($pdo);
         $payload['ended_school_years'] = getEndedSchoolYears($pdo);
         $payload['school_years'] = listSchoolYearRecords($pdo, $enrollment);
     } elseif ($actorId > 0 && getUserRole($pdo, $actorId) === 'student') {

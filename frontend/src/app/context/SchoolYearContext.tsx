@@ -50,6 +50,39 @@ function normalizeSchoolYearRows(rows: any[], activeLabel: string | null | undef
   });
 }
 
+function buildFallbackSchoolYearRows(
+  payload: {
+    ongoing_school_year?: string | null;
+    enrollment_school_year?: string | null;
+    active_school_year?: string | null;
+    ended_school_years?: string[];
+  },
+  activeLabel: string | null,
+): SchoolYear[] {
+  const years = new Set<string>();
+  const ongoing = (payload.ongoing_school_year ?? '').trim();
+  const enrollment = (payload.enrollment_school_year ?? payload.active_school_year ?? '').trim();
+  if (ongoing) years.add(ongoing);
+  if (enrollment) years.add(enrollment);
+  (Array.isArray(payload.ended_school_years) ? payload.ended_school_years : []).forEach((y) => {
+    const t = String(y ?? '').trim();
+    if (t) years.add(t);
+  });
+  return Array.from(years)
+    .sort((a, b) => b.localeCompare(a))
+    .map((year, idx) => ({
+      id: -(idx + 1),
+      year,
+      status: activeLabel && year === activeLabel ? 'Active' : 'Inactive',
+      startDate: '',
+      endDate: '',
+      enrolledStudents: 0,
+      createdBy: 'System',
+      createdDate: '',
+      archived: false,
+    }));
+}
+
 export function SchoolYearProvider({ children }: { children: ReactNode }) {
   const [schoolYears, setSchoolYears] = useState<SchoolYear[]>([]);
   const [enrollmentEnabled, setEnrollmentEnabled] = useState(true);
@@ -75,16 +108,13 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
         setOngoingSchoolYearLabel(j.ongoing_school_year ?? null);
         setEnrollmentSchoolYearLabel(j.enrollment_school_year ?? j.active_school_year ?? null);
         setEndedSchoolYears(Array.isArray(j.ended_school_years) ? j.ended_school_years : []);
-        if (Array.isArray(j.school_years)) {
-          setSchoolYears(normalizeSchoolYearRows(j.school_years, (j.enrollment_school_year ?? j.active_school_year) ?? null));
+        const activeLabel = (j.enrollment_school_year ?? j.active_school_year) ?? null;
+        if (Array.isArray(j.school_years) && j.school_years.length > 0) {
+          setSchoolYears(normalizeSchoolYearRows(j.school_years, activeLabel));
+        } else if (Array.isArray(j.school_years)) {
+          setSchoolYears(buildFallbackSchoolYearRows(j, activeLabel));
         } else {
-          // Minimal fallback: keep list but align active status if we already had local rows.
-          setSchoolYears((prev) =>
-            prev.map((sy) => ({
-              ...sy,
-              status: (j.enrollment_school_year ?? j.active_school_year) && sy.year === (j.enrollment_school_year ?? j.active_school_year) ? 'Active' : 'Inactive',
-            })),
-          );
+          setSchoolYears(buildFallbackSchoolYearRows(j, activeLabel));
         }
       }
     } catch {

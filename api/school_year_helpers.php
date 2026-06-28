@@ -431,3 +431,58 @@ function deleteSchoolYearRecord(PDO $pdo, string $year): void
         setEndedSchoolYears($pdo, array_values(array_filter($ended, static fn (string $e): bool => $e !== $y)));
     }
 }
+
+/**
+ * Every YYYY-YYYY label that should appear in admin school-year management.
+ *
+ * @return list<string>
+ */
+function collectSchoolYearLabelsForCatalog(PDO $pdo): array
+{
+    $years = [];
+    foreach (schoolYearFilterOptions($pdo, true) as $y) {
+        $years[$y] = true;
+    }
+    $ongoing = getOngoingSchoolYear($pdo);
+    if ($ongoing !== null && $ongoing !== '') {
+        $years[$ongoing] = true;
+    }
+    $enrollment = getEnrollmentSchoolYear($pdo);
+    if ($enrollment !== null && $enrollment !== '') {
+        $years[$enrollment] = true;
+    }
+    foreach (getEndedSchoolYears($pdo) as $y) {
+        $years[$y] = true;
+    }
+    $legacy = readSchoolYearSetting($pdo, 'active_school_year');
+    if ($legacy['exists'] && trim((string)($legacy['value'] ?? '')) !== '') {
+        $norm = normalizeSchoolYearValue((string)$legacy['value']);
+        if ($norm !== null && $norm !== '') {
+            $years[$norm] = true;
+        }
+    }
+    $list = array_keys($years);
+    rsort($list, SORT_STRING);
+
+    return $list;
+}
+
+/**
+ * Backfill school_years rows for settings/enrollment years missing from the catalog.
+ */
+function syncSchoolYearCatalogFromSettings(PDO $pdo, string $createdByName = 'System'): void
+{
+    if (!function_exists('tableExists')) {
+        require_once __DIR__ . '/user_role.php';
+    }
+    if (!tableExists($pdo, 'school_years')) {
+        return;
+    }
+    ensureSchoolYearsArchivedColumn($pdo);
+    $stmt = $pdo->prepare(
+        'INSERT IGNORE INTO school_years (year, created_by_name) VALUES (:year, :created_by)'
+    );
+    foreach (collectSchoolYearLabelsForCatalog($pdo) as $year) {
+        $stmt->execute([':year' => $year, ':created_by' => $createdByName]);
+    }
+}

@@ -58,6 +58,7 @@ export function SchoolYearManagement() {
     ongoingSchoolYearLabel,
     enrollmentSchoolYearLabel,
     endedSchoolYears,
+    settingsLoaded,
   } = useSchoolYear();
   const [isSaving, setIsSaving] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
@@ -605,7 +606,9 @@ export function SchoolYearManagement() {
                     <TableCell colSpan={7} className="text-center text-sm text-gray-500 py-8">
                       {hiddenArchivedCount > 0
                         ? 'All school years are hidden. Turn on “Show hidden” to view them.'
-                        : 'No school years yet. Create one to get started.'}
+                        : !settingsLoaded
+                          ? 'Loading school years…'
+                          : 'No school years in the catalog yet. Create one, or refresh after deploy if you already have enrollment years configured.'}
                     </TableCell>
                   </TableRow>
                 ) : null}
