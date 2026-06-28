@@ -2259,7 +2259,7 @@ def _ocr_psa_child_fields_pass_on_image(ocr_path: str) -> tuple[str, list[dict],
         im = Image.open(ocr_path).convert("RGB")
         w, h = im.size
         y1 = max(0, int(h * 0.06))
-        y2 = max(y1 + 1, int(h * 0.45))
+        y2 = max(y1 + 1, int(h * 0.52))
         x2 = max(1, int(w * 0.96))
         crop = im.crop((0, y1, x2, y2))
         zoom = 2 if max(crop.size) < 1500 else 1
@@ -2293,6 +2293,42 @@ def _ocr_psa_child_fields_pass_on_image(ocr_path: str) -> tuple[str, list[dict],
         return "", [], 0.0
 
 
+def _ocr_academic_full_page_pass_on_image(ocr_path: str) -> tuple[str, list[dict], float]:
+    """Light OCR on the upper page when learner-band crops miss the name."""
+    if not _tesseract_available or not ocr_path:
+        return "", [], 0.0
+    try:
+        from PIL import Image
+    except ImportError:
+        return "", [], 0.0
+    try:
+        im = Image.open(ocr_path).convert("RGB")
+        w, h = im.size
+        y1 = 0
+        y2 = max(1, int(h * 0.72))
+        crop = im.crop((0, y1, w, y2))
+        zoom = 1
+        if max(crop.size) < 1200:
+            zoom = 2
+            crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
+        t, c, boxes = _ocr_tesseract_image(crop, psm=6, enhanced=False)
+        scaled_boxes: list[dict] = []
+        for b in boxes or []:
+            scaled_boxes.append(
+                {
+                    "text": b["text"],
+                    "x": int(float(b["x"]) / zoom),
+                    "y": int(float(b["y"]) / zoom) + y1,
+                    "w": max(1, int(float(b["w"]) / zoom)),
+                    "h": max(1, int(float(b["h"]) / zoom)),
+                    "conf": b.get("conf"),
+                }
+            )
+        return (t or "").strip(), scaled_boxes, float(c)
+    except Exception:
+        return "", [], 0.0
+
+
 def _ocr_academic_learner_band_pass_on_image(ocr_path: str) -> tuple[str, list[dict], float]:
     """High-contrast OCR on SF9/SF10 learner-information band (name, LRN, school year)."""
     if not _tesseract_available or not ocr_path:
@@ -2305,7 +2341,7 @@ def _ocr_academic_learner_band_pass_on_image(ocr_path: str) -> tuple[str, list[d
         im = Image.open(ocr_path).convert("RGB")
         w, h = im.size
         y1 = max(0, int(h * 0.06))
-        y2 = max(y1 + 1, int(h * 0.56))
+        y2 = max(y1 + 1, int(h * 0.68))
         x2 = max(1, int(w * 0.98))
         crop = im.crop((0, y1, x2, y2))
         zoom = 2 if max(crop.size) < 1500 else 1
@@ -2543,6 +2579,246 @@ def _extract_academic_name_from_labeled_text(text: str) -> str:
             parts.append(last_m.group(1).strip())
         if len(parts) >= 2:
             return " ".join(parts)[:64]
+    return ""
+
+
+def _name_first_last_enrollment_tokens(name: str) -> tuple[str, str]:
+    """First and last tokens for enrollment cross-check (skip JR/SR/II/III/IV suffix)."""
+    tokens = _norm_simple_name_tokens(name)
+    suffixes = frozenset({"JR", "SR", "II", "III", "IV", "V"})
+    while len(tokens) > 2 and tokens[-1] in suffixes:
+        tokens = tokens[:-1]
+    if len(tokens) < 2:
+        return "", ""
+    return tokens[0], tokens[-1]
+
+
+def _trim_academic_name_candidate(name: str) -> str:
+    import re
+
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    return re.split(
+        r"\s+(?:LRN|GRADE|SECTION|SCHOOL|FORM|REPORT|SY|YEAR)\b",
+        raw,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip(" ,.-")
+
+
+def _display_person_name_simple(name: str) -> str:
+    return " ".join(_sanitize_person_name_candidate(_trim_academic_name_candidate(name)).split())[:64]
+
+
+def _person_name_plausible(name: str) -> bool:
+    tokens = [
+        t.replace(".", "")
+        for t in _sanitize_person_name_candidate(name).split()
+        if t.replace(".", "").isalpha()
+    ]
+    if len(tokens) < 2 or len(tokens[0]) < 2 or len(tokens[-1]) < 2:
+        return False
+    noise = frozenset(
+        {"SCHOOL", "GRADE", "REPORT", "FORM", "CERTIFICATE", "STUDENT", "MORAL", "GOOD"}
+    )
+    return not any(t.upper() in noise for t in tokens)
+
+
+def _extract_academic_name_from_full_text(text: str, expected_name: str = "") -> str:
+    """
+    Scan full OCR text for learner names when layout-specific regions miss the value.
+    Handles SF9/SF10 'LAST, FIRST MIDDLE' lines and enrollment-token anchoring.
+    """
+    import re
+
+    s = _norm_ocr_text(text or "")
+    if not s:
+        return ""
+
+    raw_lines = [x for x in (text or "").splitlines() if (x or "").strip()]
+    for ln in raw_lines:
+        for m in re.finditer(
+            r"\b([A-Z][A-Za-z'\-]{1,24})\s*,\s*([A-Z][A-Za-z'\-]{1,24}(?:\s+[A-Z][A-Za-z'\-.]{0,24}){0,4})\b",
+            ln,
+            re.I,
+        ):
+            last, rest = m.group(1).strip(), m.group(2).strip()
+            if any(k in rest.upper() for k in ("SCHOOL", "GRADE", "SECTION", "REPORT", "FORM")):
+                continue
+            if _academic_name_part_plausible(last.upper()) and _person_name_plausible(f"{rest} {last}"):
+                return _display_person_name_simple(f"{rest} {last}")[:64]
+
+    for m in re.finditer(
+        r"\b([A-Z][A-Z'\-]{1,24})\s*,\s*([A-Z][A-Z'\-]{1,24}(?:\s+[A-Z][A-Z'\-.]{0,24}){0,4})\b",
+        s,
+    ):
+        last, rest = m.group(1).strip(), m.group(2).strip()
+        if any(k in rest for k in ("SCHOOL", "GRADE", "SECTION", "REPORT", "FORM")):
+            continue
+        if _academic_name_part_plausible(last) and _person_name_plausible(f"{rest} {last}"):
+            return _display_person_name_simple(f"{rest} {last}")[:64]
+
+    for ln in (text or "").splitlines():
+        ul = _norm_ocr_text(ln)
+        if "NAME" not in ul and "LEARNER" not in ul:
+            continue
+        m = re.search(r"NAME\s*:?\s*(.+)$", ln, re.I)
+        if not m:
+            continue
+        val = _display_person_name_simple(m.group(1))
+        if val and _person_name_plausible(val):
+            return val[:64]
+
+    first_e, last_e = _name_first_last_enrollment_tokens(expected_name)
+    if first_e and last_e:
+        m = re.search(
+            rf"\b({re.escape(last_e)}\s+{re.escape(first_e)}(?:\s+[A-Z][A-Z'\-.]{{0,24}}){{0,4}})\b",
+            s,
+            re.I,
+        )
+        if m:
+            cand = _canonicalize_cert_name_for_match(
+                _display_person_name_simple(m.group(1)), expected_name
+            )
+            if _person_name_plausible(cand):
+                return cand[:64]
+        m = re.search(
+            rf"\b({re.escape(last_e)}\s*,\s*{re.escape(first_e)}(?:\s+[A-Z][A-Z'\-.]{{0,24}}){{0,4}})\b",
+            " ".join(raw_lines),
+            re.I,
+        )
+        if m:
+            cand = _display_person_name_simple(m.group(1).replace(",", " "))
+            if _person_name_plausible(cand):
+                return cand[:64]
+        m = re.search(
+            rf"\b({re.escape(first_e)}(?:\s+[A-Z][A-Z'\-.]{{0,24}}){{0,4}}\s+{re.escape(last_e)})\b",
+            s,
+            re.I,
+        )
+        if m:
+            cand = _display_person_name_simple(m.group(1))
+            if _person_name_plausible(cand):
+                return cand[:64]
+    return ""
+
+
+def _parse_dob_parts(s: str) -> dict | None:
+    """Accept YYYY-MM-DD, YYYY/MM/DD, or 'Month D, YYYY'."""
+    import re
+
+    if not s:
+        return None
+    s = s.strip()
+    m = re.match(r"^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*$", s)
+    if m:
+        y = int(m.group(1))
+        mo = int(m.group(2))
+        d = int(m.group(3))
+        if 1900 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31:
+            return {"y": y, "m": mo, "d": d}
+    months = {
+        "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+        "JUL": 7, "AUG": 8, "SEP": 9, "SEPT": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+    }
+    m = re.match(r"^\s*([A-Z]{3,9})\s+(\d{1,2})\s*,?\s*(\d{4})\s*$", s.upper())
+    if m and m.group(1)[:3] in months:
+        mo = months[m.group(1)[:3]]
+        return {"y": int(m.group(3)), "m": mo, "d": int(m.group(2))}
+    m = re.match(r"^\s*(\d{1,2})\s+([A-Z]{3,9})\s*,?\s*(\d{4})\s*$", s.upper())
+    if m and m.group(2)[:3] in months:
+        mo = months[m.group(2)[:3]]
+        return {"y": int(m.group(3)), "m": mo, "d": int(m.group(1))}
+    return None
+
+
+def _dob_month_names() -> list[str]:
+    return [
+        "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL",
+        "AUG", "SEP", "SEPT", "OCT", "NOV", "DEC",
+    ]
+
+
+def _dob_month_word(month_num: int) -> tuple[str, str]:
+    names = _dob_month_names()
+    full = (
+        "JANUARY FEBRUARY MARCH APRIL MAY JUNE JULY AUGUST SEPTEMBER OCTOBER NOVEMBER DECEMBER".split()[
+            month_num - 1
+        ]
+    )
+    return names[month_num - 1], full
+
+
+def _match_expected_dob_in_lines(expected_dob_str: str, u_lines: list[str]) -> tuple[bool | None, str]:
+    """Find enrollment DOB in OCR lines (preferred birth/date rows, then full text)."""
+    import re
+
+    parts = _parse_dob_parts(expected_dob_str)
+    if not parts:
+        return None, ""
+    month_word, month_full = _dob_month_word(parts["m"])
+    preferred = [ln for ln in u_lines if any(k in ln for k in ("BIRTH", "DATE", "BORN"))]
+    pools = [preferred, u_lines] if preferred else [u_lines]
+    if preferred:
+        pools.append([ " ".join(u_lines) ])
+    else:
+        pools.append([ " ".join(u_lines) ])
+
+    yyyy = str(parts["y"])
+    mm = parts["m"]
+    dd = parts["d"]
+    num_patterns = [
+        rf"\b{yyyy}[\-/](0?{mm}|{mm:02d})[\-/](0?{dd}|{dd:02d})\b",
+        rf"\b(0?{mm}|{mm:02d})[\-/](0?{dd}|{dd:02d})[\-/]{yyyy}\b",
+        rf"\b(0?{dd}|{dd:02d})[\-/](0?{mm}|{mm:02d})[\-/]{yyyy}\b",
+    ]
+    month_alt = "(?:" + "|".join([month_word, month_word[:3], month_full]) + ")"
+    word_patterns = [
+        rf"\b{month_alt}[A-Z]*\s+(0?{dd}|{dd:02d})\s*,?\s*{yyyy}\b",
+        rf"\b(0?{dd}|{dd:02d})\s+{month_alt}[A-Z]*\s*,?\s*{yyyy}\b",
+        rf"\b(0?{dd}|{dd:02d})\s+{month_alt}[A-Z]*\s+{yyyy}\b",
+    ]
+
+    seen: set[str] = set()
+    for pool in pools:
+        for ln in pool:
+            if not ln or ln in seen:
+                continue
+            seen.add(ln)
+            for pat in num_patterns + word_patterns:
+                m = re.search(pat, ln, re.I)
+                if m:
+                    return True, m.group(0).strip()
+    return False, ""
+
+
+def _extract_birth_date_snippet_from_lines(u_lines: list[str]) -> str:
+    """Best-effort DOB string for display when strict match fails."""
+    import re
+
+    months = (
+        "JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER"
+        "|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC"
+    )
+    preferred = [ln for ln in u_lines if any(k in ln for k in ("BIRTH", "DATE", "BORN"))]
+    pools = preferred + u_lines + [" ".join(u_lines)]
+    seen: set[str] = set()
+    patterns = [
+        rf"\b(\d{{1,2}}\s+(?:{months})[A-Z]*\s*,?\s*(?:19|20)\d{{2}})\b",
+        rf"\b((?:{months})[A-Z]*\s+\d{{1,2}}\s*,?\s*(?:19|20)\d{{2}})\b",
+        r"\b((?:19|20)\d{2}[-/](?:0?\d|1[0-2])[-/](?:0?\d|[12]\d|3[01]))\b",
+        r"\b((?:0?\d|1[0-2])[-/](?:0?\d|[12]\d|3[01])[-/](?:19|20)\d{2})\b",
+        r"\b((?:0?\d|[12]\d|3[01])[-/](?:0?\d|1[0-2])[-/](?:19|20)\d{2})\b",
+    ]
+    for ln in pools:
+        if not ln or ln in seen:
+            continue
+        seen.add(ln)
+        for pat in patterns:
+            m = re.search(pat, ln, re.I)
+            if m:
+                return m.group(1).strip()
     return ""
 
 
@@ -4174,12 +4450,16 @@ def _ocr_read_document(
             if (band_text or "").strip():
                 _run(2, "tesseract", "academic_learner_band", band_text, band_conf, band_boxes)
                 best_text = f"{(best_text or '').strip()}\n{band_text.strip()}".strip()
+            full_text, full_boxes, full_conf = _ocr_academic_full_page_pass_on_image(ocr_path)
+            if (full_text or "").strip():
+                _run(2, "tesseract", "academic_full_page", full_text, full_conf, full_boxes)
+                best_text = f"{(best_text or '').strip()}\n{full_text.strip()}".strip()
 
         if _ocr_merge_results(doc_type) and len(candidates) > 1:
             best_text, best_conf, best_boxes, best_label = _ocr_merge_candidates(candidates, doc_type)
 
         for _eng, label, _txt, _conf, box_pool in candidates:
-            if label in ("psa_child_band", "academic_learner_band") and box_pool:
+            if label in ("psa_child_band", "academic_learner_band", "academic_full_page") and box_pool:
                 best_boxes = _ocr_merge_box_pools(best_boxes, box_pool)
 
         best_boxes = _ocr_scale_boxes_to_original(best_boxes, ocr_scale)
@@ -5517,6 +5797,26 @@ def _fuzzy_name_token_match(exp_tok: str, cand: str, cand_tokens: list[str] | No
     return False
 
 
+def _name_tokens_match_certificate(expected_name: str, candidate: str) -> tuple[bool, float, list[str], list[str]]:
+    """Good moral / certification: first + last name match; middle may differ."""
+    normalized = _canonicalize_cert_name_for_match(candidate, expected_name)
+    first_e, last_e = _name_first_last_enrollment_tokens(expected_name)
+    cand_tokens = _cert_name_tokens(normalized)
+    if first_e and last_e and cand_tokens:
+        first_ok = _fuzzy_name_token_match(first_e, normalized, cand_tokens)
+        last_ok = _fuzzy_name_token_match(last_e, cand_tokens[-1], [cand_tokens[-1]])
+        if not last_ok and cand_tokens:
+            last_ok = _fuzzy_name_token_match(last_e, cand_tokens[0], [cand_tokens[0]])
+        if first_ok and last_ok:
+            exp_all = _norm_simple_name_tokens(expected_name)
+            missing = [t for t in exp_all if t.upper() not in {first_e.upper(), last_e.upper()}]
+            return True, 1.0, missing[:6], [first_e, last_e]
+    ok, ratio, missing, hits = _name_tokens_match_robust(
+        expected_name, normalized, certificate_style=True
+    )
+    return ok, ratio, missing, hits
+
+
 def _name_tokens_match_robust(
     expected_name: str,
     candidate: str,
@@ -5548,7 +5848,9 @@ def _name_tokens_match_robust(
     # PH school documents often drop middle names or use initials — first + last is the anchor.
     if first_ok and last_ok:
         ok = True
-        if ratio < 0.50:
+        if certificate_style:
+            ratio = 1.0
+        elif ratio < 0.50:
             ratio = max(ratio, round(2.0 / max(1, len(exp_tokens)), 2))
     else:
         ok = False
@@ -5661,6 +5963,18 @@ def _resolve_partial_field_ok(row: dict) -> dict:
     if row.get("ok") is not False:
         return row
     field = str(row.get("field") or "").strip().lower()
+
+    if field == "name":
+        missing = {str(t).upper() for t in (row.get("missing_tokens") or [])}
+        first, last = _name_first_last_enrollment_tokens(str(row.get("expected") or ""))
+        if first and last and first.upper() not in missing and last.upper() not in missing:
+            row = dict(row)
+            row["ok"] = True
+            note = str(row.get("note") or "").strip()
+            partial_note = "Partial match — optional tokens differ (middle name, abbreviation, or OCR)."
+            row["note"] = f"{note} {partial_note}".strip() if note else partial_note
+            return row
+
     ratio = row.get("match_ratio")
     if not isinstance(ratio, (int, float)):
         return row
@@ -7249,7 +7563,7 @@ def _evaluate(
                     if full:
                         _consider(full, _union_bbox(picked), base_score=0.25)
 
-                if best_name and (best_score >= 0.34 or not exp_tokens):
+                if best_name and (best_score >= 0.25 or not exp_tokens):
                     return best_name, best_bb
                 return "", None
 
@@ -7817,14 +8131,6 @@ def _evaluate(
                 )
                 return ok, ratio, missing, hits
 
-            def _name_tokens_match_certificate(expected_name: str, candidate: str) -> tuple[bool, float, list[str], list[str]]:
-                """Good moral / certification: first + last name match; middle may differ."""
-                normalized = _canonicalize_cert_name_for_match(candidate, expected_name)
-                ok, ratio, missing, hits = _name_tokens_match_robust(
-                    expected_name, normalized, certificate_style=True
-                )
-                return ok, ratio, missing, hits
-
             def _extract_good_moral_certified_name(u_simple: list[str], u_norm: list[str] | None = None) -> str:
                 """Pull student name from good-moral body text (several DepEd phrasings)."""
 
@@ -7876,7 +8182,8 @@ def _evaluate(
 
                 blob = normalize(" ".join(u_simple or []))
                 patterns = (
-                    # "… as per record of this office, Reyes, Kyle Jennifer M. Grade 10…"
+                    # "… certify that KIANA DANE V. VILLASAN was a student in Grade …"
+                    r"(?:THIS\s+IS\s+TO\s+)?CERTIF(?:Y|IES)\s+THAT\s+(.+?)\s+WAS\s+A\s+STUDENT\b",
                     r"AS\s+PER\s+RECORD\s+OF\s+THIS\s+OFFICE\s*,\s*(.+?)(?:\s+GRADE\s|\s+GR\.?\s|\s+-\s*[A-Z]|\s+IS\s+A\s+)",
                     r"THIS\s+IS\s+TO\s+CERTIFY\s+THAT\s+(?:AS\s+PER\s+RECORD\s+OF\s+THIS\s+OFFICE\s*,\s*)?(.+?)(?:\s+GRADE\s|\s+GR\.?\s|\s+-\s*(?:HUMSS|STEM|ABM|ICT|HUMANITY)|\s+IS\s+A\s+)",
                     r"CERTIF(?:Y|IES)\s+THAT\s+(?:AS\s+PER\s+RECORD\s+OF\s+THIS\s+OFFICE\s*,\s*)?(.+?)(?:\s+GRADE\s|\s+GR\.?\s|\s+-\s*(?:HUMSS|STEM|ABM|ICT|HUMANITY)|\s+IS\s+A\s+)",
@@ -8242,6 +8549,21 @@ def _evaluate(
                     )
                     return ok, ratio, missing, best_name[:64], bb
                 ok, ratio, missing = name_match(expected_name, " ".join(u_simple or []), u_simple)
+                if not ok and expected_name:
+                    for ln in u_simple or []:
+                        clean = _strip_name_field_labels(ln)
+                        if not _candidate_name_is_plausible(clean):
+                            continue
+                        ok_c, ratio_c, missing_c, _hits = _name_tokens_match_certificate(
+                            expected_name, clean
+                        )
+                        if ratio_c > ratio:
+                            ok, ratio, missing = ok_c, ratio_c, missing_c
+                        if ok:
+                            bb = _detect_good_moral_name_bbox(
+                                normed_boxes, image_h, clean, expected_name
+                            )
+                            return ok, ratio, missing, clean[:64], bb
                 bb = _detect_good_moral_name_bbox(normed_boxes, image_h, "", expected_name)
                 if ok:
                     return ok, ratio, missing, "", bb
@@ -8896,6 +9218,12 @@ def _evaluate(
                                 ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, line_name)
                                 detected_name = line_name
                         if not detected_name:
+                            full_name = _extract_academic_name_from_full_text(norm_text, exp_name)
+                            if full_name:
+                                refined_full = _refine_detected_person_name(exp_name, full_name)
+                                ok_name, ratio, missing, _hits = _name_tokens_match(exp_name, refined_full)
+                                detected_name = _normalize_person_name_display(refined_full)
+                        if not detected_name:
                             clean_lines = [
                                 _strip_name_field_labels(ln)
                                 for ln in simple_lines
@@ -9235,72 +9563,10 @@ def _evaluate(
             # Date of Birth and Place of Birth (mainly used for PSA, but
             # supported on any doc that has those labels).
             # -----------------------------------------------------------
-            def _dob_parts(s: str) -> dict | None:
-                """Accept YYYY-MM-DD or YYYY/MM/DD or 'Month D, YYYY'."""
-                if not s:
-                    return None
-                s = s.strip()
-                m = re.match(r"^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*$", s)
-                if m:
-                    y = int(m.group(1)); mo = int(m.group(2)); d = int(m.group(3))
-                    if 1900 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31:
-                        return {"y": y, "m": mo, "d": d}
-                months = {
-                    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-                    "JUL": 7, "AUG": 8, "SEP": 9, "SEPT": 9, "OCT": 10, "NOV": 11, "DEC": 12,
-                }
-                m = re.match(r"^\s*([A-Z]{3,9})\s+(\d{1,2})\s*,?\s*(\d{4})\s*$", s.upper())
-                if m and m.group(1)[:3] in months:
-                    mo = months[m.group(1)[:3]]
-                    return {"y": int(m.group(3)), "m": mo, "d": int(m.group(2))}
-                return None
-
-            def dob_match_linewise(expected_dob_str: str, u_lines: list[str]) -> tuple[bool | None, str]:
-                """
-                Look for a date that matches the student's DOB on lines that mention DATE/BIRTH.
-                Returns (ok|None, the_extracted_value_str).
-                """
-                parts = _dob_parts(expected_dob_str)
-                if not parts:
-                    return None, ""
-                month_names = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL",
-                               "AUG", "SEP", "SEPT", "OCT", "NOV", "DEC"]
-                month_word = month_names[parts["m"] - 1]
-                month_full = (
-                    "JANUARY FEBRUARY MARCH APRIL MAY JUNE JULY AUGUST SEPTEMBER OCTOBER NOVEMBER DECEMBER".split()[
-                        parts["m"] - 1
-                    ]
-                )
-                # Prefer lines labelled with date/birth keywords.
-                preferred = [ln for ln in u_lines if any(k in ln for k in ("BIRTH", "DATE", "BORN"))]
-                pool = preferred if preferred else u_lines
-                # Numeric: 1990-07-15 / 1990/7/15 / 07-15-1990 / 15/07/1990 ...
-                yyyy = str(parts["y"])
-                mm = parts["m"]
-                dd = parts["d"]
-                num_patterns = [
-                    rf"\b{yyyy}[\-/](0?{mm}|{mm:02d})[\-/](0?{dd}|{dd:02d})\b",
-                    rf"\b(0?{mm}|{mm:02d})[\-/](0?{dd}|{dd:02d})[\-/]{yyyy}\b",
-                    rf"\b(0?{dd}|{dd:02d})[\-/](0?{mm}|{mm:02d})[\-/]{yyyy}\b",
-                ]
-                for ln in pool:
-                    for pat in num_patterns:
-                        m = re.search(pat, ln)
-                        if m:
-                            return True, m.group(0)
-                # Worded PSA formats: 'JULY 15 1990', 'JUL 15, 1990', '15 NOVEMBER 2004'
-                month_alt = "(?:" + "|".join([month_word, month_word[:3], month_full]) + ")"
-                for ln in pool:
-                    m = re.search(rf"\b{month_alt}[A-Z]*\s+(0?{dd}|{dd:02d})\s*,?\s*{yyyy}\b", ln)
-                    if m:
-                        return True, m.group(0)
-                    m = re.search(rf"\b(0?{dd}|{dd:02d})\s+{month_alt}[A-Z]*\s*,?\s*{yyyy}\b", ln)
-                    if m:
-                        return True, m.group(0)
-                return False, ""
-
             if run_dob_check and exp_dob:
-                dob_ok, dob_detected = dob_match_linewise(exp_dob, norm_lines)
+                dob_ok, dob_detected = _match_expected_dob_in_lines(exp_dob, norm_lines)
+                if not dob_detected:
+                    dob_detected = _extract_birth_date_snippet_from_lines(norm_lines)
                 row = {
                     "field": "Date of birth",
                     "expected": exp_dob,
