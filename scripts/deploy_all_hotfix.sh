@@ -14,13 +14,17 @@ bash "$SCRIPT_DIR/deploy_ai_hotfix.sh"
 bash "$SCRIPT_DIR/deploy_ui_hotfix.sh"
 
 step "Reload PHP-FPM (session API: ping/touch routes)"
-for svc in php8.3-fpm php8.2-fpm php-fpm; do
-  if systemctl is-active --quiet "$svc" 2>/dev/null; then
-    systemctl reload "$svc" || true
-    echo "Reloaded $svc"
-    break
-  fi
-done
+if [ "${SKIP_SERVICE_RESTART:-0}" = "1" ]; then
+  echo "SKIP: SKIP_SERVICE_RESTART=1 — PHP-FPM not reloaded (existing logins unchanged)."
+else
+  for svc in php8.3-fpm php8.2-fpm php-fpm; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+      systemctl reload "$svc" || true
+      echo "Reloaded $svc"
+      break
+    fi
+  done
+fi
 
 step "Verify session API routes"
 if ! grep -q "session/touch" "$APP_ROOT/public/api_index.php" 2>/dev/null; then
@@ -39,6 +43,8 @@ fi
 if [ "${INVALIDATE_SESSIONS:-1}" = "1" ] && command -v php >/dev/null 2>&1; then
   step "Invalidate all login sessions (deploy restart)"
   php "$APP_ROOT/scripts/bump_server_boot_epoch.php"
+elif [ "${INVALIDATE_SESSIONS:-1}" = "0" ]; then
+  echo "SKIP: INVALIDATE_SESSIONS=0 — existing login sessions kept."
 fi
 
 echo ""

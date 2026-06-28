@@ -34,13 +34,19 @@ fi
 .venv/bin/pip install -q -r requirements.txt
 
 step "Restart AI service"
-systemctl daemon-reload
-systemctl restart intellidocs-ai
-sleep 2
-systemctl --no-pager --full status intellidocs-ai || true
+if [ "${SKIP_SERVICE_RESTART:-0}" = "1" ]; then
+  echo "SKIP: SKIP_SERVICE_RESTART=1 — intellidocs-ai not restarted (restart manually when done testing sessions)."
+else
+  systemctl daemon-reload
+  systemctl restart intellidocs-ai
+  sleep 2
+  systemctl --no-pager --full status intellidocs-ai || true
+fi
 
 step "Configure nginx/PHP timeouts (prevents HTML 502 on long OCR)"
-if [ -f "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" ]; then
+if [ "${SKIP_SERVICE_RESTART:-0}" = "1" ]; then
+  echo "SKIP: SKIP_SERVICE_RESTART=1 — nginx/PHP timeout config not applied."
+elif [ -f "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" ]; then
   bash "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" || true
 fi
 
@@ -79,13 +85,17 @@ if [ -f "$APP_ROOT/scripts/verify_ai_deploy.sh" ]; then
 fi
 
 step "Reload PHP-FPM (API files updated with git pull)"
-for svc in php8.3-fpm php8.2-fpm php-fpm; do
-  if systemctl is-active --quiet "$svc" 2>/dev/null; then
-    systemctl reload "$svc" || true
-    echo "Reloaded $svc"
-    break
-  fi
-done
+if [ "${SKIP_SERVICE_RESTART:-0}" = "1" ]; then
+  echo "SKIP: SKIP_SERVICE_RESTART=1 — PHP-FPM not reloaded (existing logins unchanged)."
+else
+  for svc in php8.3-fpm php8.2-fpm php-fpm; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then
+      systemctl reload "$svc" || true
+      echo "Reloaded $svc"
+      break
+    fi
+  done
+fi
 
 echo ""
 echo "AI hotfix deployed. Session/API-only changes need PHP reload (done above)."
