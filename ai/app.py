@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 55
+AI_VERIFY_PAYLOAD_VERSION = 56
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -5206,8 +5206,9 @@ def _sex_flags_in_text(t: str) -> tuple[bool, bool]:
 
 def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
     """
-    PSA birth certificates place the check mark BEFORE the option (e.g. X 2 Female),
-    not after the word. Parse field 2 SEX from the child block only.
+    PSA field 2 SEX: the check mark sits BEFORE the selected option
+    (e.g. __X__ 2 Female). The X belongs to the label that follows it,
+    never the gender word that precedes it.
     """
     import re
 
@@ -5229,74 +5230,65 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
     ]
     tail_pool = lines[max(0, len(lines) - 24) :]
 
+    def _psa_mark_is_sex_label(u: str, pos: int) -> bool:
+        """Ignore the X inside the field label 'SEX' (OCR/normalize leaves '2 SEX 1 MALE X 2')."""
+        return pos >= 2 and u[pos - 2 : pos + 1] == "SEX"
+
+    def _psa_mark_selects_forward(u: str) -> str | None:
+        """Read only forward from each X — mark applies to the next option, not the previous word."""
+        for mark in re.finditer(r"[X✓V]", u):
+            if _psa_mark_is_sex_label(u, mark.start()):
+                continue
+            fwd = u[mark.end() : mark.end() + 40]
+            if not fwd.strip():
+                continue
+            m1 = re.search(r"\b1\b", fwd)
+            m2 = re.search(r"\b2\b", fwd)
+            mal_m = re.search(r"\bMALE\b", fwd)
+            mal_i = mal_m.start() if mal_m else 10**9
+            fem_i = fwd.find("FEMALE")
+            if fem_i < 0:
+                fem_i = 10**9
+            i1 = m1.start() if m1 else 10**9
+            i2 = m2.start() if m2 else 10**9
+            # First option number after the mark determines the selection.
+            if i1 < i2 and mal_i < 10**9 and mal_i <= fem_i:
+                return "MALE"
+            if i2 < i1 and fem_i < 10**9:
+                return "FEMALE"
+            if i2 < 10**9 and fem_i < 10**9 and i2 <= fem_i + 2:
+                return "FEMALE"
+            if i1 < 10**9 and mal_i < 10**9 and i1 <= mal_i + 2:
+                return "MALE"
+        return None
+
     def _psa_sex_on_line(ln: str) -> str | None:
         u = (ln or "").upper()
         if "SEX" not in u and not re.search(r"\b[12]\b", u):
             return None
         if "FEMALE" not in u and "MALE" not in u:
             return None
-        # Mark before option number (PSA layout: [X] 2 Female).
-        if re.search(r"[X✓V][)\s]*\s*2\b", u) and "FEMALE" in u:
+
+        forward_hit = _psa_mark_selects_forward(u)
+        if forward_hit:
+            return forward_hit
+
+        # OCR sometimes merges the row without a readable X — look for empty 1 / marked 2 pattern.
+        if re.search(r"\(\s*\)\s*1\s*MALE", u) and re.search(r"[X✓V]\s*\)?\s*2\b", u) and "FEMALE" in u:
             return "FEMALE"
-        if re.search(r"[X✓V][)\s]*\s*1\b", u) and "MALE" in u:
-            return "MALE"
-        if re.search(r"\b2\b\s*FEMALE", u) and re.search(r"[X✓V]\s*2\b", u):
-            return "FEMALE"
-        if re.search(r"\b1\b\s*MALE", u) and re.search(r"[X✓V]\s*1\b", u):
-            return "MALE"
+        if re.search(r"[X✓V]\s*\)?\s*1\b", u) and re.search(r"\b1\b\s*MALE", u) and "FEMALE" in u:
+            if not re.search(r"[X✓V][^2]{0,12}\b2\b", u):
+                return "MALE"
+
         fem = re.search(r"\bFEMALE\b", u)
         mal = re.search(r"\bMALE\b", u)
         if fem and mal:
-            def _checked_option(option_num: str, word: str) -> bool:
-                wi = u.find(word)
-                if wi < 0:
-                    return False
-                segment = u[max(0, wi - 30) : wi + len(word)]
-                if re.search(rf"[X✓V][)\s]*\s*{option_num}\b", segment):
-                    return True
-                if re.search(r"[X✓V]", u[max(0, wi - 10) : wi]):
-                    return True
-                return False
-
-            f_checked = _checked_option("2", "FEMALE")
-            m_checked = _checked_option("1", "MALE")
-            if f_checked and not m_checked:
-                return "FEMALE"
-            if m_checked and not f_checked:
-                return "MALE"
-            best = None
-            best_dist = 10**9
-            for mark in re.finditer(r"[X✓V]", u):
-                mp = mark.start()
-                if fem:
-                    d = abs(mp - fem.start())
-                    if d < best_dist:
-                        best_dist = d
-                        best = "FEMALE"
-                if mal:
-                    d = abs(mp - mal.start())
-                    if d < best_dist:
-                        best_dist = d
-                        best = "MALE"
-            if best:
-                return best
+            # Do not use distance-to-word — X before Female must not credit Male.
             return None
-        for mark in re.finditer(r"[X✓V]", u):
-            pos = mark.start()
-            window = u[pos : pos + 28]
-            if re.search(r"\b2\b", window) and "FEMALE" in u[pos : pos + 40]:
-                if not mal or abs(pos - fem.start()) < abs(pos - mal.start()):
-                    return "FEMALE"
-            if re.search(r"\b1\b", window) and "MALE" in u[pos : pos + 32]:
-                if not fem or abs(pos - mal.start()) < abs(pos - fem.start()):
-                    return "MALE"
-        # Template line with only one gender word — require checkbox mark or SEX field context.
-        if fem and not mal:
-            if re.search(r"[X✓V]", u) or (re.search(r"\b2\b", u) and "SEX" in u):
-                return "FEMALE"
-        if mal and not fem:
-            if re.search(r"[X✓V]", u) or (re.search(r"\b1\b", u) and "SEX" in u):
-                return "MALE"
+        if fem and not mal and re.search(r"\b2\b", u) and "SEX" in u:
+            return "FEMALE"
+        if mal and not fem and re.search(r"\b1\b", u) and "SEX" in u:
+            return "MALE"
         return None
 
     search_pools = [sex_focus, child_pool, tail_pool]
