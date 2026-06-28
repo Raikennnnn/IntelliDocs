@@ -221,6 +221,22 @@ function userIsAdmin(PDO $pdo, int $userId): bool
     return getUserRole($pdo, $userId) === 'admin';
 }
 
+/** Admin school-year catalog + settings (matches portal role, not only admin_users). */
+function userCanManageSchoolYearSettings(PDO $pdo, int $userId): bool
+{
+    if ($userId <= 0) {
+        return false;
+    }
+    if (userIsInStudentTable($pdo, $userId)) {
+        return false;
+    }
+    if (userIsAdmin($pdo, $userId)) {
+        return true;
+    }
+
+    return getUserRole($pdo, $userId) === 'admin';
+}
+
 /** True when the user has registrar portal access. */
 function userIsRegistrar(PDO $pdo, int $userId): bool
 {

@@ -50,6 +50,30 @@ function parseSchoolYearInput(input: string): {
   };
 }
 
+/** Next Philippine SY label from today's date (June boundary). */
+function suggestNextSchoolYearLabel(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const start = m >= 6 ? y : y - 1;
+  return `${start}-${start + 1}`;
+}
+
+function schoolYearFormWithSuggestedDates(year: string): {
+  year: string;
+  startDate: string;
+  endDate: string;
+  status: 'Inactive';
+} {
+  const parsed = parseSchoolYearInput(year);
+  return {
+    year,
+    startDate: parsed?.suggestedStart ?? '',
+    endDate: parsed?.suggestedEnd ?? '',
+    status: 'Inactive',
+  };
+}
+
 export function SchoolYearManagement() {
   const {
     schoolYears,
@@ -101,18 +125,43 @@ export function SchoolYearManagement() {
   const totalCatalogCount = Math.max(schoolYears.length, catalogStats.total);
 
   useEffect(() => {
+    void reloadSchoolYearSettings();
+  }, [reloadSchoolYearSettings]);
+
+  useEffect(() => {
     if (!settingsLoaded) return;
     if (hiddenArchivedCount > 0 && (visibleSchoolYears.length === 0 || hiddenArchivedCount === totalCatalogCount)) {
       setShowHiddenArchived(true);
     }
   }, [settingsLoaded, hiddenArchivedCount, visibleSchoolYears.length, totalCatalogCount]);
 
+  useEffect(() => {
+    if (!isCreateDialogOpen) return;
+    const parsed = parseSchoolYearInput(newSchoolYear.year);
+    if (!parsed) return;
+    setNewSchoolYear((prev) => {
+      if (prev.startDate === parsed.suggestedStart && prev.endDate === parsed.suggestedEnd) {
+        return prev;
+      }
+      return {
+        ...prev,
+        startDate: parsed.suggestedStart,
+        endDate: parsed.suggestedEnd,
+      };
+    });
+  }, [isCreateDialogOpen, newSchoolYear.year]);
+
+  const openCreateSchoolYearDialog = () => {
+    const suggested = suggestNextSchoolYearLabel();
+    setNewSchoolYear(schoolYearFormWithSuggestedDates(suggested));
+    setIsCreateDialogOpen(true);
+  };
+
   const handleNewSchoolYearFieldChange = (year: string) => {
     const parsed = parseSchoolYearInput(year);
     setNewSchoolYear((prev) => {
       const next = { ...prev, year };
       if (parsed) {
-        // Pre-fill dates so the native calendar opens on the typed school year.
         next.startDate = parsed.suggestedStart;
         next.endDate = parsed.suggestedEnd;
       }
@@ -578,7 +627,7 @@ export function SchoolYearManagement() {
               ) : null}
               <Button 
                 className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
-                onClick={() => setIsCreateDialogOpen(true)}
+                onClick={openCreateSchoolYearDialog}
               >
                 <Plus className="w-4 h-4 mr-2" />
                 Create School Year
