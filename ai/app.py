@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 53
+AI_VERIFY_PAYLOAD_VERSION = 54
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -2259,10 +2259,11 @@ def _ocr_psa_child_fields_pass_on_image(ocr_path: str) -> tuple[str, list[dict],
         im = Image.open(ocr_path).convert("RGB")
         w, h = im.size
         y1 = max(0, int(h * 0.06))
-        y2 = max(y1 + 1, int(h * 0.52))
-        x2 = max(1, int(w * 0.96))
-        crop = im.crop((0, y1, x2, y2))
-        zoom = 2 if max(crop.size) < 1500 else 1
+        y2 = max(y1 + 1, int(h * 0.58))
+        x1 = max(0, int(w * 0.02))
+        x2 = max(x1 + 1, int(w * 0.98))
+        crop = im.crop((x1, y1, x2, y2))
+        zoom = 3 if max(crop.size) < 1800 else (2 if max(crop.size) < 2200 else 1)
         if zoom > 1:
             crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
 
@@ -2278,7 +2279,7 @@ def _ocr_psa_child_fields_pass_on_image(ocr_path: str) -> tuple[str, list[dict],
                 all_boxes.append(
                     {
                         "text": b["text"],
-                        "x": int(float(b["x"]) / zoom),
+                        "x": int(float(b["x"]) / zoom) + x1,
                         "y": int(float(b["y"]) / zoom) + y1,
                         "w": max(1, int(float(b["w"]) / zoom)),
                         "h": max(1, int(float(b["h"]) / zoom)),
@@ -2306,10 +2307,10 @@ def _ocr_sf9_center_header_pass_on_image(ocr_path: str) -> tuple[str, list[dict]
         w, h = im.size
         x1 = max(0, int(w * 0.06))
         x2 = max(x1 + 1, int(w * 0.94))
-        y1 = max(0, int(h * 0.08))
-        y2 = max(y1 + 1, int(h * 0.42))
+        y1 = max(0, int(h * 0.07))
+        y2 = max(y1 + 1, int(h * 0.52))
         crop = im.crop((x1, y1, x2, y2))
-        zoom = 2 if max(crop.size) < 1400 else 1
+        zoom = 3 if max(crop.size) < 1600 else (2 if max(crop.size) < 2000 else 1)
         if zoom > 1:
             crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
         texts: list[str] = []
@@ -2349,28 +2350,36 @@ def _ocr_psa_sex_row_pass_on_image(ocr_path: str) -> tuple[str, list[dict], floa
     try:
         im = Image.open(ocr_path).convert("RGB")
         w, h = im.size
-        y1 = max(0, int(h * 0.14))
-        y2 = max(y1 + 1, int(h * 0.30))
-        x1 = max(0, int(w * 0.04))
-        x2 = max(x1 + 1, int(w * 0.96))
+        y1 = max(0, int(h * 0.11))
+        y2 = max(y1 + 1, int(h * 0.36))
+        x1 = max(0, int(w * 0.02))
+        x2 = max(x1 + 1, int(w * 0.98))
         crop = im.crop((x1, y1, x2, y2))
-        zoom = 2 if max(crop.size) < 1200 else 1
+        zoom = 3 if max(crop.size) < 1400 else (2 if max(crop.size) < 1800 else 1)
         if zoom > 1:
             crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
-        t, c, boxes = _ocr_tesseract_image(crop, psm=6, enhanced=True)
-        scaled_boxes: list[dict] = []
-        for b in boxes or []:
-            scaled_boxes.append(
-                {
-                    "text": b["text"],
-                    "x": int(float(b["x"]) / zoom) + x1,
-                    "y": int(float(b["y"]) / zoom) + y1,
-                    "w": max(1, int(float(b["w"]) / zoom)),
-                    "h": max(1, int(float(b["h"]) / zoom)),
-                    "conf": b.get("conf"),
-                }
-            )
-        return (t or "").strip(), scaled_boxes, float(c)
+        texts: list[str] = []
+        confs: list[float] = []
+        all_boxes: list[dict] = []
+        for psm in (6, 4, 11):
+            t, c, boxes = _ocr_tesseract_image(crop, psm=psm, enhanced=True)
+            if (t or "").strip():
+                texts.append(t.strip())
+                confs.append(float(c))
+            for b in boxes or []:
+                all_boxes.append(
+                    {
+                        "text": b["text"],
+                        "x": int(float(b["x"]) / zoom) + x1,
+                        "y": int(float(b["y"]) / zoom) + y1,
+                        "w": max(1, int(float(b["w"]) / zoom)),
+                        "h": max(1, int(float(b["h"]) / zoom)),
+                        "conf": b.get("conf"),
+                    }
+                )
+        merged = "\n".join(texts)
+        avg_conf = sum(confs) / len(confs) if confs else 0.0
+        return merged, all_boxes, avg_conf
     except Exception:
         return "", [], 0.0
 
@@ -2378,10 +2387,10 @@ def _ocr_psa_sex_row_pass_on_image(ocr_path: str) -> tuple[str, list[dict], floa
 def _ocr_upper_half_pass_on_image(
     ocr_path: str,
     *,
-    y_end_ratio: float = 0.50,
+    y_end_ratio: float = 0.58,
 ) -> tuple[str, list[dict], float]:
     """
-    High-quality OCR on the top half of the page (full width).
+    High-quality OCR on the top ~58% of the page (full width).
     Primary source for identity fields: name, LRN, sex, date of birth.
     """
     if not _tesseract_available or not ocr_path:
@@ -2396,9 +2405,9 @@ def _ocr_upper_half_pass_on_image(
         x1 = 0
         x2 = w
         y1 = 0
-        y2 = max(1, int(h * max(0.35, min(0.55, float(y_end_ratio)))))
+        y2 = max(1, int(h * max(0.45, min(0.62, float(y_end_ratio)))))
         crop = im.crop((x1, y1, x2, y2))
-        zoom = 2 if max(crop.size) < 1600 else 1
+        zoom = 3 if max(crop.size) < 1800 else (2 if max(crop.size) < 2200 else 1)
         if zoom > 1:
             crop = crop.resize((crop.size[0] * zoom, crop.size[1] * zoom))
         texts: list[str] = []
@@ -2755,6 +2764,8 @@ def _person_name_plausible(name: str) -> bool:
     if len(tokens) < 2 or len(tokens[0]) < 2 or len(tokens[-1]) < 2:
         return False
     if _name_looks_like_ocr_garbage(name):
+        return False
+    if _name_looks_like_address_or_place(name):
         return False
     noise = frozenset(
         {"SCHOOL", "GRADE", "REPORT", "FORM", "CERTIFICATE", "STUDENT", "MORAL", "GOOD"}
@@ -4584,21 +4595,37 @@ def _ocr_read_document(
             "good_moral",
             "goodmoral",
         )
+        identity_chunks: list[str] = []
         if _normalize_doc_type_key(doc_type) in _identity_doc_types:
-            uh_text, uh_boxes, uh_conf = _ocr_upper_half_pass_on_image(ocr_path)
+            uh_text, uh_boxes, uh_conf = _ocr_upper_half_pass_on_image(ocr_path, y_end_ratio=0.58)
             if (uh_text or "").strip():
                 _run(2, "tesseract", "upper_half", uh_text, uh_conf, uh_boxes)
-                upper_half_text = uh_text.strip()
-                best_text = f"{upper_half_text}\n{(best_text or '').strip()}".strip()
+                identity_chunks.append(uh_text.strip())
 
         if _normalize_doc_type_key(doc_type) in ("birth_certificate", "birthcert"):
+            child_text, child_boxes, child_conf = _ocr_psa_child_fields_pass_on_image(ocr_path)
+            if (child_text or "").strip():
+                _run(2, "tesseract", "psa_child_band", child_text, child_conf, child_boxes)
+                identity_chunks.append(child_text.strip())
             sex_text, sex_boxes, sex_conf = _ocr_psa_sex_row_pass_on_image(ocr_path)
             if (sex_text or "").strip():
                 _run(2, "tesseract", "psa_sex_row", sex_text, sex_conf, sex_boxes)
+                identity_chunks.append(sex_text.strip())
                 best_text = f"{(best_text or '').strip()}\n{sex_text.strip()}".strip()
             header_extra = _ocr_birth_cert_header_text(ocr_path)
             if (header_extra or "").strip():
                 best_text = f"{(best_text or '').strip()}\n{header_extra.strip()}".strip()
+
+        if _normalize_doc_type_key(doc_type) in ("sf9", "report_card"):
+            center_text, center_boxes, center_conf = _ocr_sf9_center_header_pass_on_image(ocr_path)
+            if (center_text or "").strip():
+                _run(2, "tesseract", "center_name_lane", center_text, center_conf, center_boxes)
+                identity_chunks.append(center_text.strip())
+
+        if _normalize_doc_type_key(doc_type) in _identity_doc_types:
+            upper_half_text = "\n".join(identity_chunks).strip()
+            if upper_half_text:
+                best_text = f"{upper_half_text}\n{(best_text or '').strip()}".strip()
 
         if _normalize_doc_type_key(doc_type) in ("sf9", "report_card", "sf10", "form137", "form157"):
             if not upper_half_text:
@@ -4613,7 +4640,9 @@ def _ocr_read_document(
         for _eng, label, _txt, _conf, box_pool in candidates:
             if label in (
                 "upper_half",
+                "psa_child_band",
                 "psa_sex_row",
+                "center_name_lane",
                 "academic_learner_band",
             ) and box_pool:
                 best_boxes = _ocr_merge_box_pools(best_boxes, box_pool)
@@ -5193,6 +5222,41 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
             return "MALE"
         fem = re.search(r"\bFEMALE\b", u)
         mal = re.search(r"\bMALE\b", u)
+        if fem and mal:
+            def _checked_option(option_num: str, word: str) -> bool:
+                wi = u.find(word)
+                if wi < 0:
+                    return False
+                segment = u[max(0, wi - 30) : wi + len(word)]
+                if re.search(rf"[X✓V][)\s]*\s*{option_num}\b", segment):
+                    return True
+                if re.search(r"[X✓V]", u[max(0, wi - 10) : wi]):
+                    return True
+                return False
+
+            f_checked = _checked_option("2", "FEMALE")
+            m_checked = _checked_option("1", "MALE")
+            if f_checked and not m_checked:
+                return "FEMALE"
+            if m_checked and not f_checked:
+                return "MALE"
+            best = None
+            best_dist = 10**9
+            for mark in re.finditer(r"[X✓V]", u):
+                mp = mark.start()
+                if fem:
+                    d = abs(mp - fem.start())
+                    if d < best_dist:
+                        best_dist = d
+                        best = "FEMALE"
+                if mal:
+                    d = abs(mp - mal.start())
+                    if d < best_dist:
+                        best_dist = d
+                        best = "MALE"
+            if best:
+                return best
+            return None
         for mark in re.finditer(r"[X✓V]", u):
             pos = mark.start()
             window = u[pos : pos + 28]
@@ -5202,9 +5266,7 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
             if re.search(r"\b1\b", window) and "MALE" in u[pos : pos + 32]:
                 if not fem or abs(pos - mal.start()) < abs(pos - fem.start()):
                     return "MALE"
-        # Template line with both options — only accept a lone checked side.
-        if fem and mal:
-            return None
+        # Template line with only one gender word listed.
         if fem and not mal:
             return "FEMALE"
         if mal and not fem:
@@ -5216,6 +5278,47 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
         if hit:
             return hit
     return _psa_sex_on_line(" ".join(child_pool))
+
+
+def _name_looks_like_address_or_place(name: str) -> bool:
+    """Reject school addresses mistaken for learner names."""
+    import re
+
+    u = re.sub(r"\s+", " ", (name or "").strip().upper())
+    if not u:
+        return False
+    address_words = (
+        "STREET",
+        "ST ",
+        " AVENUE",
+        " AVE",
+        " ROAD",
+        " RD",
+        "BOULEVARD",
+        " BLVD",
+        " PARK",
+        "CORNER",
+        " COR ",
+        "BARANGAY",
+        " BRGY",
+        "SUBDIVISION",
+        "VILLAGE",
+        "HIGHWAY",
+        "OMEGA",
+        "FAIRVIEW",
+        "QUEZON CITY",
+        "METRO MANILA",
+        "PHILIPPINES",
+    )
+    if any(tok in u for tok in address_words):
+        return True
+    words = [w for w in u.split() if w]
+    if len(words) >= 2 and all(
+        w in {"FAIRVIEW", "PARK", "STREET", "AVENUE", "ROAD", "QUEZON", "CITY", "COR", "OMEGA", "RADO"}
+        for w in words
+    ):
+        return True
+    return False
 
 
 def _name_looks_like_ocr_garbage(name: str) -> bool:
@@ -7168,6 +7271,8 @@ def _evaluate(
                 if len(clean) < 3:
                     return False
                 if _name_looks_like_ocr_garbage(clean):
+                    return False
+                if _name_looks_like_address_or_place(clean):
                     return False
                 if (
                     _name_line_is_noise(clean)
@@ -9202,26 +9307,18 @@ def _evaluate(
                 if doc_type in ("birth_certificate", "birthcert"):
                     try:
                         lines = [ln for ln in (raw_text or "").splitlines() if (ln or "").strip()]
-                        upper_n = max(10, int(len(lines) * 0.48))
+                        upper_n = max(10, int(len(lines) * 0.55))
                         line_text = "\n".join(lines[:upper_n])
                     except Exception:
                         line_text = raw_text
                     psa_sex = _detect_psa_child_sex_from_text(line_text)
                     if psa_sex:
                         return (psa_sex == exp), psa_sex, None
+                    return None, "", None
                 line_detected = _detect_sex_from_lines(line_text)
                 detected, bbox = _detect_sex_from_boxes(ocr_boxes)
-                if doc_type in ("birth_certificate", "birthcert") and not detected:
-                    psa_sex = _detect_psa_child_sex_from_text(line_text)
-                    if psa_sex:
-                        detected = psa_sex
                 if line_detected and detected and line_detected != detected:
-                    if doc_type in ("birth_certificate", "birthcert"):
-                        psa_sex = _detect_psa_child_sex_from_text(line_text)
-                        detected = psa_sex or line_detected
-                    else:
-                        # Label-row text beats a stray same-row OCR box (common on SF9 headers).
-                        detected = line_detected
+                    detected = line_detected
                 elif not detected:
                     detected = line_detected
                 if not detected:
