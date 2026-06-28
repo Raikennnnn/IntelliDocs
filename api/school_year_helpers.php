@@ -486,3 +486,100 @@ function syncSchoolYearCatalogFromSettings(PDO $pdo, string $createdByName = 'Sy
         $stmt->execute([':year' => $year, ':created_by' => $createdByName]);
     }
 }
+
+/**
+ * @return array{total: int, hidden: int, visible: int}
+ */
+function getSchoolYearCatalogStats(PDO $pdo): array
+{
+    if (!function_exists('tableExists')) {
+        require_once __DIR__ . '/user_role.php';
+    }
+    if (!tableExists($pdo, 'school_years')) {
+        return ['total' => 0, 'hidden' => 0, 'visible' => 0];
+    }
+    ensureSchoolYearsArchivedColumn($pdo);
+    $total = (int)$pdo->query('SELECT COUNT(*) FROM school_years')->fetchColumn();
+    $hidden = (int)$pdo->query(
+        'SELECT COUNT(*) FROM school_years WHERE COALESCE(archived, 0) = 1'
+    )->fetchColumn();
+
+    return [
+        'total' => $total,
+        'hidden' => $hidden,
+        'visible' => max(0, $total - $hidden),
+    ];
+}
+
+/**
+ * Create a catalog row, or restore + update dates when the year was hidden.
+ *
+ * @return array{action: 'created'|'restored', year: string}
+ */
+function createOrRestoreSchoolYearRecord(
+    PDO $pdo,
+    string $year,
+    ?string $startDate,
+    ?string $endDate,
+    int $actorUserId,
+    string $creatorName
+): array {
+    $y = trim($year);
+    if (!preg_match('/^\d{4}-\d{4}$/', $y)) {
+        throw new InvalidArgumentException('School year must look like YYYY-YYYY (e.g. 2025-2026).');
+    }
+    if (!function_exists('tableExists')) {
+        require_once __DIR__ . '/user_role.php';
+    }
+    ensureSchoolYearsArchivedColumn($pdo);
+    if (!tableExists($pdo, 'school_years')) {
+        throw new RuntimeException('School years catalog table is not available.');
+    }
+
+    $stmt = $pdo->prepare(
+        'SELECT id, COALESCE(archived, 0) AS archived FROM school_years WHERE year = :year LIMIT 1'
+    );
+    $stmt->execute([':year' => $y]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($row !== false) {
+        $archived = (int)($row['archived'] ?? 0) === 1;
+        if ($archived) {
+            $upd = $pdo->prepare('
+                UPDATE school_years
+                   SET archived = 0,
+                       start_date = COALESCE(:start_date, start_date),
+                       end_date = COALESCE(:end_date, end_date),
+                       created_by_user_id = :uid,
+                       created_by_name = :name
+                 WHERE year = :year
+            ');
+            $upd->execute([
+                ':start_date' => $startDate,
+                ':end_date' => $endDate,
+                ':uid' => $actorUserId,
+                ':name' => $creatorName,
+                ':year' => $y,
+            ]);
+
+            return ['action' => 'restored', 'year' => $y];
+        }
+        throw new InvalidArgumentException(
+            "School year {$y} already exists. Use “Show hidden” if it does not appear in the list."
+        );
+    }
+
+    $ins = $pdo->prepare('
+        INSERT INTO school_years (year, start_date, end_date, created_by_user_id, created_by_name)
+        VALUES (:year, :start_date, :end_date, :uid, :name)
+    ');
+    $ins->execute([
+        ':year' => $y,
+        ':start_date' => $startDate,
+        ':end_date' => $endDate,
+        ':uid' => $actorUserId,
+        ':name' => $creatorName,
+    ]);
+
+    return ['action' => 'created', 'year' => $y];
+}

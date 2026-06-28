@@ -128,6 +128,7 @@ if ($method === 'GET') {
         ensureSchoolYearsTable($pdo);
         syncSchoolYearCatalogFromSettings($pdo);
         $payload['ended_school_years'] = getEndedSchoolYears($pdo);
+        $payload['school_year_catalog_stats'] = getSchoolYearCatalogStats($pdo);
         $payload['school_years'] = listSchoolYearRecords($pdo, $enrollment);
     } elseif ($actorId > 0 && getUserRole($pdo, $actorId) === 'student') {
         // Enrollment portal only — no admin management fields.
@@ -142,7 +143,7 @@ if ($method === 'GET') {
 if ($method === 'POST') {
     $actorId = requireAdminActor($pdo, 'admin/school-year');
     require_once __DIR__ . '/permission_guard.php';
-    requireActorPermission($pdo, ['role' => 'admin', 'id' => $actorId], 'configureSystem', false);
+    requireActorPermission($pdo, ['role' => 'admin', 'id' => $actorId], 'configureSystem', true);
     $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
     if (!is_array($payload)) {
         http_response_code(400);
@@ -179,31 +180,35 @@ if ($method === 'POST') {
     }
     ensureSchoolYearsTable($pdo);
     try {
-        $ins = $pdo->prepare('
-            INSERT INTO school_years (year, start_date, end_date, created_by_user_id, created_by_name)
-            VALUES (:year, :start_date, :end_date, :uid, :name)
-        ');
-        $ins->execute([
-            ':year' => $year,
-            ':start_date' => ($startDate === '' ? null : $startDate),
-            ':end_date' => ($endDate === '' ? null : $endDate),
-            ':uid' => $actorId,
-            ':name' => $creatorName,
-        ]);
-    } catch (Throwable $e) {
+        $result = createOrRestoreSchoolYearRecord(
+            $pdo,
+            $year,
+            $startDate === '' ? null : $startDate,
+            $endDate === '' ? null : $endDate,
+            $actorId,
+            $creatorName
+        );
+    } catch (InvalidArgumentException $e) {
         http_response_code(409);
-        echo json_encode(['success' => false, 'error' => 'School year already exists or could not be created.']);
+        echo json_encode(['success' => false, 'error' => $e->getMessage(), 'code' => 'school_year_exists']);
+        exit;
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'School year could not be created.']);
         exit;
     }
-    appLogEvent($pdo, 'admin_school_year_create', 'admin', 'success', $actorId, 'school_years', $year, []);
+    $logAction = $result['action'] === 'restored' ? 'admin_school_year_restore' : 'admin_school_year_create';
+    appLogEvent($pdo, $logAction, 'admin', 'success', $actorId, 'school_years', $year, $result);
     $ongoing = getOngoingSchoolYear($pdo);
     $enrollment = getEnrollmentSchoolYear($pdo);
     echo json_encode([
         'success' => true,
+        'action' => $result['action'],
         'ongoing_school_year' => $ongoing,
         'enrollment_school_year' => $enrollment,
         'active_school_year' => $enrollment,
         'enrollment_enabled' => $enrollment !== null,
+        'school_year_catalog_stats' => getSchoolYearCatalogStats($pdo),
         'school_years' => listSchoolYearRecords($pdo, $enrollment),
     ], JSON_UNESCAPED_UNICODE);
     exit;

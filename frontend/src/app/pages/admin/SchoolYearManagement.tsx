@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { apiFetch } from '../../lib/api';
 import { useSchoolYear } from '../../context/SchoolYearContext';
@@ -58,6 +58,7 @@ export function SchoolYearManagement() {
     ongoingSchoolYearLabel,
     enrollmentSchoolYearLabel,
     endedSchoolYears,
+    catalogStats,
     settingsLoaded,
   } = useSchoolYear();
   const [isSaving, setIsSaving] = useState(false);
@@ -93,7 +94,18 @@ export function SchoolYearManagement() {
     ? schoolYears
     : schoolYears.filter((sy) => !sy.archived);
 
-  const hiddenArchivedCount = schoolYears.filter((sy) => sy.archived).length;
+  const hiddenArchivedCount = Math.max(
+    schoolYears.filter((sy) => sy.archived).length,
+    catalogStats.hidden,
+  );
+  const totalCatalogCount = Math.max(schoolYears.length, catalogStats.total);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (hiddenArchivedCount > 0 && (visibleSchoolYears.length === 0 || hiddenArchivedCount === totalCatalogCount)) {
+      setShowHiddenArchived(true);
+    }
+  }, [settingsLoaded, hiddenArchivedCount, visibleSchoolYears.length, totalCatalogCount]);
 
   const handleNewSchoolYearFieldChange = (year: string) => {
     const parsed = parseSchoolYearInput(year);
@@ -125,12 +137,21 @@ export function SchoolYearManagement() {
             endDate: newSchoolYear.endDate,
           }),
         });
-        const j = (await res.json()) as { success?: boolean; error?: string };
+        const j = (await res.json()) as { success?: boolean; error?: string; code?: string; action?: string };
         if (!res.ok || !j.success) {
-          toast.error(j.error || 'Failed to create school year');
+          const err = j.error || 'Failed to create school year';
+          toast.error(err);
+          if (res.status === 409 || j.code === 'school_year_exists') {
+            setShowHiddenArchived(true);
+            await reloadSchoolYearSettings();
+          }
           return;
         }
-        toast.success(`School year ${newSchoolYear.year.trim()} created`);
+        if (j.action === 'restored') {
+          toast.success(`School year ${newSchoolYear.year.trim()} was hidden — it has been restored.`);
+        } else {
+          toast.success(`School year ${newSchoolYear.year.trim()} created`);
+        }
         setIsCreateDialogOpen(false);
         setNewSchoolYear({
           year: '',
@@ -478,8 +499,12 @@ export function SchoolYearManagement() {
             <CardTitle className="text-sm font-medium text-gray-600">Total School Years</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold text-gray-900">{schoolYears.length}</div>
-            <p className="text-xs text-gray-500 mt-1">All time records</p>
+            <div className="text-3xl font-bold text-gray-900">{totalCatalogCount}</div>
+            <p className="text-xs text-gray-500 mt-1">
+              {hiddenArchivedCount > 0
+                ? `${hiddenArchivedCount} hidden · ${Math.max(0, totalCatalogCount - hiddenArchivedCount)} visible`
+                : 'All time records'}
+            </p>
           </CardContent>
         </Card>
 
@@ -585,6 +610,25 @@ export function SchoolYearManagement() {
               </ul>
             </div>
           </div>
+
+          {/* Hidden years notice */}
+          {hiddenArchivedCount > 0 && !showHiddenArchived ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6 flex items-start justify-between gap-3">
+              <div className="text-sm text-amber-900">
+                <p className="font-medium">
+                  {hiddenArchivedCount} school year{hiddenArchivedCount === 1 ? '' : 's'} hidden from this list
+                </p>
+                <p className="mt-1">
+                  They still exist in the database. Creating the same year again will fail until you show or
+                  restore them.
+                </p>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => setShowHiddenArchived(true)}>
+                <Eye className="w-4 h-4 mr-2" />
+                Show hidden
+              </Button>
+            </div>
+          ) : null}
 
           {/* School Years Table */}
           <div className="border rounded-lg overflow-x-auto">

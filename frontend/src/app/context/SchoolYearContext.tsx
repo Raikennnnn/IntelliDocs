@@ -21,6 +21,7 @@ interface SchoolYearContextType {
   ongoingSchoolYearLabel: string | null;
   enrollmentSchoolYearLabel: string | null;
   endedSchoolYears: string[];
+  catalogStats: { total: number; hidden: number; visible: number };
   settingsLoaded: boolean;
   reloadSchoolYearSettings: () => Promise<void>;
   setActiveSchoolYear: (year: SchoolYear) => void;
@@ -90,6 +91,7 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
   const [ongoingSchoolYearLabel, setOngoingSchoolYearLabel] = useState<string | null>(null);
   const [enrollmentSchoolYearLabel, setEnrollmentSchoolYearLabel] = useState<string | null>(null);
   const [endedSchoolYears, setEndedSchoolYears] = useState<string[]>([]);
+  const [catalogStats, setCatalogStats] = useState({ total: 0, hidden: 0, visible: 0 });
 
   const reloadSchoolYearSettings = useCallback(async () => {
     try {
@@ -102,12 +104,19 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
         enrollment_school_year?: string | null;
         ended_school_years?: string[];
         school_years?: any[];
+        school_year_catalog_stats?: { total?: number; hidden?: number; visible?: number };
       };
       if (j.success) {
         setEnrollmentEnabled(!!j.enrollment_enabled);
         setOngoingSchoolYearLabel(j.ongoing_school_year ?? null);
         setEnrollmentSchoolYearLabel(j.enrollment_school_year ?? j.active_school_year ?? null);
         setEndedSchoolYears(Array.isArray(j.ended_school_years) ? j.ended_school_years : []);
+        const stats = j.school_year_catalog_stats;
+        setCatalogStats({
+          total: Number(stats?.total ?? 0),
+          hidden: Number(stats?.hidden ?? 0),
+          visible: Number(stats?.visible ?? 0),
+        });
         const activeLabel = (j.enrollment_school_year ?? j.active_school_year) ?? null;
         if (Array.isArray(j.school_years) && j.school_years.length > 0) {
           setSchoolYears(normalizeSchoolYearRows(j.school_years, activeLabel));
@@ -183,6 +192,7 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
         ongoingSchoolYearLabel,
         enrollmentSchoolYearLabel,
         endedSchoolYears,
+        catalogStats,
         settingsLoaded,
         reloadSchoolYearSettings,
         setActiveSchoolYear,
