@@ -102,31 +102,7 @@ function reportResolveSchoolYear(PDO $pdo, string $raw): array
 /** @return list<string> */
 function reportSchoolYearOptions(PDO $pdo): array
 {
-    $years = [];
-    if (tableExists($pdo, 'school_years')) {
-        foreach ($pdo->query('SELECT year FROM school_years ORDER BY year DESC')->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-            $y = trim((string)($row['year'] ?? ''));
-            if ($y !== '') {
-                $years[$y] = true;
-            }
-        }
-    }
-    if (tableExists($pdo, 'enrollments')) {
-        foreach ($pdo->query(
-            "SELECT DISTINCT TRIM(school_year) AS sy FROM enrollments
-              WHERE TRIM(COALESCE(school_year, '')) <> ''
-              ORDER BY sy DESC"
-        )->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-            $y = trim((string)($row['sy'] ?? ''));
-            if ($y !== '') {
-                $years[$y] = true;
-            }
-        }
-    }
-    $list = array_keys($years);
-    rsort($list, SORT_STRING);
-
-    return $list;
+    return schoolYearFilterOptions($pdo);
 }
 
 function reportStudentDisplayName(array $row): string

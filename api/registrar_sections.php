@@ -224,10 +224,21 @@ function normaliseStrand(string $raw): string
 function resolveSectionsRosterSchoolYear(PDO $pdo, ?string $raw): string
 {
     $param = strtolower(trim((string)($raw ?? '')));
+    if ($param === 'ongoing') {
+        $ongoingSy = getOngoingSchoolYear($pdo);
+        if ($ongoingSy !== null && trim($ongoingSy) !== '') {
+            return trim($ongoingSy);
+        }
+        $param = 'current';
+    }
     if ($param === '' || $param === 'current') {
         $enrollmentSy = getEnrollmentSchoolYear($pdo);
         if ($enrollmentSy !== null && trim($enrollmentSy) !== '') {
             return trim($enrollmentSy);
+        }
+        $ongoingSy = getOngoingSchoolYear($pdo);
+        if ($ongoingSy !== null && trim($ongoingSy) !== '') {
+            return trim($ongoingSy);
         }
         $ctx = rosterEnrollmentContext($pdo);
 
@@ -237,7 +248,9 @@ function resolveSectionsRosterSchoolYear(PDO $pdo, ?string $raw): string
         return '';
     }
 
-    return normalizeSchoolYearValue(trim((string)$raw));
+    $normalized = normalizeSchoolYearValue(trim((string)$raw));
+
+    return $normalized ?? trim((string)$raw);
 }
 
 require_once __DIR__ . '/api_auth.php';
@@ -619,6 +632,10 @@ if ($method === 'GET') {
             'shifts'    => SECTION_SHIFTS,
             'gradeLevels' => SECTION_GRADE_LEVELS,
             'rosterSchoolYear' => $rosterSy !== '' ? $rosterSy : null,
+            'school_year_options' => schoolYearFilterOptions($pdo),
+            'enrollment_school_year_current' => getEnrollmentSchoolYear($pdo),
+            'ongoing_school_year_current' => getOngoingSchoolYear($pdo),
+            'ended_school_years' => getEndedSchoolYears($pdo),
             'defaults'  => [
                 'maxBoys'        => SECTION_DEFAULT_BOYS,
                 'maxGirls'       => SECTION_DEFAULT_GIRLS,

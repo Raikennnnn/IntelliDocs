@@ -17,7 +17,11 @@ import {
   Clock,
   Power,
   PowerOff,
-  Info
+  Info,
+  Eye,
+  EyeOff,
+  Trash2,
+  Archive
 } from 'lucide-react';
 
 /** Parse "YYYY-YYYY" for date pickers and suggested academic-year bounds. */
@@ -67,6 +71,13 @@ export function SchoolYearManagement() {
   const [selectedReopenYear, setSelectedReopenYear] = useState<{ year: string } | null>(null);
   const [isCloseEnrollmentDialogOpen, setIsCloseEnrollmentDialogOpen] = useState(false);
   const [selectedCloseYear, setSelectedCloseYear] = useState<{ year: string } | null>(null);
+  const [showHiddenArchived, setShowHiddenArchived] = useState(false);
+  const [isArchiveDialogOpen, setIsArchiveDialogOpen] = useState(false);
+  const [selectedArchiveYear, setSelectedArchiveYear] = useState<{ year: string } | null>(null);
+  const [isUnarchiveDialogOpen, setIsUnarchiveDialogOpen] = useState(false);
+  const [selectedUnarchiveYear, setSelectedUnarchiveYear] = useState<{ year: string } | null>(null);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [selectedDeleteYear, setSelectedDeleteYear] = useState<{ year: string; enrolledStudents: number } | null>(null);
   
   const [newSchoolYear, setNewSchoolYear] = useState({
     year: '',
@@ -76,6 +87,12 @@ export function SchoolYearManagement() {
   });
 
   const parsedNewYear = parseSchoolYearInput(newSchoolYear.year);
+
+  const visibleSchoolYears = showHiddenArchived
+    ? schoolYears
+    : schoolYears.filter((sy) => !sy.archived);
+
+  const hiddenArchivedCount = schoolYears.filter((sy) => sy.archived).length;
 
   const handleNewSchoolYearFieldChange = (year: string) => {
     const parsed = parseSchoolYearInput(year);
@@ -285,6 +302,104 @@ export function SchoolYearManagement() {
     }
   };
 
+  const handleHideSchoolYear = (schoolYear: { year: string }) => {
+    setSelectedArchiveYear(schoolYear);
+    setIsArchiveDialogOpen(true);
+  };
+
+  const confirmHideSchoolYear = async () => {
+    if (!selectedArchiveYear?.year) return;
+    setIsSaving(true);
+    try {
+      const res = await apiFetch('/api/school-year', {
+        method: 'PUT',
+        body: JSON.stringify({ archive_school_year: selectedArchiveYear.year }),
+      });
+      const j = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !j.success) {
+        toast.error(j.error || 'Failed to hide school year');
+        return;
+      }
+      toast.success(`School year ${selectedArchiveYear.year} hidden from lists`);
+      await reloadSchoolYearSettings();
+      window.dispatchEvent(new Event('school-year-settings-changed'));
+      setIsArchiveDialogOpen(false);
+      setSelectedArchiveYear(null);
+    } catch {
+      toast.error('Failed to hide school year');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleUnhideSchoolYear = (schoolYear: { year: string }) => {
+    setSelectedUnarchiveYear(schoolYear);
+    setIsUnarchiveDialogOpen(true);
+  };
+
+  const confirmUnhideSchoolYear = async () => {
+    if (!selectedUnarchiveYear?.year) return;
+    setIsSaving(true);
+    try {
+      const res = await apiFetch('/api/school-year', {
+        method: 'PUT',
+        body: JSON.stringify({ unarchive_school_year: selectedUnarchiveYear.year }),
+      });
+      const j = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !j.success) {
+        toast.error(j.error || 'Failed to restore school year');
+        return;
+      }
+      toast.success(`School year ${selectedUnarchiveYear.year} restored`);
+      await reloadSchoolYearSettings();
+      window.dispatchEvent(new Event('school-year-settings-changed'));
+      setIsUnarchiveDialogOpen(false);
+      setSelectedUnarchiveYear(null);
+    } catch {
+      toast.error('Failed to restore school year');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteSchoolYear = (schoolYear: { year: string; enrolledStudents: number }) => {
+    setSelectedDeleteYear(schoolYear);
+    setIsDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteSchoolYear = async () => {
+    if (!selectedDeleteYear?.year) return;
+    setIsSaving(true);
+    try {
+      const res = await apiFetch('/api/school-year', {
+        method: 'DELETE',
+        body: JSON.stringify({ year: selectedDeleteYear.year }),
+      });
+      const j = (await res.json()) as { success?: boolean; error?: string };
+      if (!res.ok || !j.success) {
+        toast.error(j.error || 'Failed to delete school year');
+        return;
+      }
+      toast.success(`School year ${selectedDeleteYear.year} deleted`);
+      await reloadSchoolYearSettings();
+      window.dispatchEvent(new Event('school-year-settings-changed'));
+      setIsDeleteDialogOpen(false);
+      setSelectedDeleteYear(null);
+    } catch {
+      toast.error('Failed to delete school year');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const canHideYear = (sy: { year: string; status: string }) =>
+    sy.status !== 'Active' &&
+    sy.year !== ongoingSchoolYearLabel &&
+    sy.year !== enrollmentSchoolYearLabel;
+
+  const canDeleteYear = (sy: { year: string; status: string; enrolledStudents: number }) =>
+    canHideYear(sy) && sy.enrolledStudents === 0;
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -399,7 +514,7 @@ export function SchoolYearManagement() {
             <div className="text-3xl font-bold text-gray-600">
               {schoolYears.filter(sy => sy.status === 'Inactive').length}
             </div>
-            <p className="text-xs text-gray-500 mt-1">Archived records</p>
+            <p className="text-xs text-gray-500 mt-1">Not accepting enrollments</p>
           </CardContent>
         </Card>
       </div>
@@ -415,13 +530,34 @@ export function SchoolYearManagement() {
               </CardTitle>
               <CardDescription>Manage academic year cycles and enrollment periods</CardDescription>
             </div>
-            <Button 
-              className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
-              onClick={() => setIsCreateDialogOpen(true)}
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Create School Year
-            </Button>
+            <div className="flex items-center gap-2">
+              {hiddenArchivedCount > 0 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowHiddenArchived((v) => !v)}
+                >
+                  {showHiddenArchived ? (
+                    <>
+                      <EyeOff className="w-4 h-4 mr-2" />
+                      Hide hidden ({hiddenArchivedCount})
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="w-4 h-4 mr-2" />
+                      Show hidden ({hiddenArchivedCount})
+                    </>
+                  )}
+                </Button>
+              ) : null}
+              <Button 
+                className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
+                onClick={() => setIsCreateDialogOpen(true)}
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Create School Year
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -439,6 +575,10 @@ export function SchoolYearManagement() {
                 <li>
                   <strong>End School Year</strong> archives that year (grey class lists). Use{' '}
                   <strong>Reopen enrollment</strong> to accept students again
+                </li>
+                <li>
+                  <strong>Hide</strong> removes a year from registrar dropdowns without deleting data.
+                  Use <strong>Delete</strong> only for empty catalog entries with no enrollments.
                 </li>
                 <li>Only Admin role can manage school years</li>
               </ul>
@@ -460,13 +600,23 @@ export function SchoolYearManagement() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {schoolYears.map((sy) => {
+                {visibleSchoolYears.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-sm text-gray-500 py-8">
+                      {hiddenArchivedCount > 0
+                        ? 'All school years are hidden. Turn on “Show hidden” to view them.'
+                        : 'No school years yet. Create one to get started.'}
+                    </TableCell>
+                  </TableRow>
+                ) : null}
+                {visibleSchoolYears.map((sy) => {
                   const isEnded = endedSchoolYears.includes(sy.year);
+                  const isHidden = Boolean(sy.archived);
                   return (
                   <TableRow
                     key={sy.id}
                     className={
-                      sy.status === 'Active' ? 'bg-green-50' : isEnded ? 'bg-gray-50' : ''
+                      sy.status === 'Active' ? 'bg-green-50' : isEnded || isHidden ? 'bg-gray-50' : ''
                     }
                   >
                     <TableCell className="font-semibold text-gray-900">
@@ -474,6 +624,11 @@ export function SchoolYearManagement() {
                       {isEnded ? (
                         <Badge variant="outline" className="ml-2 text-gray-500 border-gray-400">
                           Ended
+                        </Badge>
+                      ) : null}
+                      {isHidden ? (
+                        <Badge variant="outline" className="ml-2 text-amber-700 border-amber-400">
+                          Hidden
                         </Badge>
                       ) : null}
                     </TableCell>
@@ -558,6 +713,39 @@ export function SchoolYearManagement() {
                           className="border-gray-500 text-gray-600 hover:bg-gray-100"
                         >
                           End School Year
+                        </Button>
+                      ) : null}
+                      {isHidden ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleUnhideSchoolYear(sy)}
+                          disabled={isSaving}
+                        >
+                          <Eye className="w-4 h-4 mr-1" />
+                          Unhide
+                        </Button>
+                      ) : canHideYear(sy) ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleHideSchoolYear(sy)}
+                          disabled={isSaving}
+                        >
+                          <Archive className="w-4 h-4 mr-1" />
+                          Hide
+                        </Button>
+                      ) : null}
+                      {canDeleteYear(sy) ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleDeleteSchoolYear(sy)}
+                          disabled={isSaving}
+                          className="border-red-600 text-red-600 hover:bg-red-50"
+                        >
+                          <Trash2 className="w-4 h-4 mr-1" />
+                          Delete
                         </Button>
                       ) : null}
                       </div>
@@ -834,6 +1022,90 @@ export function SchoolYearManagement() {
               className="bg-gray-700 hover:bg-gray-800 text-white"
             >
               {isSaving ? 'Ending…' : 'End School Year'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Hide school year dialog */}
+      <Dialog
+        open={isArchiveDialogOpen}
+        onOpenChange={(open) => {
+          setIsArchiveDialogOpen(open);
+          if (!open && !isSaving) setSelectedArchiveYear(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Hide school year {selectedArchiveYear?.year}?</DialogTitle>
+            <DialogDescription>
+              This removes the year from registrar filters and comboboxes. Enrollment records are kept.
+              You can unhide it later.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsArchiveDialogOpen(false)} disabled={isSaving}>
+              Cancel
+            </Button>
+            <Button onClick={() => void confirmHideSchoolYear()} disabled={isSaving}>
+              {isSaving ? 'Hiding…' : 'Hide school year'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Unhide school year dialog */}
+      <Dialog
+        open={isUnarchiveDialogOpen}
+        onOpenChange={(open) => {
+          setIsUnarchiveDialogOpen(open);
+          if (!open && !isSaving) setSelectedUnarchiveYear(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Restore school year {selectedUnarchiveYear?.year}?</DialogTitle>
+            <DialogDescription>
+              This shows the year again in registrar school-year dropdowns.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsUnarchiveDialogOpen(false)} disabled={isSaving}>
+              Cancel
+            </Button>
+            <Button onClick={() => void confirmUnhideSchoolYear()} disabled={isSaving}>
+              {isSaving ? 'Restoring…' : 'Unhide school year'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete school year dialog */}
+      <Dialog
+        open={isDeleteDialogOpen}
+        onOpenChange={(open) => {
+          setIsDeleteDialogOpen(open);
+          if (!open && !isSaving) setSelectedDeleteYear(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete school year {selectedDeleteYear?.year}?</DialogTitle>
+            <DialogDescription>
+              This permanently removes the catalog entry. Only use this for mistaken or empty years
+              with no enrollment records.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsDeleteDialogOpen(false)} disabled={isSaving}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void confirmDeleteSchoolYear()}
+              disabled={isSaving}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {isSaving ? 'Deleting…' : 'Delete permanently'}
             </Button>
           </DialogFooter>
         </DialogContent>

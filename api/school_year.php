@@ -31,9 +31,11 @@ function ensureSchoolYearsTable(PDO $pdo): void
             created_by_user_id INT NULL,
             created_by_name VARCHAR(120) NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            archived TINYINT(1) NOT NULL DEFAULT 0,
             INDEX idx_school_years_year (year)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     ');
+    ensureSchoolYearsArchivedColumn($pdo);
 }
 
 function tableExistsLocal(PDO $pdo, string $table): bool
@@ -53,10 +55,16 @@ function countApprovedEnrollmentsForYear(PDO $pdo, string $year): int
     return (int)$stmt->fetchColumn();
 }
 
-function listSchoolYearRecords(PDO $pdo, ?string $activeYear): array
+function listSchoolYearRecords(PDO $pdo, ?string $activeYear, bool $includeArchived = true): array
 {
     ensureSchoolYearsTable($pdo);
-    $rows = $pdo->query('SELECT id, year, start_date, end_date, created_by_name, created_at FROM school_years ORDER BY year DESC')->fetchAll() ?: [];
+    $sql = 'SELECT id, year, start_date, end_date, created_by_name, created_at, COALESCE(archived, 0) AS archived
+            FROM school_years';
+    if (!$includeArchived) {
+        $sql .= ' WHERE COALESCE(archived, 0) = 0';
+    }
+    $sql .= ' ORDER BY year DESC';
+    $rows = $pdo->query($sql)->fetchAll() ?: [];
     $out = [];
     foreach ($rows as $r) {
         $year = (string)($r['year'] ?? '');
@@ -69,6 +77,7 @@ function listSchoolYearRecords(PDO $pdo, ?string $activeYear): array
             'enrolledStudents' => $year !== '' ? countApprovedEnrollmentsForYear($pdo, $year) : 0,
             'createdBy' => (string)($r['created_by_name'] ?? 'Administrator'),
             'createdDate' => (string)($r['created_at'] ?? ''),
+            'archived' => (int)($r['archived'] ?? 0) === 1,
         ];
     }
     return $out;
@@ -190,10 +199,12 @@ if ($method === 'PUT') {
     $hasLegacyActive = array_key_exists('active_school_year', $payload);
     $hasEndYear = array_key_exists('end_school_year', $payload);
     $hasReopenYear = array_key_exists('reopen_school_year', $payload);
+    $hasArchiveYear = array_key_exists('archive_school_year', $payload);
+    $hasUnarchiveYear = array_key_exists('unarchive_school_year', $payload);
 
-    if (!$hasOngoing && !$hasEnrollment && !$hasLegacyActive && !$hasEndYear && !$hasReopenYear) {
+    if (!$hasOngoing && !$hasEnrollment && !$hasLegacyActive && !$hasEndYear && !$hasReopenYear && !$hasArchiveYear && !$hasUnarchiveYear) {
         http_response_code(422);
-        echo json_encode(['success' => false, 'error' => 'ongoing_school_year, enrollment_school_year, end_school_year, or reopen_school_year is required']);
+        echo json_encode(['success' => false, 'error' => 'ongoing_school_year, enrollment_school_year, end_school_year, reopen_school_year, archive_school_year, or unarchive_school_year is required']);
         exit;
     }
 
@@ -229,6 +240,26 @@ if ($method === 'PUT') {
             }
             endSchoolYear($pdo, $toEnd);
             appLogEvent($pdo, 'admin_school_year_end', 'admin', 'success', $actorId, 'school_years', $toEnd, []);
+        }
+        if ($hasUnarchiveYear) {
+            $toUnarchive = $parse($payload['unarchive_school_year'], 'unarchive_school_year');
+            if ($toUnarchive === '') {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'error' => 'unarchive_school_year cannot be empty']);
+                exit;
+            }
+            setSchoolYearArchived($pdo, $toUnarchive, false);
+            appLogEvent($pdo, 'admin_school_year_unarchive', 'admin', 'success', $actorId, 'school_years', $toUnarchive, []);
+        }
+        if ($hasArchiveYear) {
+            $toArchive = $parse($payload['archive_school_year'], 'archive_school_year');
+            if ($toArchive === '') {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'error' => 'archive_school_year cannot be empty']);
+                exit;
+            }
+            setSchoolYearArchived($pdo, $toArchive, true);
+            appLogEvent($pdo, 'admin_school_year_archive', 'admin', 'success', $actorId, 'school_years', $toArchive, []);
         }
         if ($hasReopenYear) {
             $toReopen = $parse($payload['reopen_school_year'], 'reopen_school_year');
@@ -283,13 +314,51 @@ if ($method === 'PUT') {
     $ongoing = getOngoingSchoolYear($pdo);
     $enrollment = getEnrollmentSchoolYear($pdo);
     $ended = getEndedSchoolYears($pdo);
-    if (!$hasEndYear && !$hasReopenYear) {
+    if (!$hasEndYear && !$hasReopenYear && !$hasArchiveYear && !$hasUnarchiveYear) {
         appLogEvent($pdo, 'admin_school_year_update', 'admin', 'success', $actorId, 'settings', 'school_year', [
             'ongoing_school_year' => $ongoing,
             'enrollment_school_year' => $enrollment,
             'enrollment_enabled' => $enrollment !== null,
         ]);
     }
+    echo json_encode([
+        'success' => true,
+        'ongoing_school_year' => $ongoing,
+        'enrollment_school_year' => $enrollment,
+        'active_school_year' => $enrollment,
+        'enrollment_enabled' => $enrollment !== null,
+        'ended_school_years' => $ended,
+        'school_years' => listSchoolYearRecords($pdo, $enrollment),
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($method === 'DELETE') {
+    $actorId = requireAdminActor($pdo, 'admin/school-year');
+    require_once __DIR__ . '/permission_guard.php';
+    requireActorPermission($pdo, ['role' => 'admin', 'id' => $actorId], 'configureSystem', false);
+
+    $payload = json_decode(file_get_contents('php://input') ?: '{}', true);
+    if (!is_array($payload)) {
+        $payload = [];
+    }
+    $year = trim((string)($payload['year'] ?? $_GET['year'] ?? ''));
+    if ($year === '' || !preg_match('/^\d{4}-\d{4}$/', $year)) {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => 'year query parameter is required (YYYY-YYYY).']);
+        exit;
+    }
+    try {
+        deleteSchoolYearRecord($pdo, $year);
+        appLogEvent($pdo, 'admin_school_year_delete', 'admin', 'success', $actorId, 'school_years', $year, []);
+    } catch (InvalidArgumentException $e) {
+        http_response_code(422);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        exit;
+    }
+    $ongoing = getOngoingSchoolYear($pdo);
+    $enrollment = getEnrollmentSchoolYear($pdo);
+    $ended = getEndedSchoolYears($pdo);
     echo json_encode([
         'success' => true,
         'ongoing_school_year' => $ongoing,

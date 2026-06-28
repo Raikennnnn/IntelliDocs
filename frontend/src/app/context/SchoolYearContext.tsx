@@ -10,6 +10,7 @@ export interface SchoolYear {
   enrolledStudents: number;
   createdBy: string;
   createdDate: string;
+  archived?: boolean;
 }
 
 interface SchoolYearContextType {
@@ -44,6 +45,7 @@ function normalizeSchoolYearRows(rows: any[], activeLabel: string | null | undef
       enrolledStudents: Number(r?.enrolledStudents ?? 0),
       createdBy: String(r?.createdBy ?? 'Administrator'),
       createdDate: String(r?.createdDate ?? ''),
+      archived: Boolean(r?.archived),
     };
   });
 }

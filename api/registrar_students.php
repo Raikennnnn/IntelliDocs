@@ -216,34 +216,7 @@ if (strtolower($viewSyRaw) === 'all') {
  */
 function registrarStudentSchoolYearOptions(PDO $pdo): array
 {
-    $years = [];
-    if (tableExists($pdo, 'school_years') && columnExists($pdo, 'school_years', 'year')) {
-        $rows = $pdo->query('SELECT year FROM school_years ORDER BY year DESC')->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        foreach ($rows as $row) {
-            $y = trim((string)($row['year'] ?? ''));
-            if ($y !== '' && preg_match('/^\d{4}-\d{4}$/', $y) === 1) {
-                $years[$y] = true;
-            }
-        }
-    }
-    if (tableExists($pdo, 'enrollments') && columnExists($pdo, 'enrollments', 'school_year')) {
-        $rows = $pdo->query(
-            "SELECT DISTINCT TRIM(school_year) AS sy FROM enrollments
-              WHERE TRIM(COALESCE(school_year, '')) <> ''
-                AND LOWER(TRIM(COALESCE(status, ''))) IN ('approved', 'enrolled')
-              ORDER BY sy DESC"
-        )->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        foreach ($rows as $row) {
-            $y = trim((string)($row['sy'] ?? ''));
-            if ($y !== '' && preg_match('/^\d{4}-\d{4}$/', $y) === 1) {
-                $years[$y] = true;
-            }
-        }
-    }
-    $list = array_keys($years);
-    rsort($list, SORT_STRING);
-
-    return $list;
+    return schoolYearFilterOptions($pdo);
 }
 
 // Per-student section + shift come from the `students` table that gets

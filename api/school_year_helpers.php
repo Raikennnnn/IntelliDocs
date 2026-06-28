@@ -301,3 +301,133 @@ function reopenSchoolYear(PDO $pdo, string $year): void
     $ended = array_values(array_filter($ended, static fn (string $e): bool => $e !== $y));
     setEndedSchoolYears($pdo, $ended);
 }
+
+function ensureSchoolYearsArchivedColumn(PDO $pdo): void
+{
+    if (!function_exists('tableExists')) {
+        require_once __DIR__ . '/user_role.php';
+    }
+    if (!tableExists($pdo, 'school_years')) {
+        return;
+    }
+    if (!columnExists($pdo, 'school_years', 'archived')) {
+        $pdo->exec('ALTER TABLE school_years ADD COLUMN archived TINYINT(1) NOT NULL DEFAULT 0');
+    }
+}
+
+/**
+ * Distinct YYYY-YYYY labels for registrar filters (catalog + years with enrollments).
+ *
+ * @return list<string>
+ */
+function schoolYearFilterOptions(PDO $pdo, bool $includeArchivedCatalog = false): array
+{
+    $years = [];
+    ensureSchoolYearsArchivedColumn($pdo);
+    if (tableExists($pdo, 'school_years') && columnExists($pdo, 'school_years', 'year')) {
+        $sql = 'SELECT year FROM school_years';
+        if (!$includeArchivedCatalog) {
+            $sql .= ' WHERE COALESCE(archived, 0) = 0';
+        }
+        $sql .= ' ORDER BY year DESC';
+        $rows = $pdo->query($sql)->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($rows as $row) {
+            $y = trim((string)($row['year'] ?? ''));
+            if ($y !== '' && preg_match('/^\d{4}-\d{4}$/', $y) === 1) {
+                $years[$y] = true;
+            }
+        }
+    }
+    if (tableExists($pdo, 'enrollments') && columnExists($pdo, 'enrollments', 'school_year')) {
+        $rows = $pdo->query(
+            "SELECT DISTINCT TRIM(school_year) AS sy FROM enrollments
+              WHERE TRIM(COALESCE(school_year, '')) <> ''
+                AND LOWER(TRIM(COALESCE(status, ''))) IN ('approved', 'enrolled')
+              ORDER BY sy DESC"
+        )->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($rows as $row) {
+            $y = trim((string)($row['sy'] ?? ''));
+            if ($y !== '' && preg_match('/^\d{4}-\d{4}$/', $y) === 1) {
+                $years[$y] = true;
+            }
+        }
+    }
+    $list = array_keys($years);
+    rsort($list, SORT_STRING);
+
+    return $list;
+}
+
+function countEnrollmentRowsForSchoolYear(PDO $pdo, string $year): int
+{
+    if (!function_exists('tableExists')) {
+        require_once __DIR__ . '/user_role.php';
+    }
+    if (!tableExists($pdo, 'enrollments') || !columnExists($pdo, 'enrollments', 'school_year')) {
+        return 0;
+    }
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) FROM enrollments WHERE TRIM(COALESCE(school_year, '')) = :y"
+    );
+    $stmt->execute([':y' => trim($year)]);
+
+    return (int)$stmt->fetchColumn();
+}
+
+function setSchoolYearArchived(PDO $pdo, string $year, bool $archived): void
+{
+    $y = trim($year);
+    if (!preg_match('/^\d{4}-\d{4}$/', $y)) {
+        throw new InvalidArgumentException('School year must look like YYYY-YYYY (e.g. 2025-2026).');
+    }
+    ensureSchoolYearsArchivedColumn($pdo);
+    $enrollment = getEnrollmentSchoolYear($pdo);
+    $ongoing = getOngoingSchoolYear($pdo);
+    if ($archived) {
+        if ($enrollment !== null && $enrollment === $y) {
+            throw new InvalidArgumentException('Cannot hide the school year that is currently accepting enrollments. Close enrollment first.');
+        }
+        if ($ongoing !== null && $ongoing === $y) {
+            throw new InvalidArgumentException('Cannot hide the ongoing school year. Set a different ongoing year first.');
+        }
+    }
+    $stmt = $pdo->prepare('UPDATE school_years SET archived = :archived WHERE year = :year LIMIT 1');
+    $stmt->execute([':archived' => $archived ? 1 : 0, ':year' => $y]);
+    if ($stmt->rowCount() === 0) {
+        throw new InvalidArgumentException('School year not found in the catalog.');
+    }
+}
+
+function deleteSchoolYearRecord(PDO $pdo, string $year): void
+{
+    if (!function_exists('tableExists')) {
+        require_once __DIR__ . '/user_role.php';
+    }
+    $y = trim($year);
+    if (!preg_match('/^\d{4}-\d{4}$/', $y)) {
+        throw new InvalidArgumentException('School year must look like YYYY-YYYY (e.g. 2025-2026).');
+    }
+    $enrollment = getEnrollmentSchoolYear($pdo);
+    if ($enrollment !== null && $enrollment === $y) {
+        throw new InvalidArgumentException('Cannot delete the school year that is currently accepting enrollments.');
+    }
+    $ongoing = getOngoingSchoolYear($pdo);
+    if ($ongoing !== null && $ongoing === $y) {
+        throw new InvalidArgumentException('Cannot delete the ongoing school year.');
+    }
+    if (countEnrollmentRowsForSchoolYear($pdo, $y) > 0) {
+        throw new InvalidArgumentException(
+            'Cannot delete this school year because enrollment records still exist. Hide it instead, or remove enrollments first.'
+        );
+    }
+    ensureSchoolYearsArchivedColumn($pdo);
+    $stmt = $pdo->prepare('DELETE FROM school_years WHERE year = :year LIMIT 1');
+    $stmt->execute([':year' => $y]);
+    if ($stmt->rowCount() === 0) {
+        throw new InvalidArgumentException('School year not found in the catalog.');
+    }
+    $ended = getEndedSchoolYears($pdo);
+    if (in_array($y, $ended, true)) {
+        setEndedSchoolYears($pdo, array_values(array_filter($ended, static fn (string $e): bool => $e !== $y)));
+    }
+}

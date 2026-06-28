@@ -1,5 +1,7 @@
 -- IntelliDocs Database Setup
--- Run in phpMyAdmin: CREATE DATABASE intellidocs_db; → Import
+-- FRESH INSTALL ONLY — run manually in phpMyAdmin when creating a new database.
+-- WARNING: The next two lines DELETE ALL DATA in intellidocs_db.
+-- Do NOT include this file in deploy_droplet.sh migrations.
 
 DROP DATABASE IF EXISTS intellidocs_db;
 CREATE DATABASE intellidocs_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -124,6 +126,18 @@ CREATE TABLE otp_codes (
   used TINYINT DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS otp_guard_state (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(100) NOT NULL,
+  purpose VARCHAR(20) NOT NULL,
+  failed_attempts INT NOT NULL DEFAULT 0,
+  locked_until TIMESTAMP NULL DEFAULT NULL,
+  last_failed_at TIMESTAMP NULL DEFAULT NULL,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_otp_guard_email_purpose (email, purpose),
+  INDEX idx_otp_guard_locked (locked_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Signup held until OTP verification (no users row until verify_otp succeeds)
 CREATE TABLE pending_registrations (
