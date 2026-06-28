@@ -5,6 +5,7 @@ import { useSchoolYear } from '../../context/SchoolYearContext';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
+import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../../components/ui/dialog';
 import { 
@@ -84,6 +85,7 @@ export function SchoolYearManagement() {
     endedSchoolYears,
     catalogStats,
     settingsLoaded,
+    settingsError,
   } = useSchoolYear();
   const [isSaving, setIsSaving] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
@@ -478,6 +480,36 @@ export function SchoolYearManagement() {
         <h2 className="text-2xl font-semibold text-gray-900">School Year Management</h2>
         <p className="text-gray-600">Create, activate, and manage school year cycles</p>
       </div>
+
+      {settingsError ? (
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+            <span>{settingsError}</span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="bg-white"
+              onClick={() => void reloadSchoolYearSettings()}
+            >
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {!settingsError &&
+      settingsLoaded &&
+      totalCatalogCount === 0 &&
+      !ongoingSchoolYearLabel &&
+      !enrollmentSchoolYearLabel ? (
+        <Alert>
+          <AlertDescription>
+            The dashboard may show school years from settings, but this page could not load the catalog
+            yet. Click <strong>Show hidden</strong> if available, or press <strong>Retry</strong> after a
+            hard refresh (Ctrl+Shift+R).
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {/* Active School Year Alert */}
       {activeSchoolYear ? (

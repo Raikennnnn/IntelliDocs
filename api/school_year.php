@@ -122,7 +122,12 @@ if ($method === 'GET') {
     require_once __DIR__ . '/session_token.php';
     $actor = tryResolveActorFromRequest($pdo, 'school-year');
     $actorId = $actor !== null ? (int)$actor['id'] : 0;
-    if ($actorId > 0 && userCanManageSchoolYearSettings($pdo, $actorId)) {
+    $canManageCatalog = $actorId > 0 && userCanManageSchoolYearSettings($pdo, $actorId);
+    if (!$canManageCatalog && $actorId > 0) {
+        $role = getUserRole($pdo, $actorId);
+        $canManageCatalog = $role === 'admin' && !userIsInStudentTable($pdo, $actorId);
+    }
+    if ($canManageCatalog) {
         require_once __DIR__ . '/permission_guard.php';
         requireActorPermission($pdo, $actor, 'configureSystem', true);
         ensureSchoolYearsTable($pdo);

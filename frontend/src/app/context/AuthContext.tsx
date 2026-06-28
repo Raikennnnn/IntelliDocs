@@ -130,6 +130,10 @@ function applyLoginPayload(data: AuthLoginResponse): User | null {
     nextUser.must_change_password = data.must_change_password;
   }
   persistAuthUser(nextUser, data.token ?? null);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('auth-session-changed'));
+    window.dispatchEvent(new Event('school-year-settings-changed'));
+  }
   return nextUser;
 }
 
@@ -147,6 +151,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
         setUser(normalized);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('auth-session-changed'));
+        }
       } catch {
         clearAuthStorage();
       }
@@ -257,6 +264,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     clearAuthStorage();
     setUser(null);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('auth-session-changed'));
+    }
   };
 
   const patchUser = (
