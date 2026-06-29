@@ -33,6 +33,29 @@ fi
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
 
+step "Ensure OpenCV face cascade is available for 2×2 photo checks"
+CASCADE_DEST="$APP_ROOT/ai/assets/cascades/haarcascade_frontalface_default.xml"
+if [ ! -f "$CASCADE_DEST" ]; then
+  CASCADE_SRC="$(.venv/bin/python - <<'PY' 2>/dev/null || true
+import os
+try:
+    import cv2
+    root = getattr(getattr(cv2, "data", None), "haarcascades", None)
+    if root:
+        print(os.path.join(str(root), "haarcascade_frontalface_default.xml"))
+except Exception:
+    pass
+PY
+)"
+  if [ -n "$CASCADE_SRC" ] && [ -f "$CASCADE_SRC" ]; then
+    mkdir -p "$(dirname "$CASCADE_DEST")"
+    cp "$CASCADE_SRC" "$CASCADE_DEST"
+    echo "Cached cascade at $CASCADE_DEST"
+  else
+    echo "WARNING: Could not cache haarcascade — 2×2 face checks may warn until opencv-python is healthy."
+  fi
+fi
+
 step "Restart AI service"
 if [ "${SKIP_SERVICE_RESTART:-0}" = "1" ]; then
   echo "SKIP: SKIP_SERVICE_RESTART=1 — intellidocs-ai not restarted (restart manually when done testing sessions)."

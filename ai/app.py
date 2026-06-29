@@ -252,7 +252,13 @@ def _normalize_doc_type_key(doc_type: str) -> str:
         return "sf9"
     if t in ("goodmoral",):
         return "good_moral"
+    if t in ("2x2", "id_photo", "photo") or "2x2" in t or ("picture" in t and "white" in t):
+        return "photo_2x2"
     return t or "other"
+
+
+def _is_photo_doc(doc_type: str) -> bool:
+    return _normalize_doc_type_key(doc_type) in PHOTO_DOC_TYPES
 
 
 def _ocr_priority_doc(doc_type: str) -> bool:
@@ -317,6 +323,53 @@ def _track_photo_duplicate(filepath: str, *, doc_type: str) -> dict | None:
     if len(_IMAGE_DUPLICATE_CACHE) > _IMAGE_DUPLICATE_CACHE_LIMIT:
         _IMAGE_DUPLICATE_CACHE.popitem(last=False)
     return {"duplicate": False, "hash": digest}
+
+
+def _opencv_haarcascade_path(cascade_name: str = "haarcascade_frontalface_default.xml") -> str:
+    """Resolve OpenCV Haar cascade XML across python-opencv / headless installs."""
+    import cv2
+
+    candidates: list[str] = []
+    data_root = getattr(getattr(cv2, "data", None), "haarcascades", None)
+    if data_root:
+        candidates.append(os.path.join(str(data_root), cascade_name))
+    cv2_dir = os.path.dirname(getattr(cv2, "__file__", "") or "")
+    if cv2_dir:
+        candidates.append(os.path.join(cv2_dir, "data", cascade_name))
+        candidates.append(os.path.join(cv2_dir, "haarcascades", cascade_name))
+    candidates.append(os.path.join(APP_DIR, "assets", "cascades", cascade_name))
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if os.path.isfile(path):
+            return path
+    raise FileNotFoundError(f"OpenCV cascade not found: {cascade_name}")
+
+
+def _opencv_bgr_to_gray(img) -> "object":
+    import cv2
+    import numpy as np
+
+    arr = np.asarray(img)
+    if arr.ndim == 2:
+        return arr
+    if arr.ndim == 3:
+        ch = int(arr.shape[2])
+        if ch == 1:
+            return arr[:, :, 0]
+        if ch == 4:
+            return cv2.cvtColor(arr, cv2.COLOR_BGRA2GRAY)
+        return cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+    raise ValueError(f"Unsupported image shape for grayscale conversion: {arr.shape}")
+
+
+def _opencv_laplacian_variance(gray) -> float:
+    import cv2
+
+    ddepth = getattr(cv2, "CV_64F", 6)
+    return float(cv2.Laplacian(gray, ddepth).var())
 
 
 def _photo_face_anomaly_flags(img, gray, face_bbox: dict | None) -> dict:
@@ -394,7 +447,7 @@ def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> di
         }
 
     try:
-        cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+        cascade_path = _opencv_haarcascade_path()
         face_cascade = cv2.CascadeClassifier(cascade_path)
         if face_cascade is None or face_cascade.empty():
             raise RuntimeError("face cascade unavailable")
@@ -409,6 +462,8 @@ def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> di
                 "background_std": 0.0,
                 "background_edge_ratio": 0.0,
                 "background_clutter": False,
+                "face_anomaly": {},
+                "face_occluded": False,
             }
 
         x, y, w, h = max(faces, key=lambda rect: rect[2] * rect[3])
@@ -431,6 +486,8 @@ def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> di
         background_clutter = background_std > 36.0 and background_edge_ratio > 0.04
 
         face_anomaly = _photo_face_anomaly_flags(img, gray, {"x": x, "y": y, "w": w, "h": h})
+        if not isinstance(face_anomaly, dict):
+            face_anomaly = {}
 
         return {
             "face_detected": True,
@@ -443,7 +500,8 @@ def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> di
             "face_anomaly": face_anomaly,
             "face_occluded": bool(face_anomaly.get("face_occluded")),
         }
-    except Exception:
+    except Exception as exc:
+        print(f"[IntelliDocs AI] Face feature analysis failed: {type(exc).__name__}: {exc}", flush=True)
         return {
             "face_detected": False,
             "face_bbox": None,
@@ -452,6 +510,8 @@ def _analyze_id_photo_face_features(img, gray, image_w: int, image_h: int) -> di
             "background_std": 0.0,
             "background_edge_ratio": 0.0,
             "background_clutter": False,
+            "face_anomaly": {},
+            "face_occluded": False,
         }
 
 
@@ -462,30 +522,33 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
     """
     issues: list[str] = []
     warnings: list[str] = []
-    is_photo = doc_type in PHOTO_DOC_TYPES
+    is_photo = _is_photo_doc(doc_type)
+    photo_checks: dict = {}
 
     try:
         import cv2
         import numpy as np
 
-        img = cv2.imread(filepath)
-        if img is None:
+        img = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
+        if img is None or not hasattr(img, "shape") or len(img.shape) < 2:
             return {
                 "pass": False,
                 "score": 0,
                 "blur_variance": 0.0,
                 "message": "Could not read the image file. Try JPG or PNG.",
                 "issues": ["Unreadable image file"],
+                "warnings": warnings,
+                "photo_checks": photo_checks,
             }
 
-        h, w = img.shape[:2]
+        h, w = int(img.shape[0]), int(img.shape[1])
         if w < 400 or h < 400:
             issues.append("Image resolution is too low. Move closer or use a higher camera setting.")
         if w > h * 2.2 or h > w * 2.2:
             issues.append("Image looks heavily cropped. Include the full document in the frame.")
 
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        gray = _opencv_bgr_to_gray(img)
+        lap_var = _opencv_laplacian_variance(gray)
         min_lap = 120.0 if is_photo else 55.0
         if lap_var < min_lap:
             issues.append(
@@ -557,14 +620,28 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             "photo_checks": photo_checks,
         }
     except Exception as e:
+        print(f"[IntelliDocs AI] Image quality check error ({type(e).__name__}): {e}", flush=True)
+        if is_photo:
+            return {
+                "pass": False,
+                "score": 40,
+                "blur_variance": 0.0,
+                "message": "Photo quality could not be verified automatically.",
+                "issues": [
+                    f"Quality check warning: {type(e).__name__}",
+                    "Face and photo quality could not be verified — review the portrait manually.",
+                ],
+                "warnings": warnings,
+                "photo_checks": photo_checks,
+            }
         return {
             "pass": True,
             "score": 70,
             "blur_variance": 0.0,
             "message": "Quality check skipped (engine unavailable).",
             "issues": [f"Quality check warning: {type(e).__name__}"],
-            "warnings": [],
-            "photo_checks": {},
+            "warnings": warnings,
+            "photo_checks": photo_checks,
         }
 
 
