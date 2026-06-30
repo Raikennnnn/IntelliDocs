@@ -491,8 +491,72 @@ function refineAiVerifyResult(array $result, string $docType, ?string $imagePath
         $result['issues'] = $issues;
     }
 
+    $expectedSchoolYear = trim((string)($expectedContext['expected_school_year'] ?? ($expectedByField['school year'] ?? '')));
+    if ($expectedSchoolYear !== '' && in_array($dt, ['sf9', 'form137', 'good_moral', 'sf10', 'report_card', 'form157'], true)) {
+        $checks = is_array($result['field_checks'] ?? null) ? $result['field_checks'] : [];
+        $result['field_checks'] = aiRefineSchoolYearFieldChecks($checks, $expectedSchoolYear);
+    }
+
     $result['refine_v'] = 1;
     return $result;
+}
+
+/**
+ * @param array<string, mixed> $autoExpected
+ * @return array<string, string>
+ */
+function aiRefineSchoolYearMatch(string $expected, string $detected): ?bool
+{
+    $exp = trim($expected);
+    $det = trim($detected);
+    if ($exp === '' || $det === '') {
+        return null;
+    }
+    if (strcasecmp($exp, $det) === 0) {
+        return true;
+    }
+    if (
+        preg_match('/^(\d{4})-(\d{4})$/', $exp, $em) === 1
+        && preg_match('/^(\d{4})-(\d{4})$/', $det, $dm) === 1
+    ) {
+        return $em[1] === $dm[1] && $em[2] === $dm[2];
+    }
+
+    return null;
+}
+
+/**
+ * Reconcile cached school-year checks with the current enrollment form (no AI rerun).
+ *
+ * @param list<array<string, mixed>> $fieldChecks
+ * @return list<array<string, mixed>>
+ */
+function aiRefineSchoolYearFieldChecks(array $fieldChecks, string $expectedSchoolYear): array
+{
+    $expectedSchoolYear = trim($expectedSchoolYear);
+    if ($expectedSchoolYear === '') {
+        return $fieldChecks;
+    }
+
+    foreach ($fieldChecks as $i => $check) {
+        if (!is_array($check)) {
+            continue;
+        }
+        if (strtolower(trim((string)($check['field'] ?? ''))) !== 'school year') {
+            continue;
+        }
+        $detected = trim((string)($check['detected'] ?? ''));
+        $fieldChecks[$i]['expected'] = $expectedSchoolYear;
+        $rematch = aiRefineSchoolYearMatch($expectedSchoolYear, $detected);
+        if ($rematch !== null) {
+            $fieldChecks[$i]['ok'] = $rematch;
+            $fieldChecks[$i]['match_ratio'] = $rematch ? 1.0 : 0.0;
+            $fieldChecks[$i]['refined'] = true;
+        }
+        break;
+    }
+
+    return $fieldChecks;
 }
 
 /**

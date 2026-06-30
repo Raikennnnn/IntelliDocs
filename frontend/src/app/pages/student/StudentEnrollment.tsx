@@ -2999,7 +2999,8 @@ export function StudentEnrollment() {
                       placeholder="Pick or type e.g. 2019-2020"
                     />
                     <p className="text-xs text-gray-500">
-                      Pick from the list or type the school year on your report card (SF9) or Form 137.
+                      Pick from the list or type the school year printed on your SF9 and Good Moral
+                      certificates (they should match each other).
                     </p>
                   </div>
                 </div>

@@ -693,6 +693,17 @@ function enrollmentCrossCheckPlan(docType: AiDocType, app: any): EnrollmentCross
   return nameRow ? [nameRow] : [];
 }
 
+function schoolYearsEnrollmentMatch(expected: string, detected: string): boolean | null {
+  const e = expected.trim();
+  const d = detected.trim();
+  if (!e || !d) return null;
+  if (e.toLowerCase() === d.toLowerCase()) return true;
+  const em = /^(\d{4})-(\d{4})$/.exec(e);
+  const dm = /^(\d{4})-(\d{4})$/.exec(d);
+  if (em && dm) return em[1] === dm[1] && em[2] === dm[2];
+  return null;
+}
+
 function applyEnrollmentCrossChecks(
   plan: EnrollmentCrossRow[],
   aiChecks: Array<{ field?: string; expected?: string; detected?: string; ok?: boolean; match_ratio?: number; concern_pct?: number }>,
@@ -702,11 +713,18 @@ function applyEnrollmentCrossChecks(
       (c) => String(c.field || "").toLowerCase() === row.field.toLowerCase(),
     );
     if (!hit) return row;
+    const expected = String(row.expected).trim();
+    const detected = hit.detected ? String(hit.detected).trim() : "";
+    let ok: boolean | null = hit.ok === undefined || hit.ok === null ? null : Boolean(hit.ok);
+    if (row.field.toLowerCase() === "school year" && expected && detected) {
+      const rematch = schoolYearsEnrollmentMatch(expected, detected);
+      if (rematch !== null) ok = rematch;
+    }
     return {
       field: row.field,
-      expected: String(hit.expected ?? row.expected),
-      detected: hit.detected ? String(hit.detected) : "",
-      ok: Boolean(hit.ok),
+      expected,
+      detected,
+      ok,
       match_ratio: typeof hit.match_ratio === "number" ? hit.match_ratio : undefined,
       concern_pct: typeof hit.concern_pct === "number" ? hit.concern_pct : undefined,
     };
@@ -746,6 +764,17 @@ function isAiVerifyPayloadStale(docType: AiDocType, app: any, r?: AiVerifyRespon
     const sig = r.field_checks.find((fc) => isSignatureFieldCheck(fc));
     if (!sig) return true;
     if (sig.ok === false && String(sig.scan_method || "").toLowerCase() !== "visual") return true;
+  }
+  const formSchoolYear = String(app?.lastSchoolYearAttended ?? "").trim();
+  const syCheck = (r.field_checks ?? []).find(
+    (fc) => String(fc.field || "").trim().toLowerCase() === "school year",
+  );
+  if (
+    formSchoolYear &&
+    syCheck &&
+    String(syCheck.expected ?? "").trim() !== formSchoolYear
+  ) {
+    return true;
   }
   const mismatchLv = r.security_levels?.levels?.find((lv) =>
     /mismatch|enrollment/i.test(lv.title),
@@ -2402,8 +2431,8 @@ export function ReviewDocuments() {
                     </Button>
                   </div>
                   <p className="text-xs text-gray-500">
-                    Must match the school year on the uploaded report card (SF9) or Form 137. Used when
-                    AI compares enrollment vs. document — save, then re-run AI if you change it.
+                    Must match the school year printed on the uploaded SF9 and Good Moral (e.g. both
+                    say 2019-2020 — not the year you are enrolling for). Save, then re-run AI.
                   </p>
                 </div>
               </div>
