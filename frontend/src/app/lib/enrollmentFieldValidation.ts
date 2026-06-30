@@ -68,19 +68,34 @@ export function sanitizeSectionLabelInput(value: string): string {
   return value.replace(/[^A-Za-zñÑ0-9.\-\s]/g, "").slice(0, 40);
 }
 
-/** School year: digits and one hyphen (e.g. 2023-2024). */
+/** School year: digits and one hyphen (e.g. 2023-2024). Auto-formats 8 digits as YYYY-YYYY. */
 export function sanitizeSchoolYearInput(value: string): string {
-  let cleaned = value.replace(/[^\d-]/g, "");
-  const hyphenIdx = cleaned.indexOf("-");
-  if (hyphenIdx === -1) {
-    return cleaned.slice(0, 4);
+  const cleaned = value.replace(/[^\d-]/g, "");
+  const digitsOnly = cleaned.replace(/-/g, "");
+
+  if (!cleaned.includes("-")) {
+    if (digitsOnly.length <= 4) {
+      return digitsOnly.slice(0, 4);
+    }
+    const start = digitsOnly.slice(0, 4);
+    const end = digitsOnly.slice(4, 8);
+    return `${start}-${end}`;
   }
+
+  const hyphenIdx = cleaned.indexOf("-");
   const start = cleaned.slice(0, hyphenIdx).replace(/\D/g, "").slice(0, 4);
   const end = cleaned
     .slice(hyphenIdx + 1)
     .replace(/\D/g, "")
     .slice(0, 4);
-  return end.length > 0 ? `${start}-${end}` : start;
+
+  if (end.length > 0) {
+    return `${start}-${end}`;
+  }
+  if (start.length > 0) {
+    return `${start}-`;
+  }
+  return start;
 }
 
 export function sanitizeEnrollmentFieldValue(field: string, value: string): string {

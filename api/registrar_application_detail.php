@@ -398,6 +398,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['success' => true, 'message' => 'Remarks saved']);
             exit;
         }
+        if ($action === 'update_last_school_year') {
+            requireActorPermission($pdo, $actor, 'addRemarks');
+            $schoolYear = trim((string)($payload['last_school_year_attended'] ?? ''));
+            if ($schoolYear === '') {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'error' => 'School year is required']);
+                exit;
+            }
+            $validSingle = preg_match('/^\d{4}$/', $schoolYear) === 1;
+            $validRange = preg_match('/^(\d{4})-(\d{4})$/', $schoolYear, $syMatch) === 1
+                && (int)$syMatch[2] === (int)$syMatch[1] + 1;
+            if (!$validSingle && !$validRange) {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'error' => 'Invalid school year format']);
+                exit;
+            }
+            $stepsStmt = $pdo->prepare('SELECT enrollment_steps FROM enrollments WHERE id = :id LIMIT 1');
+            $stepsStmt->execute([':id' => $enrollmentId]);
+            $stepsRaw = $stepsStmt->fetchColumn();
+            $steps = json_decode(is_string($stepsRaw) ? $stepsRaw : '{}', true);
+            if (!is_array($steps)) {
+                $steps = [];
+            }
+            if (!isset($steps['form_data']) || !is_array($steps['form_data'])) {
+                $steps['form_data'] = [];
+            }
+            $steps['form_data']['lastSchoolYearAttended'] = $schoolYear;
+            $encoded = json_encode($steps, JSON_UNESCAPED_UNICODE);
+            $sql = $hasUpdatedAt
+                ? 'UPDATE enrollments SET enrollment_steps = :steps, updated_at = NOW() WHERE id = :id'
+                : 'UPDATE enrollments SET enrollment_steps = :steps WHERE id = :id';
+            $pdo->prepare($sql)->execute([':steps' => $encoded, ':id' => $enrollmentId]);
+            appLogEvent($pdo, 'registrar_update_last_school_year', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, [
+                'school_year' => $schoolYear,
+            ]);
+            echo json_encode(['success' => true, 'message' => 'School year updated', 'lastSchoolYearAttended' => $schoolYear]);
+            exit;
+        }
         if ($action === 'approve' || $action === 'reject') {
             requireActorPermission($pdo, $actor, $action === 'approve' ? 'approveApplications' : 'rejectApplications');
             if ($action === 'approve') {

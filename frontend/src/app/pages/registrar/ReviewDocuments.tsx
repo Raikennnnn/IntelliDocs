@@ -39,8 +39,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
 import { apiFetch, formatApiError, parseApiJson } from "../../lib/api";
+import {
+  getSchoolYearAttendedOptions,
+  isValidSchoolYearAttended,
+  sanitizeSchoolYearInput,
+} from "../../lib/enrollmentFieldValidation";
 import { guessDocKind } from "../../lib/documentPreview";
 import { SecureDocumentPreview } from "../../components/SecureDocumentPreview";
+import { SchoolYearCombobox } from "../../components/SchoolYearCombobox";
 import {
   SecurityLevelsPanel,
   type SecurityLevels,
@@ -352,6 +358,13 @@ function resolveApplicationVerifyFields(app: any) {
     gradeLevel: String(app?.gradeLevel || "").trim(),
     strand: String(app?.strand || "").trim(),
   };
+}
+
+function applicationWithVerifySchoolYear(app: any, schoolYear: string): any {
+  if (!app) return app;
+  const trimmed = String(schoolYear || "").trim();
+  if (!trimmed) return app;
+  return { ...app, lastSchoolYearAttended: trimmed };
 }
 
 const AI_VERIFY_PAYLOAD_VERSION = 57;
@@ -1080,6 +1093,18 @@ export function ReviewDocuments() {
   const [docDecisionRemarks, setDocDecisionRemarks] = useState("");
   const [docRejectReasonPreset, setDocRejectReasonPreset] = useState<string>("other");
   const [docDecisionSubmitting, setDocDecisionSubmitting] = useState(false);
+  const [verifySchoolYear, setVerifySchoolYear] = useState("");
+  const [verifySchoolYearSaving, setVerifySchoolYearSaving] = useState(false);
+
+  const verifySchoolYearOptions = useMemo(
+    () => getSchoolYearAttendedOptions({ count: 15, extraYears: [verifySchoolYear] }),
+    [verifySchoolYear],
+  );
+
+  const applicationForVerify = useMemo(
+    () => applicationWithVerifySchoolYear(application, verifySchoolYear),
+    [application, verifySchoolYear],
+  );
 
   const resolveEffectiveDocType = (doc: any, ai?: AiVerifyResponse | null): AiDocType => {
     const fromAi = aiDocTypeFromResolved(String(ai?.resolved_doc_type ?? ""));
@@ -1262,6 +1287,7 @@ export function ReviewDocuments() {
       }
       const app = data.application ?? null;
       setApplication(app);
+      setVerifySchoolYear(String(app?.lastSchoolYearAttended ?? "").trim());
       setRemarks(String(app?.registrarRemarks ?? ""));
 
       const seeded: Record<string, AiVerifyResponse> = {};
@@ -1296,6 +1322,49 @@ export function ReviewDocuments() {
       setError(e instanceof Error ? e.message : "Failed to load application");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveVerifySchoolYear = async () => {
+    if (!application?.enrollmentId) return;
+    const trimmed = verifySchoolYear.trim();
+    if (!trimmed) {
+      toast.error("Enter the school year from the student's report card (e.g. 2019-2020).");
+      return;
+    }
+    if (!isValidSchoolYearAttended(trimmed)) {
+      toast.error("School year must be valid (e.g. 2023 or 2023-2024).");
+      return;
+    }
+    if (
+      trimmed === String(application.lastSchoolYearAttended ?? "").trim() &&
+      !verifySchoolYearSaving
+    ) {
+      return;
+    }
+    setVerifySchoolYearSaving(true);
+    try {
+      const res = await apiFetch("/api/registrar/application", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "update_last_school_year",
+          enrollment_id: application.enrollmentId,
+          last_school_year_attended: trimmed,
+        }),
+      });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok || !data?.success) {
+        toast.error(formatApiError(data, `Failed to save school year (${res.status})`));
+        return;
+      }
+      setApplication((prev: any) =>
+        prev ? { ...prev, lastSchoolYearAttended: trimmed } : prev,
+      );
+      toast.success("School year saved. Re-run AI on SF9 / Form 137 / Good Moral to refresh checks.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save school year");
+    } finally {
+      setVerifySchoolYearSaving(false);
     }
   };
 
@@ -1814,8 +1883,8 @@ export function ReviewDocuments() {
   }, [applicationId]);
 
   const runVerifyForDoc = useCallback(
-    async (doc: any, opts: { rerun?: boolean; applicationSnapshot: any }): Promise<boolean> => {
-      const app = opts.applicationSnapshot;
+    async (doc: any, opts: { rerun?: boolean; applicationSnapshot?: any }): Promise<boolean> => {
+      const app = opts.applicationSnapshot ?? applicationForVerify;
       if (!doc?.id || !app) return false;
       const id = String(doc.id);
       const docType = mapDocType(doc);
@@ -1885,7 +1954,7 @@ export function ReviewDocuments() {
         return false;
       }
     },
-    [],
+    [applicationForVerify],
   );
 
   const pendingImageDocIds = useMemo(() => {
@@ -1921,7 +1990,7 @@ export function ReviewDocuments() {
       for (const doc of docs) {
         const id = String(doc.id);
         clearDocumentAiSettledInBrowser(id);
-        const ok = await runVerifyForDoc(doc, { rerun: true, applicationSnapshot: application });
+        const ok = await runVerifyForDoc(doc, { rerun: true, applicationSnapshot: applicationForVerify });
         if (ok) okCount++;
       }
       if (okCount > 0) {
@@ -1937,7 +2006,7 @@ export function ReviewDocuments() {
     } finally {
       setAiRunning(false);
     }
-  }, [application, runVerifyForDoc, loadApplication]);
+  }, [application, applicationForVerify, runVerifyForDoc, loadApplication]);
 
   // Auto-score only documents that have never been verified (DB + browser session).
   useEffect(() => {
@@ -1957,7 +2026,7 @@ export function ReviewDocuments() {
           if (cancelled) return;
           const id = String(doc.id);
           if (documentAiIsSettled(id, doc, application)) continue;
-          await runVerifyForDoc(doc, { applicationSnapshot: application });
+          await runVerifyForDoc(doc, { applicationSnapshot: applicationForVerify });
         }
       } finally {
         if (!cancelled) setAiRunning(false);
@@ -1967,7 +2036,7 @@ export function ReviewDocuments() {
     return () => {
       cancelled = true;
     };
-  }, [applicationId, pendingImageDocIds, application, runVerifyForDoc, loading]);
+  }, [applicationId, pendingImageDocIds, application, applicationForVerify, runVerifyForDoc, loading]);
 
   if (loading) {
     return (
@@ -2299,9 +2368,43 @@ export function ReviewDocuments() {
                   <p className="text-gray-600">Section at Previous School</p>
                   <p className="font-medium">{application.sectionAtPreviousSchool}</p>
                 </div>
-                <div>
-                  <p className="text-gray-600">Last School Year Attended</p>
-                  <p className="font-medium">{application.lastSchoolYearAttended}</p>
+                <div className="md:col-span-2 lg:col-span-3 space-y-2">
+                  <Label htmlFor="verifySchoolYear">Last School Year Attended (for document verification)</Label>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <SchoolYearCombobox
+                      id="verifySchoolYear"
+                      value={verifySchoolYear}
+                      onChange={(value) => setVerifySchoolYear(sanitizeSchoolYearInput(value))}
+                      options={verifySchoolYearOptions}
+                      placeholder="Pick or type e.g. 2019-2020"
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="shrink-0"
+                      disabled={
+                        verifySchoolYearSaving ||
+                        !verifySchoolYear.trim() ||
+                        verifySchoolYear.trim() ===
+                          String(application.lastSchoolYearAttended ?? "").trim()
+                      }
+                      onClick={() => void saveVerifySchoolYear()}
+                    >
+                      {verifySchoolYearSaving ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Saving…
+                        </>
+                      ) : (
+                        "Save"
+                      )}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Must match the school year on the uploaded report card (SF9) or Form 137. Used when
+                    AI compares enrollment vs. document — save, then re-run AI if you change it.
+                  </p>
                 </div>
               </div>
             </div>
@@ -3212,8 +3315,8 @@ export function ReviewDocuments() {
                                 ],
                           )
                         : null;
-                    const crossPlan = application
-                      ? enrollmentCrossCheckPlan(docType, application)
+                    const crossPlan = applicationForVerify
+                      ? enrollmentCrossCheckPlan(docType, applicationForVerify)
                       : [];
                     const crossRows = applyEnrollmentCrossChecks(crossPlan, fieldChecks);
                     const cross =

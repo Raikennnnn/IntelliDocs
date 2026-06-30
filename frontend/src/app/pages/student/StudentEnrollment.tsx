@@ -698,7 +698,14 @@ export function StudentEnrollment() {
     [formData.municipality],
   );
 
-  const lastSchoolYearOptions = useMemo(() => getSchoolYearAttendedOptions({ count: 5 }), []);
+  const lastSchoolYearOptions = useMemo(
+    () =>
+      getSchoolYearAttendedOptions({
+        count: 15,
+        extraYears: [formData.lastSchoolYearAttended],
+      }),
+    [formData.lastSchoolYearAttended],
+  );
 
   const selectFieldClass =
     "w-full h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]";
@@ -1277,7 +1284,6 @@ export function StudentEnrollment() {
     'relationshipToGuardian',
     'previousSchoolAttended',
     'sectionAtPreviousSchool',
-    'lastSchoolYearAttended',
   ]);
 
   const handleInputChange = (field: keyof EnrollmentFormData, value: string | boolean) => {
@@ -1762,6 +1768,10 @@ export function StudentEnrollment() {
   };
 
   const validateStep3 = () => {
+    if (!formData.lastSchoolYearAttended.trim()) {
+      toast.error("Please enter the last school year you attended (as shown on your report card).");
+      return false;
+    }
     if (
       formData.previousSchoolAttended.trim() &&
       !hasValidTextOnlyContent(formData.previousSchoolAttended)
@@ -2979,17 +2989,18 @@ export function StudentEnrollment() {
                       className={`uppercase${lockEnrollmentHistory ? ' bg-gray-100 text-gray-700' : ''}`}
                     />
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="lastSchoolYearAttended">Last School Year Attended</Label>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="lastSchoolYearAttended">Last School Year Attended *</Label>
                     <SchoolYearCombobox
                       id="lastSchoolYearAttended"
                       value={formData.lastSchoolYearAttended}
                       onChange={(value) => handleInputChange("lastSchoolYearAttended", value)}
                       options={lastSchoolYearOptions}
-                      placeholder="e.g. 2023-2024"
-                      disabled={lockEnrollmentHistory}
-                      className={lockEnrollmentHistory ? '[&_input]:bg-gray-100 [&_input]:text-gray-700' : undefined}
+                      placeholder="Pick or type e.g. 2019-2020"
                     />
+                    <p className="text-xs text-gray-500">
+                      Pick from the list or type the school year on your report card (SF9) or Form 137.
+                    </p>
                   </div>
                 </div>
               </CardContent>

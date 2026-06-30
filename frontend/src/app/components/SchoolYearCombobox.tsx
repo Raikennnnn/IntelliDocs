@@ -28,7 +28,7 @@ export function SchoolYearCombobox({
       placeholder={placeholder}
       className={className}
       disabled={disabled}
-      inputMode="numeric"
+      inputMode="text"
       pattern="\d{4}(-\d{4})?"
       maxLength={9}
       ariaLabel="Show school year options"
