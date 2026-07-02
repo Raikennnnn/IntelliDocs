@@ -119,11 +119,11 @@ export function Reports() {
       try {
         reportsJson = JSON.parse(reportsText);
       } catch {
-        throw new Error('Server returned an invalid reports response');
+        throw new Error('Could not load reports. Please try again.');
       }
       if (!reportsRes.ok || !reportsJson.success) {
         throw new Error(
-          (reportsJson.error as string) || `Failed to load reports (${reportsRes.status})`,
+          (reportsJson.error as string) || 'Could not load reports. Please try again.',
         );
       }
 
@@ -203,7 +203,7 @@ export function Reports() {
         } catch {
           /* ignore */
         }
-        throw new Error(json.error || `Export failed (${res.status})`);
+        throw new Error(json.error || 'Export failed. Please try again.');
       }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

@@ -88,12 +88,12 @@ export function useStudentPortal() {
       try {
         json = JSON.parse(text);
       } catch {
-        setError('Server returned an invalid response');
+        setError('Something went wrong. Please try again.');
         setData(null);
         return;
       }
       if (!res.ok) {
-        setError(json.error || `Request failed (${res.status})`);
+        setError(json.error || 'Request failed. Please try again.');
         setData(null);
         return;
       }

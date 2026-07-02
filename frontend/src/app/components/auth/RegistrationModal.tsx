@@ -5,6 +5,7 @@ import { Label } from "../ui/label";
 import { X, Mail, Lock, User, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 import { validatePassword } from "../../lib/passwordPolicy";
+import { handleOtpBackspaceKeyDown } from "../../lib/otpInput";
 
 interface RegistrationModalProps {
   isOpen: boolean;
@@ -253,6 +254,7 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                       maxLength={1}
                       value={digit}
                       onChange={(e) => handleOtpChange(index, e.target.value)}
+                      onKeyDown={(e) => handleOtpBackspaceKeyDown(e, index, otp, setOtp, 'otp')}
                       onPaste={handleOtpPaste}
                       autoComplete="one-time-code"
                       className="aspect-square h-auto w-full min-w-0 max-h-12 p-0 text-center text-base font-semibold sm:max-h-14"

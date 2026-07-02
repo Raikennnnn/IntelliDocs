@@ -143,11 +143,11 @@ export function SchoolYearProvider({ children }: { children: ReactNode }) {
       try {
         j = JSON.parse(text) as typeof j;
       } catch {
-        setSettingsError('Server returned an invalid response. Try Ctrl+Shift+R to reload the app.');
+        setSettingsError('Could not load school year settings. Please refresh the page and try again.');
         return;
       }
       if (!res.ok || !j.success) {
-        setSettingsError(j.error || `Failed to load school year settings (${res.status})`);
+        setSettingsError(j.error || 'Could not load school year settings. Please try again.');
         return;
       }
       applySchoolYearPayload(j);

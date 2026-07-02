@@ -66,7 +66,7 @@ export async function fetchActivityLogs(
   const res = await apiFetch(`/api/${scope}/activity-logs?${qs.toString()}`);
   const json = (await res.json()) as ActivityLogsResponse;
   if (!res.ok || !json.success) {
-    throw new Error(json.error || `Failed to load activity logs (${res.status})`);
+    throw new Error(json.error || 'Could not load activity logs. Please try again.');
   }
   return json;
 }

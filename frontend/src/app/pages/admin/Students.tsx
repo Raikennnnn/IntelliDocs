@@ -120,7 +120,7 @@ export function Students() {
           json = null;
         }
         if (!res.ok || !json?.success) {
-          throw new Error(json?.error || `Failed to load students (${res.status})`);
+          throw new Error(json?.error || 'Could not load students. Please try again.');
         }
         if (cancelled) return;
         setStudents(Array.isArray(json.students) ? json.students : []);

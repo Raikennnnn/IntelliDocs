@@ -126,7 +126,7 @@ export function ApplicationStatus() {
         const json = await res.json();
         if (cancelled) return;
         if (!res.ok || !json?.success) {
-          throw new Error(json?.error || `Failed to load checklist (${res.status})`);
+          throw new Error(json?.error || 'Could not load checklist. Please try again.');
         }
         setPhysical({
           loading: false,

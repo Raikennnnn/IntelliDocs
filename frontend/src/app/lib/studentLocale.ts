@@ -175,8 +175,8 @@ const messages = {
       'Use good lighting and include the full document. We check each photo for clarity and readable text before it is accepted. Maximum file size: {maxSize} per document.',
     'form.docs.resubmit':
       'Resubmission mode. Approved documents are locked. Only the requirements flagged for resubmission can be re-uploaded.',
-    'form.docs.transfereeNote': '(if applicable for transferee students)',
-    'form.docs.optionalNote': '(optional for initial submission — you may provide this later)',
+    'form.docs.transfereeNote': 'For transferee students only',
+    'form.docs.optionalNote': 'Optional — you may submit this later',
     'form.docs.registrarNote': "Registrar's note:",
     'form.docs.authenticityTitle': 'Document authenticity declaration',
     'form.docs.authenticityBody':
@@ -461,8 +461,8 @@ const messages = {
       'Gumamit ng magandang ilaw at isama ang buong dokumento. Sinusuri namin ang bawat larawan bago tanggapin. Pinakamataas na laki: {maxSize} bawat dokumento.',
     'form.docs.resubmit':
       'Mode ng muling pagsusumite. Naka-lock ang mga naaprubahang dokumento. Maaari lamang i-upload muli ang mga kinakailangang may flag para sa resubmission.',
-    'form.docs.transfereeNote': '(kung naaangkop para sa transferee)',
-    'form.docs.optionalNote': '(opsyonal sa unang pagsusumite — maaaring isumite sa ibang pagkakataon)',
+    'form.docs.transfereeNote': 'Para sa mga transferee lamang',
+    'form.docs.optionalNote': 'Opsyonal — maaaring isumite sa ibang pagkakataon',
     'form.docs.registrarNote': 'Tala ng registrar:',
     'form.docs.authenticityTitle': 'Deklarasyon ng pagiging tunay ng dokumento',
     'form.docs.authenticityBody':

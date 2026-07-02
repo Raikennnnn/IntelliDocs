@@ -211,7 +211,7 @@ export function StudentDashboard() {
         return;
       }
       if (!res.ok || !json.success) {
-        toast.error(json.error || `Could not save (${res.status})`);
+        toast.error(json.error || 'Could not save. Please try again.');
         return;
       }
       toast.success(json.message || 'Saved.');
@@ -249,7 +249,7 @@ export function StudentDashboard() {
         return;
       }
       if (!res.ok || !json.success) {
-        toast.error(json.error || `Could not save (${res.status})`);
+        toast.error(json.error || 'Could not save. Please try again.');
         return;
       }
       toast.success(json.message || 'Voucher number saved.');

@@ -188,10 +188,10 @@ export function SystemSettings() {
       try {
         json = JSON.parse(text);
       } catch {
-        throw new Error("Server returned an invalid response");
+        throw new Error("Something went wrong. Please try again.");
       }
       if (!res.ok || !json.success) {
-        throw new Error((json.error as string) || `Failed to load settings (${res.status})`);
+        throw new Error((json.error as string) || 'Could not load settings. Please try again.');
       }
 
       const email = (json.email ?? {}) as Record<string, string>;

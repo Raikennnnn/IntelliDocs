@@ -366,7 +366,7 @@ export function Students() {
           const msg =
             json?.message ||
             json?.error ||
-            `Failed to load students (${res.status})`;
+            json?.error || 'Could not load students. Please try again.';
           throw new Error(msg);
         }
         if (cancelled) return;
@@ -516,7 +516,7 @@ export function Students() {
       const res = await apiFetch(`/api/registrar/students?${detailParams.toString()}`);
       const json = await res.json();
       if (!res.ok || !json?.success) {
-        throw new Error(json?.error || `Failed to load student (${res.status})`);
+        throw new Error(json?.error || 'Could not load student details. Please try again.');
       }
       const fetched = json.student as Student;
       setDetail(fetched);
@@ -558,7 +558,7 @@ export function Students() {
                 ? "Couldn't find this enrollment record."
                 : code ||
                   (json?.message as string | undefined) ||
-                  `Failed to load checklist (${res.status})`;
+                  json?.error || 'Could not load checklist. Please try again.';
         throw new Error(friendly);
       }
       setPhysical({
@@ -614,7 +614,7 @@ export function Students() {
       });
       const json = await res.json();
       if (!res.ok || !json?.success) {
-        throw new Error(json?.error || `Toggle failed (${res.status})`);
+        throw new Error(json?.error || 'Could not update status. Please try again.');
       }
       // Snap to authoritative server state.
       setPhysical((p) => ({
@@ -660,7 +660,7 @@ export function Students() {
       });
       const json = await res.json();
       if (!res.ok || !json?.success) {
-        throw new Error(json?.error || `Failed to mark complete (${res.status})`);
+        throw new Error(json?.error || 'Could not mark as complete. Please try again.');
       }
       setPhysical((p) => ({
         ...p,
@@ -755,7 +755,7 @@ export function Students() {
       });
       const json = await res.json();
       if (!res.ok || !json?.success) {
-        throw new Error(json?.error || `Bulk reminder failed (${res.status})`);
+        throw new Error(json?.error || 'Could not send reminders. Please try again.');
       }
       const s = json.summary || {};
       const sent = Number(s.sent ?? 0);
@@ -851,7 +851,7 @@ export function Students() {
       const res = await apiFetch(`/api/document-file?id=${doc.id}`);
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
-        throw new Error(`Failed to load document (${res.status}) ${errText}`.trim());
+        throw new Error(json?.error || 'Could not load document. Please try again.');
       }
       // Sniff the bytes once before deciding how to render them.
       const buf = await res.arrayBuffer();
@@ -941,7 +941,7 @@ export function Students() {
       });
       const json = await res.json();
       if (!res.ok || !json?.success) {
-        throw new Error(json?.error || `Failed to send (${res.status})`);
+        throw new Error(json?.error || 'Could not send message. Please try again.');
       }
       toast.success("Welcome reminder email sent");
     } catch (e) {
@@ -969,7 +969,7 @@ export function Students() {
         | { success: true; sections: ReassignSectionOption[]; student: { currentSection?: string | null; currentShift?: "morning" | "afternoon" | null } }
         | { success: false; error?: string };
       if (!res.ok || !json.success) {
-        setReassignError(("error" in json && json.error) || `Failed to load sections (${res.status})`);
+        setReassignError(("error" in json && json.error) || 'Could not load sections. Please try again.');
         return;
       }
       setReassignOptions(Array.isArray(json.sections) ? json.sections : []);
@@ -1007,7 +1007,7 @@ export function Students() {
           setReassignForce(true);
           return;
         }
-        toast.error(("error" in json && (json.message || json.error)) || `Failed to reassign (${res.status})`);
+        toast.error(("error" in json && (json.message || json.error)) || 'Could not reassign student. Please try again.');
         return;
       }
       toast.success(
@@ -1071,9 +1071,9 @@ export function Students() {
                 ? "Credentials have already been issued for this student."
                 : code === "enrollment_not_approved"
                   ? "Approve the application first, then issue credentials."
-                  : code === "schema_not_migrated"
-                    ? "Credentials feature is not enabled in this environment yet."
-                    : `Failed to issue credentials (${code}).`;
+                  : code === 'schema_not_migrated'
+                    ? 'This feature is not available yet.'
+                    : 'Could not issue credentials. Please try again.';
         toast.error(message);
         return;
       }

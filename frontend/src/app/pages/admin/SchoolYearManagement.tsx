@@ -517,8 +517,8 @@ export function SchoolYearManagement() {
         <Alert>
           <AlertDescription>
             The dashboard may show school years from settings, but this page could not load the catalog
-            yet. Click <strong>Show hidden</strong> if available, or press <strong>Retry</strong> after a
-            hard refresh (Ctrl+Shift+R).
+            yet. Click <strong>Show hidden</strong> if available, or press <strong>Retry</strong> after
+            refreshing the page.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -745,7 +745,7 @@ export function SchoolYearManagement() {
                         ? 'All school years are hidden. Turn on “Show hidden” to view them.'
                         : !settingsLoaded
                           ? 'Loading school years…'
-                          : 'No school years in the catalog yet. Create one, or refresh after deploy if you already have enrollment years configured.'}
+                          : 'No school years in the catalog yet. Create one, or click Retry if you expected existing years.'}
                     </TableCell>
                   </TableRow>
                 ) : null}

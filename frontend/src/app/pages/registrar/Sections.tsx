@@ -724,7 +724,7 @@ export function Sections() {
       const res = await apiFetch(`/api/registrar/sections${schoolYearQuery}`);
       const json = (await res.json()) as SectionsResponse | { success: false; error?: string };
       if (!res.ok || !json.success) {
-        const msg = ("error" in json && json.error) || `Failed to load sections (${res.status})`;
+        const msg = ("error" in json && json.error) || 'Could not load sections. Please try again.';
         setError(msg);
         setSections([]);
         return;
@@ -873,15 +873,10 @@ export function Sections() {
       try {
         json = JSON.parse(text) as SectionRosterResponse | { success: false; error?: string };
       } catch {
-        const snippet = text.replace(/\s+/g, " ").trim().slice(0, 160);
-        throw new Error(
-          snippet
-            ? `Server returned an invalid response: ${snippet}`
-            : "Server returned an invalid response",
-        );
+        throw new Error('Something went wrong. Please try again.');
       }
       if (!res.ok || !json.success || !("students" in json)) {
-        const msg = ("error" in json && json.error) || `Failed to load class list (${res.status})`;
+        const msg = ("error" in json && json.error) || 'Could not load class list. Please try again.';
         setRosterError(msg);
         return;
       }
@@ -957,7 +952,7 @@ export function Sections() {
         | { success: true; section: Section }
         | { success: false; error?: string };
       if (!res.ok || !json.success) {
-        const msg = ("error" in json && json.error) || `Failed to create section (${res.status})`;
+        const msg = ("error" in json && json.error) || 'Could not create section. Please try again.';
         toast.error(msg);
         return;
       }
@@ -986,7 +981,7 @@ export function Sections() {
       });
       const json = (await res.json()) as { success?: boolean; error?: string };
       if (!res.ok || !json.success) {
-        toast.error(json.error || `Failed to delete (${res.status})`);
+        toast.error(json.error || 'Could not delete section. Please try again.');
         return;
       }
       toast.success(`Deleted "${section.name}".`);

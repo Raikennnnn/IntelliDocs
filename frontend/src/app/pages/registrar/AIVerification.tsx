@@ -98,7 +98,7 @@ export function AIVerification() {
       setLatest(item);
       setHistory((prev) => [item, ...prev]);
     } catch (e: any) {
-      setError(e?.message || "Unable to connect to the AI service.");
+      setError(e?.message || 'Document verification is temporarily unavailable. Please try again.');
     } finally {
       setLoading(false);
     }

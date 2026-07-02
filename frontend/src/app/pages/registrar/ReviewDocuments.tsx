@@ -1310,10 +1310,10 @@ export function ReviewDocuments() {
       try {
         data = JSON.parse(text);
       } catch {
-        throw new Error("Server returned an invalid response");
+        throw new Error('Something went wrong. Please try again.');
       }
       if (!response.ok || !data.success) {
-        throw new Error(data.error || `Failed to load application (${response.status})`);
+        throw new Error(data.error || 'Could not load this application. Please try again.');
       }
       const app = data.application ?? null;
       setApplication(app);
@@ -1384,7 +1384,7 @@ export function ReviewDocuments() {
       });
       const data = await res.json().catch(() => ({} as any));
       if (!res.ok || !data?.success) {
-        toast.error(formatApiError(data, `Failed to save school year (${res.status})`));
+        toast.error(formatApiError(data, 'Could not save school year. Please try again.'));
         return;
       }
       setApplication((prev: any) =>
@@ -1427,7 +1427,7 @@ export function ReviewDocuments() {
             "This student already has school credentials and is enrolled. They should appear under Students, not Applications."
           );
         } else {
-          toast.error(formatApiError(data, `Failed to approve (${res.status})`));
+          toast.error(formatApiError(data, 'Could not approve application. Please try again.'));
         }
         return;
       }
@@ -1501,7 +1501,7 @@ export function ReviewDocuments() {
       const text = await res.text();
       const data = JSON.parse(text);
       if (!res.ok || !data.success) {
-        toast.error(formatApiError(data, `Failed to reject (${res.status})`));
+        toast.error(formatApiError(data, 'Could not reject application. Please try again.'));
         return;
       }
       toast.success(data.message || `Application ${application.id} rejected`);
@@ -1525,7 +1525,7 @@ export function ReviewDocuments() {
     const text = await res.text();
     const data = JSON.parse(text);
     if (!res.ok || !data.success) {
-      toast.error(formatApiError(data, `Failed to save remarks (${res.status})`));
+      toast.error(formatApiError(data, 'Could not save remarks. Please try again.'));
       return;
     }
     toast.success(data.message || "Remarks saved successfully");
@@ -1569,7 +1569,7 @@ export function ReviewDocuments() {
         setSelectedDocument((sel: any) =>
           sel && String(sel.id) === idStr ? { ...sel, registrarReviewed: !nextReviewed } : sel,
         );
-        toast.error(formatApiError(data, `Failed to update review status (${res.status})`));
+        toast.error(formatApiError(data, 'Could not update review status. Please try again.'));
         return;
       }
       toast.success(nextReviewed ? "Marked as reviewed" : "Reviewed flag cleared");
@@ -1610,7 +1610,7 @@ export function ReviewDocuments() {
         const code =
           data?.error === "remarks_required"
             ? "Reason is required"
-            : formatApiError(data, `Failed to reject document (${res.status})`);
+            : formatApiError(data, 'Could not reject document. Please try again.');
         toast.error(code);
         return;
       }
@@ -1760,7 +1760,7 @@ export function ReviewDocuments() {
       const res = await apiFetch(`/api/document-file?id=${doc.id}&disposition=attachment`);
       if (!res.ok) {
         const errText = await res.text();
-        toast.error(errText || `Download failed (${res.status})`);
+        toast.error(errText || 'Download failed. Please try again.');
         return;
       }
       const blob = await res.blob();
@@ -1803,7 +1803,7 @@ export function ReviewDocuments() {
         if (cancelled) return;
 
         if (!res.ok) {
-          let msg = `Could not load preview (${res.status})`;
+          let msg = 'Could not load preview. Please try again.';
           try {
             const t = new TextDecoder().decode(buf.slice(0, 2000));
             const j = JSON.parse(t) as { error?: string };
@@ -1827,9 +1827,7 @@ export function ReviewDocuments() {
           throw new Error(msg);
         }
         if (sniff === "html") {
-          throw new Error(
-            "Server returned HTML instead of the file. Check PHP errors or that the file exists under uploads/documents.",
-          );
+          throw new Error('Could not open this file. Please try again.');
         }
 
         const payload = trimBinaryPayload(buf);
@@ -1945,7 +1943,7 @@ export function ReviewDocuments() {
         const body = parsed.data;
         if (!aiRes.ok || !body || (body as { success?: boolean }).success !== true) {
           const msg =
-            (body as { error?: string })?.error || `AI verify failed (${parsed.status})`;
+            (body as { error?: string })?.error || 'Document check could not be completed. Please try again.';
           setAiDocStateById((prev) => ({ ...prev, [id]: { state: "error", error: msg } }));
           return false;
         }
@@ -1957,7 +1955,7 @@ export function ReviewDocuments() {
         if (!data || typeof (data as { confidence?: unknown }).confidence !== "number") {
           setAiDocStateById((prev) => ({
             ...prev,
-            [id]: { state: "error", error: "AI returned an invalid response" },
+            [id]: { state: "error", error: "Document check could not be completed. Please try again." },
           }));
           return false;
         }
@@ -2031,7 +2029,7 @@ export function ReviewDocuments() {
             : `AI re-run finished for ${okCount} of ${docs.length} documents.`,
         );
       } else {
-        toast.error("AI re-run did not complete. Check the AI service and try again.");
+        toast.error('Document check did not complete. Please try again.');
       }
     } finally {
       setAiRunning(false);
@@ -2506,8 +2504,7 @@ export function ReviewDocuments() {
                 <div className="min-w-0 text-sm text-gray-600">
                   {aiServiceError ? (
                     <span className="text-rose-700">
-                      AI service unavailable — {aiServiceError}. Start{" "}
-                      <code className="rounded bg-rose-50 px-1 text-xs">ai/app.py</code> on port 5000.
+                      Document verification is temporarily unavailable. Please try again in a few minutes.
                     </span>
                   ) : (
                     <span>

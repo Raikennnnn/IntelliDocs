@@ -7,6 +7,7 @@ import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Label } from '../../components/ui/label';
 import { toast } from 'sonner';
 import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
+import { handleOtpBackspaceKeyDown } from '../../lib/otpInput';
 import { AuthPageShell, authPortalCopy } from '../../components/public/AuthPageShell';
 import { BRAND } from '../../lib/publicBrand';
 
@@ -113,7 +114,7 @@ export function Login() {
             ? `Enter the 6-digit code sent to ${result.emailMasked}.`
             : 'Enter the 6-digit verification code sent to your email.',
         );
-        if (result.devOtp) {
+        if (result.devOtp && import.meta.env.DEV) {
           setInfo((prev) => `${prev} Dev OTP: ${result.devOtp}`);
         }
         return;
@@ -132,7 +133,7 @@ export function Login() {
               'Too many login codes sent this hour. Wait before trying again, or use Forgot password.',
           );
         } else if (code === 'network_error') {
-          setError('Login failed. Check your connection and that the site API is reachable.');
+          setError('Sign-in failed. Check your connection and try again.');
         } else if (code === 'invalid_credentials') {
           setError(
             'Invalid email or password. Enrolled students: use the school username and password from the welcome email (not your old registration password). Otherwise use Forgot password.',
@@ -146,7 +147,7 @@ export function Login() {
         navigateForRole(result.user.role, navigate);
       }
     } catch {
-      setError('Login failed. Check backend connection.');
+      setError('Sign-in failed. Please try again.');
     } finally {
       setSubmittingCredentials(false);
     }
@@ -203,7 +204,7 @@ export function Login() {
             ? info.split('.')[0] + '.'
             : 'A new 6-digit code was sent to your email.'),
       );
-      if (result.devOtp) {
+      if (result.devOtp && import.meta.env.DEV) {
         setInfo((prev) => `${prev} Dev OTP: ${result.devOtp}`);
       }
     } finally {
@@ -303,6 +304,7 @@ export function Login() {
                         maxLength={1}
                         value={digit}
                         onChange={(e) => handleOtpChange(index, e.target.value)}
+                        onKeyDown={(e) => handleOtpBackspaceKeyDown(e, index, otp, setOtp, 'login-otp')}
                         onPaste={handleOtpPaste}
                         className="aspect-square h-auto w-full min-w-0 text-center text-lg font-semibold sm:text-2xl"
                       />

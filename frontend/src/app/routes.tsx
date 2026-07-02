@@ -6,6 +6,7 @@ import { RouteLoading } from './components/RouteLoading';
 import { DashboardLayout, studentNavigation, registrarNavigation, adminNavigation } from './layouts/DashboardLayout';
 import { useRolePermissions } from './context/RolePermissionsContext';
 import { StudentLocaleProvider } from './context/StudentLocaleContext';
+import { StaffDesktopOnlyGate } from './components/StaffDesktopOnlyGate';
 import * as Pages from './routePages';
 
 function withRouteSuspense(node: ReactNode) {
@@ -17,10 +18,14 @@ function RouteWithLayout({
   children,
   navigation,
   studentLocale = false,
+  staffDesktopOnly = false,
+  staffPortalLabel = 'Staff',
 }: {
   children: ReactNode;
   navigation: any[];
   studentLocale?: boolean;
+  staffDesktopOnly?: boolean;
+  staffPortalLabel?: string;
 }) {
   const { filterNavigation, loaded } = useRolePermissions();
   const visibleNav = loaded ? filterNavigation(navigation) : navigation;
@@ -29,7 +34,12 @@ function RouteWithLayout({
       <Suspense fallback={<RouteLoading />}>{children}</Suspense>
     </DashboardLayout>
   );
-  return studentLocale ? <StudentLocaleProvider>{layout}</StudentLocaleProvider> : layout;
+  const gated = staffDesktopOnly ? (
+    <StaffDesktopOnlyGate portalLabel={staffPortalLabel}>{layout}</StaffDesktopOnlyGate>
+  ) : (
+    layout
+  );
+  return studentLocale ? <StudentLocaleProvider>{gated}</StudentLocaleProvider> : gated;
 }
 
 export const router = createBrowserRouter([
@@ -55,12 +65,20 @@ export const router = createBrowserRouter([
   },
   {
     path: '/registrar-login',
-    element: withRouteSuspense(<Pages.Login />),
+    element: withRouteSuspense(
+      <StaffDesktopOnlyGate portalLabel="Registrar">
+        <Pages.Login />
+      </StaffDesktopOnlyGate>,
+    ),
     errorElement: <ErrorBoundary />,
   },
   {
     path: '/admin-login',
-    element: withRouteSuspense(<Pages.Login />),
+    element: withRouteSuspense(
+      <StaffDesktopOnlyGate portalLabel="Admin">
+        <Pages.Login />
+      </StaffDesktopOnlyGate>,
+    ),
     errorElement: <ErrorBoundary />,
   },
   // Student Routes (prefixed /student/... to match registrar/admin URLs)
@@ -155,7 +173,7 @@ export const router = createBrowserRouter([
     path: '/registrar/dashboard',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.RegistrarDashboard />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -166,7 +184,7 @@ export const router = createBrowserRouter([
     path: '/registrar/applications',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.Applications />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -177,7 +195,7 @@ export const router = createBrowserRouter([
     path: '/registrar/students',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.RegistrarStudents />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -188,7 +206,7 @@ export const router = createBrowserRouter([
     path: '/registrar/sections',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.RegistrarSections />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -199,7 +217,7 @@ export const router = createBrowserRouter([
     path: '/registrar/review-documents',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.ReviewDocuments />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -210,7 +228,7 @@ export const router = createBrowserRouter([
     path: '/registrar/review-documents/:applicationId',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.ReviewDocuments />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -221,7 +239,7 @@ export const router = createBrowserRouter([
     path: '/registrar/ai-verification',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.AIVerification />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -232,7 +250,7 @@ export const router = createBrowserRouter([
     path: '/registrar/reports',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.Reports />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -243,7 +261,7 @@ export const router = createBrowserRouter([
     path: '/registrar/activity-logs',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.RegistrarActivityLogs />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -254,7 +272,7 @@ export const router = createBrowserRouter([
     path: '/registrar/announcements',
     element: (
       <ProtectedRoute allowedRoles={['registrar']}>
-        <RouteWithLayout navigation={registrarNavigation}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.Announcements />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -266,7 +284,7 @@ export const router = createBrowserRouter([
     path: '/admin/dashboard',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.AdminDashboard />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -277,7 +295,7 @@ export const router = createBrowserRouter([
     path: '/admin/user-management',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.UserManagement />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -288,7 +306,7 @@ export const router = createBrowserRouter([
     path: '/admin/students',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.AdminStudents />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -299,7 +317,7 @@ export const router = createBrowserRouter([
     path: '/admin/reports',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.AdminReports />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -310,7 +328,7 @@ export const router = createBrowserRouter([
     path: '/admin/activity-logs',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.AdminActivityLogs />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -321,7 +339,7 @@ export const router = createBrowserRouter([
     path: '/admin/security-monitoring',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.SecurityMonitoring />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -332,7 +350,7 @@ export const router = createBrowserRouter([
     path: '/admin/system-settings',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.SystemSettings />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -343,7 +361,7 @@ export const router = createBrowserRouter([
     path: '/admin/school-year',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.SchoolYearManagement />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -354,7 +372,7 @@ export const router = createBrowserRouter([
     path: '/admin/announcements',
     element: (
       <ProtectedRoute allowedRoles={['admin']}>
-        <RouteWithLayout navigation={adminNavigation}>
+        <RouteWithLayout navigation={adminNavigation} staffDesktopOnly staffPortalLabel="Admin">
           <Pages.Announcements />
         </RouteWithLayout>
       </ProtectedRoute>

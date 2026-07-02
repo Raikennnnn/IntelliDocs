@@ -78,10 +78,10 @@ export function UserManagement() {
     try {
       json = JSON.parse(text);
     } catch {
-      throw new Error('Server returned an invalid response');
+      throw new Error('Something went wrong. Please try again.');
     }
     if (!res.ok || !json.success) {
-      throw new Error(json.error || `Failed to load users (${res.status})`);
+      throw new Error(json.error || 'Could not load users. Please try again.');
     }
     const rows = Array.isArray(json.users) ? json.users : [];
     setUsers(rows.map((u: any) => ({
@@ -127,10 +127,10 @@ export function UserManagement() {
       try {
         json = JSON.parse(text);
       } catch {
-        throw new Error('Server returned an invalid response');
+        throw new Error('Something went wrong. Please try again.');
       }
       if (!res.ok || !json.success) {
-        throw new Error(json.error || `Failed to create user (${res.status})`);
+        throw new Error(json.error || 'Could not create user. Please try again.');
       }
       toast.success(`User ${newUser.name} has been added successfully`);
       setShowAddUser(false);
@@ -165,10 +165,10 @@ export function UserManagement() {
     try {
       json = JSON.parse(text);
     } catch {
-      throw new Error('Server returned an invalid response');
+      throw new Error('Something went wrong. Please try again.');
     }
     if (!res.ok || !json.success) {
-      throw new Error(json.error || `Failed to update user (${res.status})`);
+      throw new Error(json.error || 'Could not update user. Please try again.');
     }
     toast.success(json.message || `User ${user.name} has been updated successfully`);
     setEditingUser(null);
@@ -202,7 +202,7 @@ export function UserManagement() {
     });
     const text = await res.text();
     const json = JSON.parse(text);
-    if (!res.ok || !json.success) throw new Error(json.error || `Failed (${res.status})`);
+    if (!res.ok || !json.success) throw new Error(json.error || 'That action could not be completed. Please try again.');
     toast.success(`User ${user.name} has been deactivated`);
     await loadUsers();
   };
@@ -214,7 +214,7 @@ export function UserManagement() {
     });
     const text = await res.text();
     const json = JSON.parse(text);
-    if (!res.ok || !json.success) throw new Error(json.error || `Failed (${res.status})`);
+    if (!res.ok || !json.success) throw new Error(json.error || 'That action could not be completed. Please try again.');
     toast.success(`User ${user.name} has been activated`);
     await loadUsers();
   };
@@ -229,13 +229,13 @@ export function UserManagement() {
     try {
       json = JSON.parse(text);
     } catch {
-      throw new Error('Server returned an invalid response');
+      throw new Error('Something went wrong. Please try again.');
     }
     if (!res.ok || !json.success) {
       if (json.error === 'rate_limited' || json.code === 'rapid_actions') {
         throw new Error('Too many changes in a short time. Wait a minute and try again.');
       }
-      throw new Error(json.error || `Failed to delete user (${res.status})`);
+      throw new Error(json.error || 'Could not delete user. Please try again.');
     }
     toast.success(`User ${user.name} has been deleted`);
     await loadUsers();

@@ -70,15 +70,10 @@ export async function fetchRegistrarReport(
   try {
     json = JSON.parse(text) as RegistrarReportJson;
   } catch {
-    const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 160);
-    throw new Error(
-      snippet
-        ? `Server returned an invalid report response: ${snippet}`
-        : 'Server returned an invalid report response',
-    );
+    throw new Error('Could not load report. Please try again.');
   }
   if (!res.ok || !json.success) {
-    throw new Error(json.error || `Failed to load report (${res.status})`);
+    throw new Error(json.error || 'Could not load report. Please try again.');
   }
   return json;
 }
@@ -97,7 +92,7 @@ export async function downloadRegistrarReportCsv(
     } catch {
       /* ignore */
     }
-    throw new Error(json.error || `Export failed (${res.status})`);
+    throw new Error(json.error || 'Export failed. Please try again.');
   }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);

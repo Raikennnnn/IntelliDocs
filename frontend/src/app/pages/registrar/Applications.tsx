@@ -55,11 +55,11 @@ export function Applications() {
       try {
         json = JSON.parse(text);
       } catch {
-        throw new Error("Server returned an invalid response");
+        throw new Error("Something went wrong. Please try again.");
       }
 
       if (!res.ok || !json.success) {
-        setError(json.error || `Failed to load applications (${res.status})`);
+        setError(json.error || 'Could not load applications. Please try again.');
         setApplications([]);
         return;
       }

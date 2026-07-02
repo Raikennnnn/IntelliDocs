@@ -7,6 +7,7 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
+import { handleOtpBackspaceKeyDown } from '../../lib/otpInput';
 import { AuthPageShell } from '../../components/public/AuthPageShell';
 import { BRAND } from '../../lib/publicBrand';
 
@@ -83,7 +84,7 @@ export function ForgotPasswordPage() {
       setStep('reset');
       setOtp(['', '', '', '', '', '']);
       setInfo(data.message || 'If an account exists, a reset code was sent to your email.');
-      if (data.dev_otp) {
+      if (data.dev_otp && import.meta.env.DEV) {
         setInfo((prev) => `${prev} Dev OTP: ${data.dev_otp}`);
       }
     } catch {
@@ -222,6 +223,7 @@ export function ForgotPasswordPage() {
                         maxLength={1}
                         value={digit}
                         onChange={(e) => handleOtpChange(index, e.target.value)}
+                        onKeyDown={(e) => handleOtpBackspaceKeyDown(e, index, otp, setOtp, 'reset-otp')}
                         onPaste={handleOtpPaste}
                         className="aspect-square h-auto w-full min-w-0 max-h-12 p-0 text-center text-base font-semibold sm:max-h-14 sm:text-xl"
                       />

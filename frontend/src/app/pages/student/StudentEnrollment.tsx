@@ -1057,7 +1057,7 @@ export function StudentEnrollment() {
         if (json.grade12_blocked_physical_docs) {
           setGrade12BlockedPhysicalDocs(true);
         }
-        toast.error(json.error || `Failed to save enrollment (${res.status})`, {
+        toast.error(json.error || 'Could not save enrollment. Please try again.', {
           duration: json.grade12_blocked_physical_docs ? 10000 : 4000,
         });
         if (res.status === 409) {
@@ -1573,7 +1573,7 @@ export function StudentEnrollment() {
           });
           return;
         }
-        const msg = json.error || `Upload failed (${res.status})`;
+        const msg = json.error || 'Upload failed. Please try again.';
         if (json.level === 2) {
           toast.error(`Document not readable: ${msg}`, { duration: 9000 });
         } else if (json.level === 1) {

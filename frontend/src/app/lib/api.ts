@@ -1,5 +1,13 @@
 /** API client: Bearer session token + legacy X-User-Id during migration. */
 
+import {
+  USER_DOCUMENT_VERIFY_TIMEOUT,
+  USER_EMPTY_SERVER_RESPONSE,
+  USER_REFRESH_AND_RETRY,
+  USER_SERVER_TIMEOUT,
+  USER_SERVICE_UNAVAILABLE,
+} from './userMessages';
+
 const SESSION_TOKEN_KEY = 'session_token';
 
 export function getSessionToken(): string | null {
@@ -187,30 +195,24 @@ export async function parseApiJson<T>(
       return {
         ok: false,
         status,
-        error:
-          'Cloudflare timed out (HTTP 524) while waiting for document verification. ' +
-            'OCR can take 1–3 minutes per file. In Cloudflare DNS, set the domain to DNS only (grey cloud), ' +
-            'or on the droplet run: bash scripts/fix_ai_502_droplet.sh',
+        error: USER_DOCUMENT_VERIFY_TIMEOUT,
       };
     }
     if (status === 502 || status === 504 || /gateway timeout|bad gateway/i.test(trimmed)) {
       return {
         ok: false,
         status,
-        error:
-          `Server timeout (HTTP ${status}): nginx closed the connection before PHP/AI finished. ` +
-            `Verify often takes 60–180s per file. On the droplet run: bash scripts/fix_ai_502_droplet.sh. ` +
-            `If testing on XAMPP locally, run scripts/configure_xampp_ai_timeouts.ps1 and restart Apache.`,
+        error: USER_SERVER_TIMEOUT,
       };
     }
     return {
       ok: false,
       status,
-      error: `Server returned HTML instead of JSON (HTTP ${status}). Check that the AI service is running.`,
+      error: USER_SERVICE_UNAVAILABLE,
     };
   }
   if (!trimmed) {
-    return { ok: false, status, error: `Empty response from server (HTTP ${status})` };
+    return { ok: false, status, error: USER_EMPTY_SERVER_RESPONSE };
   }
   try {
     return { ok: true, status, data: JSON.parse(text) as T };
@@ -218,7 +220,7 @@ export async function parseApiJson<T>(
     return {
       ok: false,
       status,
-      error: `Invalid JSON from server (HTTP ${status})`,
+      error: USER_REFRESH_AND_RETRY,
       raw: trimmed.slice(0, 200),
     };
   }

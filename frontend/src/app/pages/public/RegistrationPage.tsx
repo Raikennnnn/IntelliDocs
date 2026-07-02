@@ -11,6 +11,7 @@ import { Label } from "../../components/ui/label";
 import { Mail, Lock, Eye, EyeOff, ArrowLeft, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
 import { AUTH_OTP_LIMITS, otpAttemptHelpText } from '../../lib/authOtpLimits';
+import { handleOtpBackspaceKeyDown } from '../../lib/otpInput';
 import { AuthPageHeader } from '../../components/public/AuthPageShell';
 import { PublicSectionEyebrow } from '../../components/public/PublicSectionEyebrow';
 import { PasswordStrengthChecker } from '../../components/public/PasswordStrengthChecker';
@@ -116,7 +117,7 @@ export function RegistrationPage() {
       try {
         data = JSON.parse(text);
       } catch {
-        throw new Error('Server returned an invalid response');
+        throw new Error('Something went wrong. Please try again.');
       }
       if (response.ok && data.success) {
         setOtp(['', '', '', '', '', '']);
@@ -132,7 +133,7 @@ export function RegistrationPage() {
       } else if (data.code === 'otp_resend_limit') {
         toast.error(data.error || `Maximum ${AUTH_OTP_LIMITS.registrationCodesPerHour} registration code requests per hour reached.`);
       } else {
-        toast.error(data.error || `Resend failed (${response.status})`);
+        toast.error(data.error || 'Could not resend the code. Please try again.');
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Network error');
@@ -205,7 +206,7 @@ export function RegistrationPage() {
       try {
         data = JSON.parse(responseText);
       } catch {
-        throw new Error('Server returned an invalid response. Check backend API setup.');
+        throw new Error('Something went wrong. Please try again.');
       }
 
       if (response.ok && data.success) {
@@ -222,7 +223,7 @@ export function RegistrationPage() {
       } else if (data.code === 'otp_resend_limit') {
         toast.error(data.error || `Maximum ${AUTH_OTP_LIMITS.registrationCodesPerHour} registration code requests per hour reached. Try again later.`);
       } else {
-        toast.error(data.error || `Registration failed (${response.status})`);
+        toast.error(data.error || 'Registration could not be completed. Please try again.');
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Network error';
@@ -263,7 +264,7 @@ export function RegistrationPage() {
       try {
         data = JSON.parse(text);
       } catch {
-        throw new Error('Server returned an invalid response');
+        throw new Error('Something went wrong. Please try again.');
       }
       if (response.ok && data.success) {
         toast.success(data.message || 'Account created. Please sign in.');
@@ -277,7 +278,7 @@ export function RegistrationPage() {
             : '';
         toast.error((data.error || 'Invalid or expired OTP.') + attemptsHint);
       } else {
-        toast.error(data.error || `OTP verification failed (${response.status})`);
+        toast.error(data.error || 'Could not verify the code. Please try again.');
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Network error');
@@ -537,6 +538,7 @@ export function RegistrationPage() {
                         maxLength={1}
                         value={digit}
                         onChange={(e) => handleOtpChange(index, e.target.value)}
+                        onKeyDown={(e) => handleOtpBackspaceKeyDown(e, index, otp, setOtp, 'otp')}
                         onPaste={handleOtpPaste}
                         autoComplete="one-time-code"
                         className="h-14 w-14 text-center text-2xl font-semibold"
