@@ -10,6 +10,8 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { apiFetch } from '../../lib/api';
 import { toast } from 'sonner';
+import { useStudentLocale } from '../../context/StudentLocaleContext';
+import { EnrollmentGuide } from '../../components/student/EnrollmentGuide';
 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
@@ -115,6 +117,7 @@ function appStatusPillClass(status: string) {
 
 export function StudentDashboard() {
   const { user, patchUser } = useAuth();
+  const { t } = useStudentLocale();
   const { data, loading, error, refetch } = useStudentPortal();
   const [voucherInput, setVoucherInput] = useState('');
   const [voucherSaving, setVoucherSaving] = useState(false);
@@ -132,6 +135,7 @@ export function StudentDashboard() {
   const enrollmentLocked =
     hasEnrollment &&
     ['pending', 'under review', 'under_review', 'review', 'approved', 'enrolled'].includes(statusCode);
+  const isFirstTimeStudent = !hasEnrollment && !enrollmentLocked;
 
   useEffect(() => {
     if (!data) return;
@@ -261,12 +265,18 @@ export function StudentDashboard() {
 
   return (
     <div className="space-y-6">
+      <EnrollmentGuide allowRestore={!isFirstTimeStudent} />
+
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h2 className="text-2xl font-semibold text-gray-900">
-            Welcome back!
+            {isFirstTimeStudent ? t('dashboard.welcome') : t('dashboard.welcomeBack')}
           </h2>
-          <p className="text-gray-600 mt-1">Here&apos;s your enrollment overview</p>
+          <p className="text-gray-600 mt-1">
+            {isFirstTimeStudent
+              ? t('dashboard.firstTimeSubtitle')
+              : t('dashboard.returningSubtitle')}
+          </p>
         </div>
         <div className="flex gap-2">
           {!enrollmentLocked && (
@@ -274,7 +284,7 @@ export function StudentDashboard() {
               to="/student/enrollment"
               className="inline-flex items-center justify-center rounded-lg bg-[#8B1538] px-4 py-2 text-sm font-semibold text-white hover:bg-[#8B1538]/90"
             >
-              Continue enrollment
+              {t('dashboard.continueEnrollment')}
             </Link>
           )}
           {enrollmentLocked && (
@@ -286,7 +296,7 @@ export function StudentDashboard() {
                   : 'bg-[#8B1538] text-white hover:bg-[#8B1538]/90'
               }`}
             >
-              {needsResubmission ? 'Resubmit rejected documents' : 'Check review status'}
+              {needsResubmission ? t('dashboard.resubmitDocs') : t('dashboard.checkStatus')}
             </Link>
           )}
           <button
@@ -294,7 +304,7 @@ export function StudentDashboard() {
             onClick={() => refetch()}
             className="inline-flex items-center justify-center rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
-            Refresh
+            {t('dashboard.refresh')}
           </button>
         </div>
       </div>

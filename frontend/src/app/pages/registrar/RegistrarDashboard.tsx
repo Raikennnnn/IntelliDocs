@@ -3,6 +3,7 @@ import { Users, CheckCircle, AlertCircle, TrendingUp } from 'lucide-react';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../../lib/api';
+import { STRANDS, formatStrandDisplay, normalizeStrandCode } from '../../lib/strands';
 import { useSchoolYear } from '../../context/SchoolYearContext';
 
 type StrandRow = {
@@ -76,15 +77,25 @@ export function RegistrarDashboard() {
   const totalEnrolled = summary.totalEnrolled;
   const totalApplications = summary.totalApplications;
 
-  const strandMeta = useMemo(() => ({
-    STEM: { fullName: 'Science, Technology, Engineering and Mathematics', bg: 'bg-blue-100', icon: 'text-blue-600' },
-    HUMSS: { fullName: 'Humanities and Social Sciences', bg: 'bg-green-100', icon: 'text-green-600' },
-    ABM: { fullName: 'Accountancy, Business and Management', bg: 'bg-purple-100', icon: 'text-purple-600' },
-    'TVL-ICT': { fullName: 'Information and Communications Technology', bg: 'bg-cyan-100', icon: 'text-cyan-600' },
-    'TVL-EIM': { fullName: 'Electrical Installation and Maintenance', bg: 'bg-orange-100', icon: 'text-orange-600' },
-    'TVL-BPP/FBS': { fullName: 'Bread and Pastry Production / Food & Beverage Services', bg: 'bg-pink-100', icon: 'text-pink-600' },
-    Unspecified: { fullName: 'No strand specified', bg: 'bg-gray-100', icon: 'text-gray-600' },
-  }), []);
+  const strandMeta = useMemo(() => {
+    const meta: Record<string, { fullName: string; bg: string; icon: string }> = {
+      Unspecified: { fullName: "No strand specified", bg: "bg-gray-100", icon: "text-gray-600" },
+    };
+    const styles: Record<string, { bg: string; icon: string }> = {
+      ASSH: { bg: "bg-green-100", icon: "text-green-600" },
+      BAE: { bg: "bg-purple-100", icon: "text-purple-600" },
+      STEM: { bg: "bg-blue-100", icon: "text-blue-600" },
+      "TECHPRO - CP": { bg: "bg-cyan-100", icon: "text-cyan-600" },
+      "TECHPRO - IT": { bg: "bg-orange-100", icon: "text-orange-600" },
+      "TECHPRO - HT": { bg: "bg-pink-100", icon: "text-pink-600" },
+    };
+    for (const strand of STRANDS) {
+      const style = styles[strand.code] ?? { bg: "bg-gray-100", icon: "text-gray-600" };
+      meta[strand.code] = { fullName: strand.fullName, ...style };
+      meta[normalizeStrandCode(strand.code)] = meta[strand.code];
+    }
+    return meta;
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -177,7 +188,8 @@ export function RegistrarDashboard() {
             // isn't one. Stays bounded by the overall enrolled total.
             const shareOfEnrolled =
               totalEnrolled > 0 ? (strand.enrolledStudents / totalEnrolled) * 100 : 0;
-            const meta = strandMeta[strand.name as keyof typeof strandMeta] ?? strandMeta.Unspecified;
+            const strandKey = normalizeStrandCode(strand.name);
+            const meta = strandMeta[strandKey as keyof typeof strandMeta] ?? strandMeta.Unspecified;
 
             return (
               <Card key={strand.name} className="border-2 hover:shadow-lg transition-shadow">
@@ -185,7 +197,7 @@ export function RegistrarDashboard() {
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-2xl font-bold text-[#8B1538]">
-                        {strand.name}
+                        {formatStrandDisplay(strand.name)}
                       </CardTitle>
                       <p className="text-sm text-gray-600 mt-1">{meta.fullName}</p>
                     </div>

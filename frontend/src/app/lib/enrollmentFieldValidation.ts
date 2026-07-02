@@ -205,6 +205,42 @@ export function isValidSchoolYearAttended(value: string): boolean {
   return start >= 1990 && end <= 2100 && end === start + 1;
 }
 
+/** Display stored YYYY-MM-DD as MM/DD/YYYY for student-facing forms. */
+export function formatBirthDateUsDisplay(ymd: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return "";
+  const [year, month, day] = ymd.split("-");
+  return `${month}/${day}/${year}`;
+}
+
+/** Auto-format typed digits into MM/DD/YYYY while the student enters a birth date. */
+export function sanitizeBirthDateUsInput(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
+/** Parse MM/DD/YYYY to canonical YYYY-MM-DD for API/DB storage. */
+export function parseBirthDateUsToYmd(display: string): string | null {
+  const match = display.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return null;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  const year = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || year < 1900 || year > 2100) {
+    return null;
+  }
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 /** Strip invalid characters from all string fields before save. */
 export function sanitizeEnrollmentFormData<T extends Record<string, unknown>>(data: T): T {
   const out = { ...data };

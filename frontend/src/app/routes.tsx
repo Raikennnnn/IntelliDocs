@@ -5,6 +5,7 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { RouteLoading } from './components/RouteLoading';
 import { DashboardLayout, studentNavigation, registrarNavigation, adminNavigation } from './layouts/DashboardLayout';
 import { useRolePermissions } from './context/RolePermissionsContext';
+import { StudentLocaleProvider } from './context/StudentLocaleContext';
 import * as Pages from './routePages';
 
 function withRouteSuspense(node: ReactNode) {
@@ -12,14 +13,23 @@ function withRouteSuspense(node: ReactNode) {
 }
 
 // Route wrapper with layout
-function RouteWithLayout({ children, navigation }: { children: ReactNode; navigation: any[] }) {
+function RouteWithLayout({
+  children,
+  navigation,
+  studentLocale = false,
+}: {
+  children: ReactNode;
+  navigation: any[];
+  studentLocale?: boolean;
+}) {
   const { filterNavigation, loaded } = useRolePermissions();
   const visibleNav = loaded ? filterNavigation(navigation) : navigation;
-  return (
-    <DashboardLayout navigation={visibleNav}>
+  const layout = (
+    <DashboardLayout navigation={visibleNav} studentPortal={studentLocale}>
       <Suspense fallback={<RouteLoading />}>{children}</Suspense>
     </DashboardLayout>
   );
+  return studentLocale ? <StudentLocaleProvider>{layout}</StudentLocaleProvider> : layout;
 }
 
 export const router = createBrowserRouter([
@@ -58,7 +68,7 @@ export const router = createBrowserRouter([
     path: '/student/dashboard',
     element: (
       <ProtectedRoute allowedRoles={['student']}>
-        <RouteWithLayout navigation={studentNavigation}>
+        <RouteWithLayout navigation={studentNavigation} studentLocale>
           <Pages.StudentDashboard />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -69,7 +79,7 @@ export const router = createBrowserRouter([
     path: '/student/enrollment',
     element: (
       <ProtectedRoute allowedRoles={['student']}>
-        <RouteWithLayout navigation={studentNavigation}>
+        <RouteWithLayout navigation={studentNavigation} studentLocale>
           <Pages.StudentEnrollment />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -80,7 +90,7 @@ export const router = createBrowserRouter([
     path: '/student/application-status',
     element: (
       <ProtectedRoute allowedRoles={['student']}>
-        <RouteWithLayout navigation={studentNavigation}>
+        <RouteWithLayout navigation={studentNavigation} studentLocale>
           <Pages.ApplicationStatus />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -91,7 +101,7 @@ export const router = createBrowserRouter([
     path: '/student/notifications',
     element: (
       <ProtectedRoute allowedRoles={['student']}>
-        <RouteWithLayout navigation={studentNavigation}>
+        <RouteWithLayout navigation={studentNavigation} studentLocale>
           <Pages.Notifications />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -102,7 +112,7 @@ export const router = createBrowserRouter([
     path: '/student/profile',
     element: (
       <ProtectedRoute allowedRoles={['student']}>
-        <RouteWithLayout navigation={studentNavigation}>
+        <RouteWithLayout navigation={studentNavigation} studentLocale>
           <Pages.StudentProfile />
         </RouteWithLayout>
       </ProtectedRoute>
@@ -113,7 +123,7 @@ export const router = createBrowserRouter([
     path: '/student/announcements',
     element: (
       <ProtectedRoute allowedRoles={['student']}>
-        <RouteWithLayout navigation={studentNavigation}>
+        <RouteWithLayout navigation={studentNavigation} studentLocale>
           <Pages.Announcements />
         </RouteWithLayout>
       </ProtectedRoute>

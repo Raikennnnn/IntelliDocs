@@ -35,6 +35,7 @@ require_once __DIR__ . '/enrollment_status_helpers.php';
 require_once __DIR__ . '/school_year_helpers.php';
 require_once __DIR__ . '/section_grade_helpers.php';
 require_once __DIR__ . '/grade12_continuation_helpers.php';
+require_once __DIR__ . '/strand_helpers.php';
 
 ini_set('display_errors', '0');
 header('Content-Type: application/json');
@@ -106,16 +107,16 @@ function sqlEnrollmentGradeKeyOrDefault(PDO $pdo, string $defaultGrade = SECTION
  * Mirrors the strand values used in StudentEnrollment.tsx.
  */
 const SECTION_STRANDS = [
+    'ASSH',
+    'BAE',
     'STEM',
-    'HUMSS',
-    'ABM',
-    'TVL - ICT',
-    'TVL - EIM',
-    'TVL - BPP/FBS',
+    'TECHPRO - CP',
+    'TECHPRO - IT',
+    'TECHPRO - HT',
 ];
 
 /** Strands that default to "boys first" rosters (girls may still apply). */
-const SECTION_BOYS_FIRST_STRANDS = ['TVL - EIM'];
+const SECTION_BOYS_FIRST_STRANDS = ['TECHPRO - IT'];
 
 const SECTION_DEFAULT_BOYS = 23;
 const SECTION_DEFAULT_GIRLS = 22;

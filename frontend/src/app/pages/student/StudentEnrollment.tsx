@@ -39,6 +39,8 @@ import {
   AlertDialogTitle,
 } from "../../components/ui/alert-dialog";
 import { apiFetch } from "../../lib/api";
+import { useAuth } from "../../context/AuthContext";
+import { useEnrollmentAllowed } from "../../context/SchoolYearContext";
 import { Combobox } from "../../components/Combobox";
 import { SchoolYearCombobox } from "../../components/SchoolYearCombobox";
 import {
@@ -49,6 +51,9 @@ import {
   isValidEnrollmentLrn,
   isValidPhilippineMobileNumber,
   isValidSchoolYearAttended,
+  formatBirthDateUsDisplay,
+  parseBirthDateUsToYmd,
+  sanitizeBirthDateUsInput,
   sanitizeEnrollmentFieldValue,
   sanitizeEnrollmentFormData,
 } from "../../lib/enrollmentFieldValidation";
@@ -63,12 +68,23 @@ import {
   resolveNcrMunicipality,
   sanitizeAddressLabelInput,
 } from "../../lib/ncrAddress";
-import { useEnrollmentAllowed } from "../../context/SchoolYearContext";
+import {
+  formatStrandDisplay,
+  normalizeStrandCode,
+  STRANDS,
+} from "../../lib/strands";
 import { EnrollmentGuard } from "../../components/EnrollmentGuard";
 import {
   isDocumentUploadTooLarge,
   MAX_DOCUMENT_UPLOAD_LABEL,
 } from "../../lib/uploadLimits";
+import { useStudentLocale } from "../../context/StudentLocaleContext";
+import { EnrollmentGuide } from "../../components/student/EnrollmentGuide";
+import {
+  translateEmergencyContact,
+  translateEnrollmentDocumentName,
+  translateEnrollmentStatus,
+} from "../../lib/studentLocale";
 
 /**
  * `RequiredLabel` renders a form label and a consistently-styled red
@@ -599,7 +615,7 @@ const INITIAL_ENROLLMENT_FORM_DATA: EnrollmentFormData = {
   birthPlace: "",
   religion: "",
   gradeLevel: "",
-  strand: "HUMSS",
+  strand: "",
   preferredSchedule: "",
   motherGivenName: "",
   motherMaidenMiddleName: "",
@@ -634,13 +650,10 @@ const INITIAL_ENROLLMENT_FORM_DATA: EnrollmentFormData = {
 
 export function StudentEnrollment() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { user } = useAuth();
+  const { t, locale } = useStudentLocale();
   const enrollmentAllowedFromSettings = useEnrollmentAllowed();
   const [enrollmentMetaLoaded, setEnrollmentMetaLoaded] = useState(false);
-  // (moved) useSearchParams is declared above so we can read query params
-  const shsBirthDateBounds = useMemo(
-    () => birthDateBoundsForShs(SHS_MIN_AGE_YEARS, SHS_MAX_AGE_YEARS),
-    [],
-  );
   const [currentStep, setCurrentStep] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
   const [isEnrollmentLocked, setIsEnrollmentLocked] = useState(false);
@@ -674,6 +687,11 @@ export function StudentEnrollment() {
   const [missingParentDialogOpen, setMissingParentDialogOpen] = useState(false);
   const [missingParentParts, setMissingParentParts] = useState<string[]>([]);
   const [formData, setFormData] = useState<EnrollmentFormData>(INITIAL_ENROLLMENT_FORM_DATA);
+  const [birthDateDisplay, setBirthDateDisplay] = useState("");
+
+  useEffect(() => {
+    setBirthDateDisplay(formatBirthDateUsDisplay(formData.birthDate));
+  }, [formData.birthDate]);
   const submitInFlightRef = useRef(false);
   const readabilityInFlightRef = useRef(new Set<number>());
   const readabilityRetryRef = useRef(new Map<number, number>());
@@ -721,7 +739,7 @@ export function StudentEnrollment() {
     { name: 'PSA Birth Certificate', file: null, status: 'missing', required: true, requiredFor: 'all' },
     { name: 'Grade 10 Report Card (SF9)', file: null, status: 'missing', required: true, requiredFor: 'non_transferee' },
     { name: 'Good Moral Certificate', file: null, status: 'missing', required: true, requiredFor: 'all' },
-    { name: 'SF10 / Form 137', file: null, status: 'missing', required: true, requiredFor: 'all' },
+    { name: 'SF10 / Form 137', file: null, status: 'missing', required: false, requiredFor: 'all' },
     { name: 'Transcript of Records (TOR)', file: null, status: 'missing', required: true, requiredFor: 'transferee' },
     { name: '2x2 Picture (White Background)', file: null, status: 'missing', required: true, requiredFor: 'all' },
   ]);
@@ -850,7 +868,13 @@ export function StudentEnrollment() {
 
         if (json.enrollment?.form_data && (isInProgressCurrentSy || !isNewSyOpen)) {
           setFormData(prev => {
-            const merged = { ...prev, ...(json.enrollment?.form_data ?? {}) };
+            const merged = {
+              ...prev,
+              ...(json.enrollment?.form_data ?? {}),
+              strand: normalizeStrandCode(
+                String((json.enrollment?.form_data as Partial<EnrollmentFormData> | undefined)?.strand ?? prev.strand),
+              ),
+            };
             if (isInProgressCurrentSy && priorFormFromApi && isNewSyOpen) {
               return applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
                 promoteGrade: true,
@@ -986,6 +1010,7 @@ export function StudentEnrollment() {
         ...formData,
         municipality: normalizeMunicipalityValue(formData.municipality),
         barangay: normalizeBarangayValue(formData.municipality, formData.barangay),
+        strand: normalizeStrandCode(formData.strand),
       });
       setFormData(sanitizedForm);
       const grade12PrefillLocked = isGrade12PrefillLocked({
@@ -1299,6 +1324,18 @@ export function StudentEnrollment() {
     setFormData((prev) => ({ ...prev, [field]: sanitized }));
   };
 
+  const commitBirthDateFromDisplay = useCallback((): string | null => {
+    const trimmed = birthDateDisplay.trim();
+    if (!trimmed) {
+      setFormData((prev) => (prev.birthDate === "" ? prev : { ...prev, birthDate: "" }));
+      return null;
+    }
+    const ymd = parseBirthDateUsToYmd(trimmed);
+    if (!ymd) return null;
+    setFormData((prev) => (prev.birthDate === ymd ? prev : { ...prev, birthDate: ymd }));
+    return ymd;
+  }, [birthDateDisplay]);
+
   const handleMunicipalityChange = (municipality: string) => {
     setFormData((prev) => {
       const nextMunicipality = sanitizeAddressLabelInput(municipality);
@@ -1609,13 +1646,23 @@ export function StudentEnrollment() {
       'street',
     ];
     for (const field of required) {
+      if (field === "birthDate") continue;
       if (!formData[field as keyof EnrollmentFormData]) {
-        toast.error(`Please fill in all required fields`);
+        toast.error(t('form.val.requiredFields'));
         return false;
       }
     }
+    const birthYmd = commitBirthDateFromDisplay();
+    if (!birthYmd) {
+      if (birthDateDisplay.trim()) {
+        toast.error(t('form.val.birthDateFormat'));
+      } else {
+        toast.error(t('form.val.requiredFields'));
+      }
+      return false;
+    }
     const birthDateErr = birthDateValidationError(
-      formData.birthDate,
+      birthYmd,
       SHS_MIN_AGE_YEARS,
       SHS_MAX_AGE_YEARS,
     );
@@ -1624,38 +1671,38 @@ export function StudentEnrollment() {
       return false;
     }
     if (!hasValidPersonName(formData.givenName)) {
-      toast.error("First name must contain letters only (no numbers).");
+      toast.error(t('form.val.firstNameLetters'));
       return false;
     }
     if (!hasValidPersonName(formData.middleName)) {
-      toast.error("Middle name must contain letters only (no numbers).");
+      toast.error(t('form.val.middleNameLetters'));
       return false;
     }
     if (!hasValidPersonName(formData.lastName)) {
-      toast.error("Last name must contain letters only (no numbers).");
+      toast.error(t('form.val.lastNameLetters'));
       return false;
     }
     if (
       formData.extensionName.trim() &&
       !/^[A-Za-zñÑ.\s,]+$/.test(formData.extensionName.trim())
     ) {
-      toast.error("Extension name must use letters only (e.g. Jr., III).");
+      toast.error(t('form.val.extensionLetters'));
       return false;
     }
     if (!isValidPhilippineMobileNumber(formData.contactNumber)) {
-      toast.error("Contact number must be 11 digits starting with 09.");
+      toast.error(t('form.val.contactNumber'));
       return false;
     }
     if (!isValidEnrollmentLrn(formData.lrn)) {
-      toast.error("LRN must be exactly 12 digits (numbers only).");
+      toast.error(t('form.val.lrn'));
       return false;
     }
     if (!hasValidAddressLabel(formData.municipality)) {
-      toast.error("Please enter your city / municipality.");
+      toast.error(t('form.val.municipality'));
       return false;
     }
     if (!hasValidAddressLabel(formData.barangay)) {
-      toast.error("Please enter your barangay.");
+      toast.error(t('form.val.barangay'));
       return false;
     }
     return true;
@@ -1663,8 +1710,8 @@ export function StudentEnrollment() {
 
   const getMissingParentParts = (): string[] => {
     const parts: string[] = [];
-    if (!formData.motherGivenName.trim()) parts.push("Mother");
-    if (!formData.fatherGivenName.trim()) parts.push("Father");
+    if (!formData.motherGivenName.trim()) parts.push(t('form.emergency.mother'));
+    if (!formData.fatherGivenName.trim()) parts.push(t('form.emergency.father'));
     return parts;
   };
 
@@ -1676,32 +1723,31 @@ export function StudentEnrollment() {
     const hasFather = fatherName.length > 0;
     const hasGuardianFilled = formData.hasGuardian && guardianName.length > 0;
 
-    // Still require at least one contact name overall so the registrar has a responsible party.
     if (!hasMother && !hasFather && !hasGuardianFilled) {
-      toast.error("Please provide at least one parent or guardian name.");
+      toast.error(t('form.val.parentRequired'));
       return false;
     }
 
     if (!formData.emergencyContact) {
-      toast.error('Please select who to contact in case of emergency.');
+      toast.error(t('form.val.emergencySelect'));
       return false;
     }
 
     if (formData.emergencyContact === 'mother' && !hasMother) {
-      toast.error("Emergency contact is Mother, but mother's first name was not provided.");
+      toast.error(t('form.val.emergencyMother'));
       return false;
     }
     if (formData.emergencyContact === 'father' && !hasFather) {
-      toast.error("Emergency contact is Father, but father's first name was not provided.");
+      toast.error(t('form.val.emergencyFather'));
       return false;
     }
     if (formData.emergencyContact === 'guardian') {
       if (!formData.hasGuardian) {
-        toast.error('To use Guardian as emergency contact, check "I have a guardian" and enter their details.');
+        toast.error(t('form.val.emergencyGuardianCheck'));
         return false;
       }
       if (!guardianName) {
-        toast.error("Emergency contact is Guardian, but guardian's first name was not provided.");
+        toast.error(t('form.val.emergencyGuardian'));
         return false;
       }
     }
@@ -1709,57 +1755,57 @@ export function StudentEnrollment() {
     const nameChecks: Array<{ value: string; label: string }> = [];
     if (hasMother) {
       nameChecks.push(
-        { value: formData.motherGivenName, label: "Mother's first name" },
-        { value: formData.motherMaidenMiddleName, label: "Mother's middle name" },
-        { value: formData.motherMaidenLastName, label: "Mother's last name" },
+        { value: formData.motherGivenName, label: t('form.val.mother') },
+        { value: formData.motherMaidenMiddleName, label: t('form.val.motherMiddle') },
+        { value: formData.motherMaidenLastName, label: t('form.val.motherLast') },
       );
     }
     if (hasFather) {
       nameChecks.push(
-        { value: formData.fatherGivenName, label: "Father's first name" },
-        { value: formData.fatherMiddleName, label: "Father's middle name" },
-        { value: formData.fatherLastName, label: "Father's last name" },
+        { value: formData.fatherGivenName, label: t('form.val.father') },
+        { value: formData.fatherMiddleName, label: t('form.val.fatherMiddle') },
+        { value: formData.fatherLastName, label: t('form.val.fatherLast') },
       );
     }
     if (hasGuardianFilled) {
       nameChecks.push(
-        { value: formData.guardianGivenName, label: "Guardian's first name" },
-        { value: formData.guardianMiddleName, label: "Guardian's middle name" },
-        { value: formData.guardianLastName, label: "Guardian's last name" },
+        { value: formData.guardianGivenName, label: t('form.val.guardian') },
+        { value: formData.guardianMiddleName, label: t('form.val.guardianMiddle') },
+        { value: formData.guardianLastName, label: t('form.val.guardianLast') },
       );
     }
     for (const { value, label } of nameChecks) {
       if (value.trim() && !hasValidPersonName(value)) {
-        toast.error(`${label} must contain letters only (no numbers).`);
+        toast.error(t('form.val.lettersOnly', { label }));
         return false;
       }
     }
 
     const phoneChecks: Array<{ value: string; label: string }> = [
-      { value: formData.motherContactNumber, label: "Mother's contact number" },
-      { value: formData.fatherContactNumber, label: "Father's contact number" },
-      { value: formData.guardianContactNumber, label: "Guardian's contact number" },
+      { value: formData.motherContactNumber, label: t('form.val.motherContact') },
+      { value: formData.fatherContactNumber, label: t('form.val.fatherContact') },
+      { value: formData.guardianContactNumber, label: t('form.val.guardianContact') },
     ];
     for (const { value, label } of phoneChecks) {
       if (value.trim() && !isValidPhilippineMobileNumber(value)) {
-        toast.error(`${label} must be 11 digits starting with 09.`);
+        toast.error(t('form.val.contactFormat', { label }));
         return false;
       }
     }
 
     const textOnlyChecks: Array<{ value: string; label: string; when?: boolean }> = [
-      { value: formData.motherOccupation, label: "Mother's occupation" },
-      { value: formData.fatherOccupation, label: "Father's occupation" },
+      { value: formData.motherOccupation, label: t('form.val.motherOccupation') },
+      { value: formData.fatherOccupation, label: t('form.val.fatherOccupation') },
       {
         value: formData.relationshipToGuardian,
-        label: "Relationship to guardian",
+        label: t('form.val.guardianRelationship'),
         when: hasGuardianFilled,
       },
     ];
     for (const { value, label, when } of textOnlyChecks) {
       if (when === false) continue;
       if (value.trim() && !hasValidTextOnlyContent(value)) {
-        toast.error(`${label} must contain letters only (no numbers).`);
+        toast.error(t('form.val.lettersOnly', { label }));
         return false;
       }
     }
@@ -1769,14 +1815,14 @@ export function StudentEnrollment() {
 
   const validateStep3 = () => {
     if (!formData.lastSchoolYearAttended.trim()) {
-      toast.error("Please enter the last school year you attended (as shown on your report card).");
+      toast.error(t('form.val.lastSchoolYear'));
       return false;
     }
     if (
       formData.previousSchoolAttended.trim() &&
       !hasValidTextOnlyContent(formData.previousSchoolAttended)
     ) {
-      toast.error("Previous school name must contain letters only (no numbers).");
+      toast.error(t('form.val.previousSchoolLetters'));
       return false;
     }
     if (
@@ -1792,7 +1838,7 @@ export function StudentEnrollment() {
       formData.lastSchoolYearAttended.trim() &&
       !isValidSchoolYearAttended(formData.lastSchoolYearAttended)
     ) {
-      toast.error("Last school year must be a valid year (e.g. 2023 or 2023-2024).");
+      toast.error(t('form.val.lastSchoolYearInvalid'));
       return false;
     }
     return true;
@@ -1884,11 +1930,11 @@ export function StudentEnrollment() {
     if (!validateStep3()) return;
     if (!validateStep4()) return;
     if (!formData.modeOfPayment?.trim()) {
-      toast.error('Please select a mode of payment (Payment & Promo step).');
+      toast.error(t('form.val.paymentSelect'));
       return;
     }
     if (!formData.confirmInformation) {
-      toast.error('Please confirm that all information is accurate');
+      toast.error(t('form.val.confirmInfo'));
       return;
     }
     submitInFlightRef.current = true;
@@ -1899,14 +1945,28 @@ export function StudentEnrollment() {
     }
   };
 
-  const tabs = [
-    { number: 1, name: 'Personal Information', icon: User },
-    { number: 2, name: 'Family Information', icon: Users },
-    { number: 3, name: 'Enrollment History', icon: GraduationCap },
-    { number: 4, name: 'Requirements Upload', icon: Upload },
-    { number: 5, name: 'Payment & Promo', icon: DollarSign },
-    { number: 6, name: 'Review & Submit', icon: FileCheck },
-  ];
+  const paymentOptions = useMemo(
+    () => [
+      { value: 'qvr', label: t('form.payment.qvr') },
+      { value: 'esc', label: t('form.payment.esc') },
+      { value: 'qva', label: t('form.payment.qva') },
+      { value: 'als', label: t('form.payment.als') },
+      { value: 'cash', label: t('form.payment.cash') },
+    ],
+    [t],
+  );
+
+  const tabs = useMemo(
+    () => [
+      { number: 1, name: t('enrollment.step1'), icon: User },
+      { number: 2, name: t('enrollment.step2'), icon: Users },
+      { number: 3, name: t('enrollment.step3'), icon: GraduationCap },
+      { number: 4, name: t('enrollment.step4'), icon: Upload },
+      { number: 5, name: t('enrollment.step5'), icon: DollarSign },
+      { number: 6, name: t('enrollment.step6'), icon: FileCheck },
+    ],
+    [t],
+  );
 
   // Decide what to render before the form: the form is shown only when
   // (a) enrollment is allowed (school year open) AND
@@ -1924,6 +1984,28 @@ export function StudentEnrollment() {
   // Allow resubmission flow to bypass the locked status card and open the upload step.
   const isResubmitFlow = searchParams.get('resubmit') === '1';
   const lockedView = enrollmentAllowed && isEnrollmentLocked && !showNewEnrollmentForm && !isResubmitFlow;
+
+  const isFirstTimeEnrollmentUser = useMemo(() => {
+    if (!enrollmentMetaLoaded) return false;
+    if (isResubmitFlow) return false;
+    if (showNewEnrollmentForm) return false;
+    if (needsGrade12Confirmation) return false;
+    if (reEnrollmentEligible) return false;
+    if (priorApproved?.school_year) return false;
+    if (isEnrollmentLocked) return false;
+    return enrollmentId === null;
+  }, [
+    enrollmentMetaLoaded,
+    isResubmitFlow,
+    showNewEnrollmentForm,
+    needsGrade12Confirmation,
+    reEnrollmentEligible,
+    priorApproved?.school_year,
+    isEnrollmentLocked,
+    enrollmentId,
+  ]);
+
+  const showWelcomeNav = currentStep === 1 && isFirstTimeEnrollmentUser;
 
   const promoteToGradeLabel = useMemo(() => {
     const g = priorApproved?.grade_level_number ?? 0;
@@ -2242,14 +2324,19 @@ export function StudentEnrollment() {
 
   return (
     <div className="space-y-0">
+      <div className="px-4 pt-4 sm:px-6">
+        <EnrollmentGuide allowRestore />
+      </div>
       {enrollmentAllowed && showNewEnrollmentForm && schoolYearCurrent && !showGrade12Prompt && (
         <div className="px-6 pt-6">
           <Alert className="border-[#2D5016]/30 bg-[#2D5016]/5">
             <AlertDescription className="text-sm text-gray-800">
-              Enrollment for school year <strong>{schoolYearCurrent}</strong> is open.
-              Your application has been pre-filled from
-              {priorApproved?.school_year ? ` SY ${priorApproved.school_year}` : " your last enrollment"}.
-              Review each step, update anything that changed, then submit.
+              {t('form.alert.prefill', {
+                year: schoolYearCurrent,
+                source: priorApproved?.school_year
+                  ? t('form.alert.prefillSource', { year: priorApproved.school_year })
+                  : t('form.alert.prefillLast'),
+              })}
             </AlertDescription>
           </Alert>
         </div>
@@ -2261,7 +2348,7 @@ export function StudentEnrollment() {
           <div className="md:hidden">
             <div className="mb-2 flex items-center justify-between text-sm">
               <span className="font-medium text-[#2D5016]">
-                Step {currentStep} of {tabs.length}
+                {t('enrollment.stepOf', { current: currentStep, total: tabs.length })}
               </span>
               <span className="truncate pl-3 text-right text-gray-600">
                 {tabs[currentStep - 1]?.name}
@@ -2333,11 +2420,11 @@ export function StudentEnrollment() {
           <div className="w-full space-y-6">
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">Personal Information</h2>
+                <h2 className="text-2xl font-semibold mb-6">{t('enrollment.step1')}</h2>
                 
                 {/* Enrollment Status */}
                 <div className="mb-6">
-                  <RequiredLabel className="mb-3 block">Enrollment Status</RequiredLabel>
+                  <RequiredLabel className="mb-3 block">{t('form.enrollmentStatus')}</RequiredLabel>
                   <div className="flex flex-wrap gap-3 sm:gap-4">
                     {['old', 'new', 'transferee'].map((status) => (
                       <label key={status} className="flex items-center gap-2">
@@ -2350,7 +2437,7 @@ export function StudentEnrollment() {
                           disabled={isPermanentlyLockedField}
                           className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538] disabled:opacity-100"
                         />
-                        <span className="capitalize">{status}</span>
+                        <span>{translateEnrollmentStatus(status, t)}</span>
                       </label>
                     ))}
                   </div>
@@ -2358,35 +2445,36 @@ export function StudentEnrollment() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="givenName">First Name</RequiredLabel>
+                    <RequiredLabel htmlFor="givenName">{t('form.firstName')}</RequiredLabel>
                     <Input
                       id="givenName"
                       value={formData.givenName}
                       onChange={(e) => handleInputChange('givenName', e.target.value)}
-                      placeholder="Enter first name"
+                      placeholder={t('form.ph.firstName')}
                       disabled={isPermanentlyLockedField}
                       className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="middleName">Middle Name</RequiredLabel>
+                    <RequiredLabel htmlFor="middleName">{t('form.middleName')}</RequiredLabel>
                     <Input
                       id="middleName"
                       value={formData.middleName}
                       onChange={(e) => handleInputChange('middleName', e.target.value)}
-                      placeholder="Enter middle name"
+                      placeholder={t('form.ph.middleName')}
                       required
                       disabled={isPermanentlyLockedField}
                       className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
+                    <p className="text-xs text-gray-500">{t('form.hint.middleName')}</p>
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="middleInitial">Middle Initial</RequiredLabel>
+                    <RequiredLabel htmlFor="middleInitial">{t('form.middleInitial')}</RequiredLabel>
                     <Input
                       id="middleInitial"
                       value={formData.middleInitial}
                       onChange={(e) => handleInputChange('middleInitial', e.target.value)}
-                      placeholder="M.I."
+                      placeholder={t('form.ph.middleInitial')}
                       maxLength={2}
                       required
                       disabled={isPermanentlyLockedField}
@@ -2394,29 +2482,29 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="lastName">Last Name</RequiredLabel>
+                    <RequiredLabel htmlFor="lastName">{t('form.lastName')}</RequiredLabel>
                     <Input
                       id="lastName"
                       value={formData.lastName}
                       onChange={(e) => handleInputChange('lastName', e.target.value)}
-                      placeholder="Enter last name"
+                      placeholder={t('form.ph.lastName')}
                       disabled={isPermanentlyLockedField}
                       className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="extensionName">Extension Name (if applicable)</Label>
+                    <Label htmlFor="extensionName">{t('form.extensionName')}</Label>
                     <Input
                       id="extensionName"
                       value={formData.extensionName}
                       onChange={(e) => handleInputChange('extensionName', e.target.value)}
-                      placeholder="Jr., Sr., III, etc."
+                      placeholder={t('form.ph.extension')}
                       disabled={isPermanentlyLockedField}
                       className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="gender">Gender</RequiredLabel>
+                    <RequiredLabel htmlFor="gender">{t('form.gender')}</RequiredLabel>
                     <select
                       id="gender"
                       value={formData.gender}
@@ -2428,13 +2516,13 @@ export function StudentEnrollment() {
                           : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
                       }`}
                     >
-                      <option value="">Select Gender</option>
-                      <option value="Female">Female</option>
-                      <option value="Male">Male</option>
+                      <option value="">{t('form.select.gender')}</option>
+                      <option value="Female">{t('form.gender.female')}</option>
+                      <option value="Male">{t('form.gender.male')}</option>
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="contactNumber">Contact Number</RequiredLabel>
+                    <RequiredLabel htmlFor="contactNumber">{t('form.contactNumber')}</RequiredLabel>
                     <Input
                       id="contactNumber"
                       type="tel"
@@ -2442,29 +2530,29 @@ export function StudentEnrollment() {
                       autoComplete="tel"
                       value={formData.contactNumber}
                       onChange={(e) => handleInputChange('contactNumber', e.target.value)}
-                      placeholder="09XXXXXXXXX"
+                      placeholder={t('form.ph.contact')}
                       maxLength={11}
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="email">Email Address</RequiredLabel>
+                    <RequiredLabel htmlFor="email">{t('form.email')}</RequiredLabel>
                     <Input
                       id="email"
                       type="email"
                       value={formData.email}
                       onChange={(e) => handleInputChange('email', e.target.value)}
-                      placeholder="your.email@example.com"
+                      placeholder={t('form.ph.email')}
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="lrn">LRN (Learner Reference Number)</RequiredLabel>
+                    <RequiredLabel htmlFor="lrn">{t('form.lrn')}</RequiredLabel>
                     <Input
                       id="lrn"
                       type="text"
                       inputMode="numeric"
                       value={formData.lrn}
                       onChange={(e) => handleInputChange('lrn', e.target.value)}
-                      placeholder="12 digit LRN"
+                      placeholder={t('form.ph.lrn')}
                       maxLength={12}
                       disabled={isPermanentlyLockedField}
                       className={isPermanentlyLockedField ? lockedPrefillInputClass.trim() : undefined}
@@ -2477,49 +2565,49 @@ export function StudentEnrollment() {
             {/* Address Section */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h3 className="text-xl font-semibold mb-4">Address</h3>
+                <h3 className="text-xl font-semibold mb-4">{t('form.address')}</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="blockLotHouseNo">Block/Lot No./House No.</Label>
+                    <Label htmlFor="blockLotHouseNo">{t('form.blockLot')}</Label>
                     <Input
                       id="blockLotHouseNo"
                       value={formData.blockLotHouseNo}
                       onChange={(e) => handleInputChange('blockLotHouseNo', e.target.value)}
-                      placeholder="Enter block/lot/house no."
+                      placeholder={t('form.ph.blockLot')}
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="street">Street</RequiredLabel>
+                    <RequiredLabel htmlFor="street">{t('form.street')}</RequiredLabel>
                     <Input
                       id="street"
                       value={formData.street}
                       onChange={(e) => handleInputChange('street', e.target.value)}
-                      placeholder="Enter street"
+                      placeholder={t('form.ph.street')}
                       required
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="compoundSubdivisionVillage">Compound/Subdivision/Village</Label>
+                    <Label htmlFor="compoundSubdivisionVillage">{t('form.compound')}</Label>
                     <Input
                       id="compoundSubdivisionVillage"
                       value={formData.compoundSubdivisionVillage}
                       onChange={(e) => handleInputChange('compoundSubdivisionVillage', e.target.value)}
-                      placeholder="Enter compound/subdivision/village"
+                      placeholder={t('form.ph.compound')}
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="municipality">City / Municipality</RequiredLabel>
+                    <RequiredLabel htmlFor="municipality">{t('form.municipality')}</RequiredLabel>
                     <Combobox
                       id="municipality"
                       value={formData.municipality}
                       onChange={handleMunicipalityChange}
                       options={NCR_MUNICIPALITIES}
-                      placeholder="Select or type city / municipality"
+                      placeholder={t('form.ph.municipality')}
                       ariaLabel="Show city / municipality options"
                     />
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="barangay">Barangay</RequiredLabel>
+                    <RequiredLabel htmlFor="barangay">{t('form.barangay')}</RequiredLabel>
                     <Combobox
                       id="barangay"
                       value={formData.barangay}
@@ -2527,8 +2615,8 @@ export function StudentEnrollment() {
                       options={addressBarangayOptions}
                       placeholder={
                         formData.municipality.trim()
-                          ? "Select or type barangay"
-                          : "Enter city / municipality first"
+                          ? t('form.ph.barangay')
+                          : t('form.ph.barangayFirst')
                       }
                       disabled={!formData.municipality.trim()}
                       ariaLabel="Show barangay options"
@@ -2541,23 +2629,42 @@ export function StudentEnrollment() {
             {/* Birth Information & Academic Details */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h3 className="text-xl font-semibold mb-4">Birth Information & Academic Details</h3>
+                <h3 className="text-xl font-semibold mb-4">{t('form.birthAndAcademic')}</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="birthDate">Birth Date</RequiredLabel>
+                    <RequiredLabel htmlFor="birthDate">{t('form.birthDate')}</RequiredLabel>
                     <Input
                       id="birthDate"
-                      type="date"
-                      value={formData.birthDate}
-                      onChange={(e) => handleInputChange('birthDate', e.target.value)}
-                      min={shsBirthDateBounds.min}
-                      max={shsBirthDateBounds.max}
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="bday"
+                      placeholder={t('form.ph.birthDate')}
+                      value={birthDateDisplay}
+                      onChange={(e) => {
+                        const next = sanitizeBirthDateUsInput(e.target.value);
+                        setBirthDateDisplay(next);
+                        if (next.length === 10) {
+                          const ymd = parseBirthDateUsToYmd(next);
+                          if (ymd) {
+                            setFormData((prev) =>
+                              prev.birthDate === ymd ? prev : { ...prev, birthDate: ymd },
+                            );
+                          }
+                        }
+                      }}
+                      onBlur={() => {
+                        const ymd = commitBirthDateFromDisplay();
+                        if (birthDateDisplay.trim() && !ymd) {
+                          toast.error(t('form.val.birthDateFormat'));
+                        }
+                      }}
                       disabled={isPermanentlyLockedField}
                       className={isPermanentlyLockedField ? lockedPrefillInputClass.trim() : undefined}
                     />
+                    <p className="text-xs text-gray-500">{t('form.hint.birthDate')}</p>
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="birthPlace">Birth Place</RequiredLabel>
+                    <RequiredLabel htmlFor="birthPlace">{t('form.birthPlace')}</RequiredLabel>
                     <select
                       id="birthPlace"
                       value={isBirthPlaceOther ? "__OTHER__" : (formData.birthPlace || "")}
@@ -2576,26 +2683,26 @@ export function StudentEnrollment() {
                           : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
                       }`}
                     >
-                      <option value="">Select birth place</option>
+                      <option value="">{t('form.select.birthPlace')}</option>
                       {NCR_MUNICIPALITIES.map((c) => (
                         <option key={c} value={c}>
                           {c}
                         </option>
                       ))}
-                      <option value="__OTHER__">Other (type manually)</option>
+                      <option value="__OTHER__">{t('form.select.birthPlaceOther')}</option>
                     </select>
                     {isBirthPlaceOther || formData.birthPlace === "" ? (
                       <Input
                         value={formData.birthPlace}
                         onChange={(e) => handleInputChange("birthPlace", e.target.value)}
-                        placeholder="If not in NCR, type your birth place"
+                        placeholder={t('form.ph.birthPlaceOther')}
                         disabled={isPermanentlyLockedField}
                         className={isPermanentlyLockedField ? lockedPrefillInputClass.trim() : undefined}
                       />
                     ) : null}
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="religion">Religion</RequiredLabel>
+                    <RequiredLabel htmlFor="religion">{t('form.religion')}</RequiredLabel>
                     <select
                       id="religion"
                       value={formData.religion}
@@ -2607,7 +2714,7 @@ export function StudentEnrollment() {
                           : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
                       }`}
                     >
-                      <option value="">Select Religion</option>
+                      <option value="">{t('form.select.religion')}</option>
                       <option value="Roman Catholic">Roman Catholic</option>
                       <option value="INC (Iglesia Ni Cristo)">INC (Iglesia Ni Cristo)</option>
                       <option value="Buddhism">Buddhism</option>
@@ -2622,7 +2729,7 @@ export function StudentEnrollment() {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel>Grade Level to Enroll In</RequiredLabel>
+                    <RequiredLabel>{t('form.gradeLevel')}</RequiredLabel>
                     <div className="flex gap-4 pt-2">
                       {['11', '12'].map((grade) => (
                         <label key={grade} className="flex items-center gap-2">
@@ -2635,13 +2742,13 @@ export function StudentEnrollment() {
                             disabled={isPermanentlyLockedField}
                             className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538] disabled:opacity-100"
                           />
-                          <span>Grade {grade}</span>
+                          <span>{t('form.grade', { level: grade })}</span>
                         </label>
                       ))}
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="strand">Strand</RequiredLabel>
+                    <RequiredLabel htmlFor="strand">{t('form.strand')}</RequiredLabel>
                     <select
                       id="strand"
                       value={formData.strand}
@@ -2653,21 +2760,19 @@ export function StudentEnrollment() {
                           : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
                       }`}
                     >
-                      <option value="STEM">STEM</option>
-                      <option value="HUMSS">HUMSS</option>
-                      <option value="ABM">ABM</option>
-                      <option value="TVL - ICT">TVL - ICT</option>
-                      <option value="TVL - EIM">TVL - EIM</option>
-                      <option value="TVL - BPP/FBS">TVL - BPP/FBS</option>
+                      <option value="">{t('form.select.strand')}</option>
+                      {STRANDS.map((strand) => (
+                        <option key={strand.code} value={strand.code}>
+                          {formatStrandDisplay(strand.code)}
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <RequiredLabel htmlFor="preferredSchedule">Preferred Schedule</RequiredLabel>
+                    <RequiredLabel htmlFor="preferredSchedule">{t('form.preferredSchedule')}</RequiredLabel>
                     {isGrade12PromotionFlow && currentStudentSection ? (
                       <p className="text-xs text-gray-600 leading-relaxed">
-                        You stay in section <span className="font-semibold">{currentStudentSection}</span> for Grade 12
-                        unless you change your class time below. If you switch to morning or afternoon, the system
-                        places you in the section with the most available seats for your chosen shift.
+                        {t('form.hint.grade12Section', { section: currentStudentSection })}
                       </p>
                     ) : null}
                     <select
@@ -2681,9 +2786,9 @@ export function StudentEnrollment() {
                           : "bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
                       }`}
                     >
-                      <option value="">Select Schedule</option>
-                      <option value="Morning Shift">Morning Shift</option>
-                      <option value="Afternoon Shift">Afternoon Shift</option>
+                      <option value="">{t('form.select.schedule')}</option>
+                      <option value="Morning Shift">{t('form.schedule.morning')}</option>
+                      <option value="Afternoon Shift">{t('form.schedule.afternoon')}</option>
                     </select>
                   </div>
                 </div>
@@ -2695,64 +2800,61 @@ export function StudentEnrollment() {
         {/* Step 2: Family Information */}
         {currentStep === 2 && (
           <div className="w-full space-y-6">
-            <p className="text-sm text-gray-600 -mt-2 mb-2">
-              Single-parent or guardian-led households: fill only the sections that apply. You must enter at least one
-              parent or guardian name (and match your emergency contact choice below).
-            </p>
+            <p className="text-sm text-gray-600 -mt-2 mb-2">{t('form.family.hint')}</p>
             {/* Mother's Information */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">Mother's Information</h2>
+                <h2 className="text-2xl font-semibold mb-6">{t('form.mother.section')}</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="motherGivenName">Mother's First Name</Label>
+                    <Label htmlFor="motherGivenName">{t('form.mother.firstName')}</Label>
                     <Input
                       id="motherGivenName"
                       value={formData.motherGivenName}
                       onChange={(e) => handleInputChange('motherGivenName', e.target.value)}
-                      placeholder="Enter mother's first name"
+                      placeholder={t('form.ph.motherFirstName')}
                       className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherMaidenMiddleName">Mother's Maiden Middle Name</Label>
+                    <Label htmlFor="motherMaidenMiddleName">{t('form.mother.middleName')}</Label>
                     <Input
                       id="motherMaidenMiddleName"
                       value={formData.motherMaidenMiddleName}
                       onChange={(e) => handleInputChange('motherMaidenMiddleName', e.target.value)}
-                      placeholder="Enter mother's maiden middle name"
+                      placeholder={t('form.ph.motherMiddleName')}
                       className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherMaidenLastName">Mother's Maiden Last Name</Label>
+                    <Label htmlFor="motherMaidenLastName">{t('form.mother.lastName')}</Label>
                     <Input
                       id="motherMaidenLastName"
                       value={formData.motherMaidenLastName}
                       onChange={(e) => handleInputChange('motherMaidenLastName', e.target.value)}
-                      placeholder="Enter mother's maiden last name"
+                      placeholder={t('form.ph.motherLastName')}
                       className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherContactNumber">Mother's Contact Number</Label>
+                    <Label htmlFor="motherContactNumber">{t('form.mother.contact')}</Label>
                     <Input
                       id="motherContactNumber"
                       type="tel"
                       inputMode="numeric"
                       value={formData.motherContactNumber}
                       onChange={(e) => handleInputChange('motherContactNumber', e.target.value)}
-                      placeholder="09XXXXXXXXX"
+                      placeholder={t('form.ph.contact')}
                       maxLength={11}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherOccupation">Mother's Occupation</Label>
+                    <Label htmlFor="motherOccupation">{t('form.mother.occupation')}</Label>
                     <Input
                       id="motherOccupation"
                       value={formData.motherOccupation}
                       onChange={(e) => handleInputChange('motherOccupation', e.target.value)}
-                      placeholder="Enter mother's occupation"
+                      placeholder={t('form.ph.motherOccupation')}
                       className="uppercase"
                     />
                   </div>
@@ -2763,57 +2865,57 @@ export function StudentEnrollment() {
             {/* Father's Information */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">Father's Information</h2>
+                <h2 className="text-2xl font-semibold mb-6">{t('form.father.section')}</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="fatherGivenName">Father's First Name</Label>
+                    <Label htmlFor="fatherGivenName">{t('form.father.firstName')}</Label>
                     <Input
                       id="fatherGivenName"
                       value={formData.fatherGivenName}
                       onChange={(e) => handleInputChange('fatherGivenName', e.target.value)}
-                      placeholder="Enter father's first name"
+                      placeholder={t('form.ph.fatherFirstName')}
                       className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherMiddleName">Father's Middle Name</Label>
+                    <Label htmlFor="fatherMiddleName">{t('form.father.middleName')}</Label>
                     <Input
                       id="fatherMiddleName"
                       value={formData.fatherMiddleName}
                       onChange={(e) => handleInputChange('fatherMiddleName', e.target.value)}
-                      placeholder="Enter father's middle name"
+                      placeholder={t('form.ph.fatherMiddleName')}
                       className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherLastName">Father's Last Name</Label>
+                    <Label htmlFor="fatherLastName">{t('form.father.lastName')}</Label>
                     <Input
                       id="fatherLastName"
                       value={formData.fatherLastName}
                       onChange={(e) => handleInputChange('fatherLastName', e.target.value)}
-                      placeholder="Enter father's last name"
+                      placeholder={t('form.ph.fatherLastName')}
                       className="uppercase"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherContactNumber">Father's Contact Number</Label>
+                    <Label htmlFor="fatherContactNumber">{t('form.father.contact')}</Label>
                     <Input
                       id="fatherContactNumber"
                       type="tel"
                       inputMode="numeric"
                       value={formData.fatherContactNumber}
                       onChange={(e) => handleInputChange('fatherContactNumber', e.target.value)}
-                      placeholder="09XXXXXXXXX"
+                      placeholder={t('form.ph.contact')}
                       maxLength={11}
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherOccupation">Father's Occupation</Label>
+                    <Label htmlFor="fatherOccupation">{t('form.father.occupation')}</Label>
                     <Input
                       id="fatherOccupation"
                       value={formData.fatherOccupation}
                       onChange={(e) => handleInputChange('fatherOccupation', e.target.value)}
-                      placeholder="Enter father's occupation"
+                      placeholder={t('form.ph.fatherOccupation')}
                       className="uppercase"
                     />
                   </div>
@@ -2832,63 +2934,63 @@ export function StudentEnrollment() {
                       onChange={(e) => handleInputChange('hasGuardian', e.target.checked)}
                       className="w-4 h-4 text-[#8B1538] border-gray-300 rounded focus:ring-[#8B1538]"
                     />
-                    <span className="font-medium">I have a guardian (if applicable)</span>
+                    <span className="font-medium">{t('form.guardian.checkbox')}</span>
                   </label>
                 </div>
 
                 {formData.hasGuardian && (
                   <>
-                    <h2 className="text-2xl font-semibold mb-6">Guardian's Information</h2>
+                    <h2 className="text-2xl font-semibold mb-6">{t('form.guardian.section')}</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <Label htmlFor="guardianGivenName">Guardian's First Name</Label>
+                        <Label htmlFor="guardianGivenName">{t('form.guardian.firstName')}</Label>
                         <Input
                           id="guardianGivenName"
                           value={formData.guardianGivenName}
                           onChange={(e) => handleInputChange('guardianGivenName', e.target.value)}
-                          placeholder="Enter guardian's first name"
+                          placeholder={t('form.ph.guardianFirstName')}
                           className="uppercase"
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianMiddleName">Guardian's Middle Name</Label>
+                        <Label htmlFor="guardianMiddleName">{t('form.guardian.middleName')}</Label>
                         <Input
                           id="guardianMiddleName"
                           value={formData.guardianMiddleName}
                           onChange={(e) => handleInputChange('guardianMiddleName', e.target.value)}
-                          placeholder="Enter guardian's middle name"
+                          placeholder={t('form.ph.guardianMiddleName')}
                           className="uppercase"
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianLastName">Guardian's Last Name</Label>
+                        <Label htmlFor="guardianLastName">{t('form.guardian.lastName')}</Label>
                         <Input
                           id="guardianLastName"
                           value={formData.guardianLastName}
                           onChange={(e) => handleInputChange('guardianLastName', e.target.value)}
-                          placeholder="Enter guardian's last name"
+                          placeholder={t('form.ph.guardianLastName')}
                           className="uppercase"
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianContactNumber">Guardian's Contact Number</Label>
+                        <Label htmlFor="guardianContactNumber">{t('form.guardian.contact')}</Label>
                         <Input
                           id="guardianContactNumber"
                           type="tel"
                           inputMode="numeric"
                           value={formData.guardianContactNumber}
                           onChange={(e) => handleInputChange('guardianContactNumber', e.target.value)}
-                          placeholder="09XXXXXXXXX"
+                          placeholder={t('form.ph.contact')}
                           maxLength={11}
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="relationshipToGuardian">Relationship to Guardian</Label>
+                        <Label htmlFor="relationshipToGuardian">{t('form.guardian.relationship')}</Label>
                         <Input
                           id="relationshipToGuardian"
                           value={formData.relationshipToGuardian}
                           onChange={(e) => handleInputChange('relationshipToGuardian', e.target.value)}
-                          placeholder="e.g., Aunt, Uncle, Grandparent"
+                          placeholder={t('form.ph.guardianRelationship')}
                         />
                       </div>
                     </div>
@@ -2900,7 +3002,7 @@ export function StudentEnrollment() {
             {/* Emergency Contact */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">Person to Contact in Case of Emergency</h2>
+                <h2 className="text-2xl font-semibold mb-6">{t('form.emergency.section')}</h2>
                 <div className="flex flex-wrap gap-3 sm:gap-4">
                   {['mother', 'father', 'guardian'].map((contact) => (
                     <label key={contact} className="flex items-center gap-2 cursor-pointer">
@@ -2912,7 +3014,7 @@ export function StudentEnrollment() {
                         onChange={(e) => handleInputChange('emergencyContact', e.target.value)}
                         className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
                       />
-                      <span className="capitalize">{contact}</span>
+                      <span>{translateEmergencyContact(contact, t)}</span>
                     </label>
                   ))}
                 </div>
@@ -2926,15 +3028,15 @@ export function StudentEnrollment() {
           <div className="w-full">
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">Enrollment History</h2>
+                <h2 className="text-2xl font-semibold mb-6">{t('enrollment.step3')}</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="previousSchoolAttended">Previous School Attended</Label>
+                    <Label htmlFor="previousSchoolAttended">{t('form.history.previousSchool')}</Label>
                     <Input
                       id="previousSchoolAttended"
                       value={formData.previousSchoolAttended}
                       onChange={(e) => handleInputChange('previousSchoolAttended', e.target.value)}
-                      placeholder="Enter previous school name"
+                      placeholder={t('form.ph.previousSchool')}
                       inputMode="text"
                       autoComplete="organization"
                       disabled={lockEnrollmentHistory}
@@ -2942,9 +3044,9 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>School Type</Label>
+                    <Label>{t('form.history.schoolType')}</Label>
                     <div className="flex gap-4 pt-2">
-                      {['public', 'private'].map((type) => (
+                      {(['public', 'private'] as const).map((type) => (
                         <label key={type} className="flex items-center gap-2">
                           <input
                             type="radio"
@@ -2955,13 +3057,13 @@ export function StudentEnrollment() {
                             disabled={lockEnrollmentHistory}
                             className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538] disabled:opacity-100"
                           />
-                          <span className="uppercase">{type}</span>
+                          <span>{t(type === 'public' ? 'form.schoolType.public' : 'form.schoolType.private')}</span>
                         </label>
                       ))}
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="gradeLevelAtPreviousSchool">Grade Level at Previous School Attended</Label>
+                    <Label htmlFor="gradeLevelAtPreviousSchool">{t('form.history.gradeLevel')}</Label>
                     <select
                       id="gradeLevelAtPreviousSchool"
                       value={formData.gradeLevelAtPreviousSchool}
@@ -2971,37 +3073,34 @@ export function StudentEnrollment() {
                         lockEnrollmentHistory ? 'bg-gray-100 text-gray-700 cursor-not-allowed' : 'bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]'
                       }`}
                     >
-                      <option value="">Select Grade Level</option>
+                      <option value="">{t('form.select.gradeLevel')}</option>
                       <option value="Grade 10">Grade 10</option>
                       <option value="Grade 11">Grade 11</option>
                       <option value="Grade 12">Grade 12</option>
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="sectionAtPreviousSchool">Section at Previous School Attended</Label>
+                    <Label htmlFor="sectionAtPreviousSchool">{t('form.history.section')}</Label>
                     <Input
                       id="sectionAtPreviousSchool"
                       value={formData.sectionAtPreviousSchool}
                       onChange={(e) => handleInputChange('sectionAtPreviousSchool', e.target.value)}
-                      placeholder="e.g. A, 10-A"
+                      placeholder={t('form.ph.section')}
                       inputMode="text"
                       disabled={lockEnrollmentHistory}
                       className={`uppercase${lockEnrollmentHistory ? ' bg-gray-100 text-gray-700' : ''}`}
                     />
                   </div>
                   <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="lastSchoolYearAttended">Last School Year Attended *</Label>
+                    <Label htmlFor="lastSchoolYearAttended">{t('form.history.lastSchoolYear')} *</Label>
                     <SchoolYearCombobox
                       id="lastSchoolYearAttended"
                       value={formData.lastSchoolYearAttended}
                       onChange={(value) => handleInputChange("lastSchoolYearAttended", value)}
                       options={lastSchoolYearOptions}
-                      placeholder="Pick or type e.g. 2019-2020"
+                      placeholder={t('form.ph.lastSchoolYear')}
                     />
-                    <p className="text-xs text-gray-500">
-                      Pick from the list or type the school year printed on your SF9 and Good Moral
-                      certificates (they should match each other).
-                    </p>
+                    <p className="text-xs text-gray-500">{t('form.hint.lastSchoolYear')}</p>
                   </div>
                 </div>
               </CardContent>
@@ -3014,27 +3113,20 @@ export function StudentEnrollment() {
           <div className="w-full">
             <Card>
               <CardHeader>
-                <CardTitle>Upload Required Documents</CardTitle>
-                <CardDescription>
-                  Upload clear photos of your documents (JPG or PNG). Blurry or unreadable files will
-                  not be accepted.
-                </CardDescription>
+                <CardTitle>{t('form.docs.title')}</CardTitle>
+                <CardDescription>{t('form.docs.subtitle')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {isResubmitFlow ? (
                   <Alert className="border-amber-300 bg-amber-50">
                     <AlertCircle className="h-4 w-4 text-amber-700" />
-                    <AlertDescription className="text-amber-900">
-                      <strong>Resubmission mode.</strong> Approved documents are locked. Only the requirements
-                      flagged for resubmission can be re-uploaded.
-                    </AlertDescription>
+                    <AlertDescription className="text-amber-900">{t('form.docs.resubmit')}</AlertDescription>
                   </Alert>
                 ) : (
                   <Alert>
                     <AlertCircle className="h-4 w-4" />
                     <AlertDescription>
-                      Use good lighting and include the full document. We check each photo for clarity
-                      and readable text before it is accepted. Maximum file size: {MAX_DOCUMENT_UPLOAD_LABEL} per document.
+                      {t('form.docs.tip', { maxSize: MAX_DOCUMENT_UPLOAD_LABEL })}
                     </AlertDescription>
                   </Alert>
                 )}
@@ -3112,9 +3204,12 @@ export function StudentEnrollment() {
                         }`} />
                         <div>
                           <p className="font-medium">
-                            {doc.name}
+                            {translateEnrollmentDocumentName(doc.name, t)}
                             {doc.requiredFor === 'transferee' && (
-                              <span className="text-sm text-gray-500 ml-2">(if applicable for transferee students)</span>
+                              <span className="text-sm text-gray-500 ml-2">{t('form.docs.transfereeNote')}</span>
+                            )}
+                            {!doc.required && (
+                              <span className="text-sm text-gray-500 ml-2">{t('form.docs.optionalNote')}</span>
                             )}
                           </p>
                           {doc.file && (
@@ -3122,7 +3217,7 @@ export function StudentEnrollment() {
                           )}
                           {docNeedsResubmit && doc.registrarRemarks ? (
                             <p className="text-sm text-red-700 mt-1">
-                              <strong>Registrar's note:</strong> {doc.registrarRemarks}
+                              <strong>{t('form.docs.registrarNote')}</strong> {doc.registrarRemarks}
                             </p>
                           ) : null}
                           {/* Resubmit attempt counter — only after registrar rejection */}
@@ -3183,7 +3278,7 @@ export function StudentEnrollment() {
                           <>
                             <Badge variant="default" className="bg-amber-600">
                               <AlertCircle className="w-3 h-3 mr-1" />
-                              Bring to registrar
+                              {t('form.doc.bringRegistrar')}
                             </Badge>
                             <Button
                               variant="outline"
@@ -3193,14 +3288,14 @@ export function StudentEnrollment() {
                               title={`You have used all ${UPLOAD_ATTEMPT_LIMIT} resubmit attempts for this document.`}
                             >
                               <Upload className="w-4 h-4 mr-2" />
-                              Upload disabled
+                              {t('form.doc.uploadDisabled')}
                             </Button>
                           </>
                         ) : docNeedsResubmit ? (
                           <>
                             <Badge variant="default" className="bg-red-600">
                               <AlertCircle className="w-3 h-3 mr-1" />
-                              {isGrade12PromotionFlow ? "Contact registrar" : "Resubmission required"}
+                              {isGrade12PromotionFlow ? t('form.doc.contactRegistrar') : t('form.doc.resubmitRequired')}
                             </Badge>
                             {!isGrade12PromotionFlow ? (
                               <Button
@@ -3210,11 +3305,11 @@ export function StudentEnrollment() {
                                 onClick={openUploadPicker}
                               >
                                 <Upload className="w-4 h-4 mr-2" />
-                                Re-upload
+                                {t('form.doc.reupload')}
                               </Button>
                             ) : (
                               <Badge variant="outline" className="border-gray-400 text-gray-600">
-                                Locked
+                                {t('form.doc.locked')}
                               </Badge>
                             )}
                           </>
@@ -3234,11 +3329,11 @@ export function StudentEnrollment() {
                                   void runDocumentReadabilityCheck(index, doc.uploadedId!);
                                 }}
                               >
-                                Retry check
+                                {t('form.doc.retryCheck')}
                               </Button>
                             ) : lockedForResubmit || !docMeta.allowReupload ? (
                               <Badge variant="outline" className="border-gray-400 text-gray-600">
-                                {enrollmentFinalized ? "On file" : "Locked"}
+                                {enrollmentFinalized ? t('form.doc.onFile') : t('form.doc.locked')}
                               </Badge>
                             ) : (
                               <Button
@@ -3246,13 +3341,13 @@ export function StudentEnrollment() {
                                 size="sm"
                                 onClick={openUploadPicker}
                               >
-                                Re-upload
+                                {t('form.doc.reupload')}
                               </Button>
                             )}
                           </>
                         ) : lockedForResubmit ? (
                           <Badge variant="outline" className="border-gray-400 text-gray-600">
-                            Locked
+                            {t('form.doc.locked')}
                           </Badge>
                         ) : (
                           <Button
@@ -3262,7 +3357,7 @@ export function StudentEnrollment() {
                             onClick={openUploadPicker}
                           >
                             <Upload className="w-4 h-4 mr-2" />
-                            Upload
+                            {t('form.doc.upload')}
                           </Button>
                         )}
                       </div>
@@ -3290,20 +3385,10 @@ export function StudentEnrollment() {
                         htmlFor="documentsAuthenticityConfirmed"
                         className={`font-medium${lockGrade12PrefilledSections ? "" : " cursor-pointer"}`}
                       >
-                        Document authenticity declaration
+                        {t('form.docs.authenticityTitle')}
                       </label>
-                      <p className="leading-relaxed text-gray-700">
-                        I declare that every document I uploaded for this enrollment application is{" "}
-                        <strong>genuine, original or a true copy</strong>, and has{" "}
-                        <strong>not been tampered with, falsified, or digitally altered</strong> to misrepresent
-                        my records. I understand that submitting fake or manipulated documents may result in
-                        rejection of my application and disciplinary action under school policy and applicable
-                        law.
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        Your confirmation is recorded with a timestamp and IP address, similar to your registration
-                        consent (DPA), as proof of this declaration.
-                      </p>
+                      <p className="leading-relaxed text-gray-700">{t('form.docs.authenticityBody')}</p>
+                      <p className="text-xs text-gray-500">{t('form.docs.authenticityFootnote')}</p>
                     </div>
                   </div>
                 </div>
@@ -3318,20 +3403,20 @@ export function StudentEnrollment() {
             {/* Bring a Friend Promo */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">Bring a Friend Promo</h2>
+                <h2 className="text-2xl font-semibold mb-6">{t('form.payment.promo')}</h2>
                 <div className="mb-4">
-                  <Label className="mb-3 block">Do you have a referral code?</Label>
+                  <Label className="mb-3 block">{t('form.payment.hasReferral')}</Label>
                   <div className="flex flex-wrap gap-3 sm:gap-4">
-                    {['Yes', 'No'].map((option) => (
+                    {(['yes', 'no'] as const).map((option) => (
                       <label key={option} className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
                           name="hasReferralCode"
-                          checked={formData.hasReferralCode === (option === 'Yes')}
-                          onChange={() => handleInputChange('hasReferralCode', option === 'Yes')}
+                          checked={formData.hasReferralCode === (option === 'yes')}
+                          onChange={() => handleInputChange('hasReferralCode', option === 'yes')}
                           className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
                         />
-                        <span>{option}</span>
+                        <span>{t(option === 'yes' ? 'form.payment.yes' : 'form.payment.no')}</span>
                       </label>
                     ))}
                   </div>
@@ -3340,32 +3425,32 @@ export function StudentEnrollment() {
                 {formData.hasReferralCode && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                     <div className="space-y-2">
-                      <Label htmlFor="referralCardControlNumber">Referral Card Control Number</Label>
+                      <Label htmlFor="referralCardControlNumber">{t('form.payment.referralControl')}</Label>
                       <Input
                         id="referralCardControlNumber"
                         value={formData.referralCardControlNumber}
                         onChange={(e) => handleInputChange('referralCardControlNumber', e.target.value)}
-                        placeholder="Enter control number"
+                        placeholder={t('form.ph.referralControl')}
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="referrerName">Referrer's Name</Label>
+                      <Label htmlFor="referrerName">{t('form.payment.referrerName')}</Label>
                       <Input
                         id="referrerName"
                         value={formData.referrerName}
                         onChange={(e) => handleInputChange('referrerName', e.target.value)}
-                        placeholder="Enter referrer's name"
+                        placeholder={t('form.ph.referrerName')}
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="referrerContactNumber">Referrer's Contact Number</Label>
+                      <Label htmlFor="referrerContactNumber">{t('form.payment.referrerContact')}</Label>
                       <Input
                         id="referrerContactNumber"
                         type="tel"
                         inputMode="numeric"
                         value={formData.referrerContactNumber}
                         onChange={(e) => handleInputChange('referrerContactNumber', e.target.value)}
-                        placeholder="09XXXXXXXXX"
+                        placeholder={t('form.ph.contact')}
                         maxLength={11}
                       />
                     </div>
@@ -3377,17 +3462,11 @@ export function StudentEnrollment() {
             {/* Accounting - Mode of Payment */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">Accounting</h2>
+                <h2 className="text-2xl font-semibold mb-6">{t('form.payment.accounting')}</h2>
                 <div className="space-y-4">
-                  <RequiredLabel className="mb-3 block">Mode of Payment</RequiredLabel>
+                  <RequiredLabel className="mb-3 block">{t('form.payment.mode')}</RequiredLabel>
                   <div className="space-y-2">
-                    {[
-                      { value: 'qvr', label: 'Grade 10 Public - Qualified Voucher Recipient (QVR)' },
-                      { value: 'esc', label: 'Grade 10 Private - Education Service Contracting (ESC)' },
-                      { value: 'qva', label: 'Grade 10 Private - Qualified Voucher Applicant (QVA)' },
-                      { value: 'als', label: 'ALS/Balik Aral (QVA)' },
-                      { value: 'cash', label: 'Cash' },
-                    ].map((option) => (
+                    {paymentOptions.map((option) => (
                       <label key={option.value} className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
@@ -3403,9 +3482,7 @@ export function StudentEnrollment() {
                   </div>
 
                   <p className="text-sm text-gray-600 mt-4 rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2">
-                    If you use a voucher program (QVR, ESC, QVA, or ALS), you will enter your{' '}
-                    <span className="font-semibold">voucher number on your dashboard</span> after the Registrar approves
-                    your enrollment.
+                    {t('form.payment.voucherHint')}
                   </p>
                 </div>
               </CardContent>
@@ -3418,38 +3495,39 @@ export function StudentEnrollment() {
           <div className="w-full">
             <Card>
               <CardHeader>
-                <CardTitle>Review & Submit</CardTitle>
-                <CardDescription>Please review your information before submitting</CardDescription>
+                <CardTitle>{t('form.review.title')}</CardTitle>
+                <CardDescription>{t('form.review.subtitle')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Personal Information Review */}
                 <div>
-                  <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">Personal Information</h3>
+                  <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">{t('enrollment.step1')}</h3>
                   <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                     <div>
-                      <p className="text-gray-600">Enrollment Status</p>
-                      <p className="font-medium capitalize">{formData.enrollmentStatus}</p>
+                      <p className="text-gray-600">{t('form.enrollmentStatus')}</p>
+                      <p className="font-medium">{translateEnrollmentStatus(formData.enrollmentStatus, t)}</p>
                     </div>
                     <div>
-                      <p className="text-gray-600">Full Name</p>
+                      <p className="text-gray-600">{t('form.review.fullName')}</p>
                       <p className="font-medium">
                         {formData.givenName} {formData.middleName} {formData.lastName} {formData.extensionName}
                       </p>
                     </div>
                     <div>
-                      <p className="text-gray-600">Gender</p>
+                      <p className="text-gray-600">{t('form.gender')}</p>
                       <p className="font-medium">{formData.gender}</p>
                     </div>
                     <div>
-                      <p className="text-gray-600">Birth Date</p>
-                      <p className="font-medium">{formData.birthDate}</p>
+                      <p className="text-gray-600">{t('form.review.birthDate')}</p>
+                      <p className="font-medium">
+                        {formatBirthDateUsDisplay(formData.birthDate) || formData.birthDate || "—"}
+                      </p>
                     </div>
                     <div>
-                      <p className="text-gray-600">LRN</p>
+                      <p className="text-gray-600">{t('form.lrn')}</p>
                       <p className="font-medium">{formData.lrn}</p>
                     </div>
                     <div>
-                      <p className="text-gray-600">Contact</p>
+                      <p className="text-gray-600">{t('form.review.contact')}</p>
                       <p className="font-medium">{formData.contactNumber}</p>
                     </div>
                   </div>
@@ -3457,18 +3535,18 @@ export function StudentEnrollment() {
 
                 {/* Academic Information */}
                 <div>
-                  <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">Academic Information</h3>
+                  <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">{t('form.review.academic')}</h3>
                   <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                     <div>
-                      <p className="text-gray-600">Grade Level</p>
-                      <p className="font-medium">Grade {formData.gradeLevel}</p>
+                      <p className="text-gray-600">{t('form.gradeLevel')}</p>
+                      <p className="font-medium">{t('form.grade', { level: formData.gradeLevel })}</p>
                     </div>
                     <div>
-                      <p className="text-gray-600">Strand</p>
+                      <p className="text-gray-600">{t('form.strand')}</p>
                       <p className="font-medium">{formData.strand}</p>
                     </div>
                     <div>
-                      <p className="text-gray-600">Preferred Schedule</p>
+                      <p className="text-gray-600">{t('form.preferredSchedule')}</p>
                       <p className="font-medium">{formData.preferredSchedule}</p>
                     </div>
                   </div>
@@ -3476,16 +3554,16 @@ export function StudentEnrollment() {
 
                 {/* Family Information */}
                 <div>
-                  <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">Family Information</h3>
+                  <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">{t('form.review.family')}</h3>
                   <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                     <div>
-                      <p className="text-gray-600">Mother's Name</p>
+                      <p className="text-gray-600">{t('form.review.motherName')}</p>
                       <p className="font-medium">
                         {formData.motherGivenName} {formData.motherMaidenMiddleName} {formData.motherMaidenLastName}
                       </p>
                     </div>
                     <div>
-                      <p className="text-gray-600">Father's Name</p>
+                      <p className="text-gray-600">{t('form.review.fatherName')}</p>
                       <p className="font-medium">
                         {formData.fatherGivenName} {formData.fatherMiddleName} {formData.fatherLastName}
                       </p>
@@ -3495,24 +3573,23 @@ export function StudentEnrollment() {
 
                 {/* Mode of Payment */}
                 <div>
-                  <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">Payment Information</h3>
+                  <h3 className="font-semibold text-lg mb-3 text-[#8B1538]">{t('form.review.payment')}</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                     <div>
-                      <p className="text-gray-600">Mode of Payment</p>
+                      <p className="text-gray-600">{t('form.payment.mode')}</p>
                       <p className="font-medium uppercase">{formData.modeOfPayment || '—'}</p>
                     </div>
                     <div>
-                      <p className="text-gray-600">Voucher No.</p>
+                      <p className="text-gray-600">{t('form.review.voucherNo')}</p>
                       <p className="font-medium text-gray-700">
                         {formData.modeOfPayment === 'cash'
-                          ? 'Not applicable (cash)'
-                          : 'Add on your dashboard after enrollment is approved'}
+                          ? t('form.review.voucherCash')
+                          : t('form.review.voucherLater')}
                       </p>
                     </div>
                   </div>
                 </div>
 
-                {/* Confirmation */}
                 <div className="border-t pt-4">
                   <label className="flex items-start gap-3 cursor-pointer">
                     <input
@@ -3521,18 +3598,13 @@ export function StudentEnrollment() {
                       onChange={(e) => handleInputChange('confirmInformation', e.target.checked)}
                       className="w-5 h-5 mt-0.5 text-[#8B1538] border-gray-300 rounded focus:ring-[#8B1538]"
                     />
-                    <span className="text-sm">
-                      I confirm that all the information I have provided is accurate and complete. I understand that any false information may result in the rejection of my application.
-                    </span>
+                    <span className="text-sm">{t('form.review.confirm')}</span>
                   </label>
                 </div>
 
                 <Alert className="border-[#8B1538] bg-red-50">
                   <AlertCircle className="h-4 w-4 text-[#8B1538]" />
-                  <AlertDescription className="text-[#8B1538]">
-                    By submitting this application, you confirm that all information provided is accurate and complete.
-                    Your application will be reviewed by the Registrar's office.
-                  </AlertDescription>
+                  <AlertDescription className="text-[#8B1538]">{t('form.review.submitAlert')}</AlertDescription>
                 </Alert>
               </CardContent>
             </Card>
@@ -3542,16 +3614,26 @@ export function StudentEnrollment() {
 
       {/* Navigation Buttons */}
       <div className="bg-white border-t p-6">
-        <div className="flex w-full justify-between">
-          <Button
-            variant="outline"
-            onClick={handleBack}
-            disabled={currentStep === 1 || isSaving || isEnrollmentLocked || !enrollmentAllowed}
-            className="border-gray-300"
-          >
-            <ChevronLeft className="w-4 h-4 mr-2" />
-            Back
-          </Button>
+        <div className="flex w-full items-center justify-between">
+          {showWelcomeNav ? (
+            <div className="min-w-0 pr-4">
+              <p className="text-sm font-semibold text-[#2D5016]">
+                {t('enrollment.welcome')}
+                {user?.name ? `, ${user.name.split(' ')[0]}` : ''}!
+              </p>
+              <p className="mt-0.5 text-xs text-gray-600">{t('enrollment.welcomeHint')}</p>
+            </div>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={handleBack}
+              disabled={currentStep === 1 || isSaving || isEnrollmentLocked || !enrollmentAllowed}
+              className="border-gray-300"
+            >
+              <ChevronLeft className="w-4 h-4 mr-2" />
+              {t('form.nav.back')}
+            </Button>
+          )}
           {currentStep < 6 ? (
             <Button
               onClick={handleNext}
@@ -3563,7 +3645,7 @@ export function StudentEnrollment() {
               }
               className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
             >
-              {isSaving ? 'Saving...' : 'Next'}
+              {isSaving ? t('form.nav.saving') : t('form.nav.next')}
               <ChevronRight className="w-4 h-4 ml-2" />
             </Button>
           ) : (
@@ -3574,7 +3656,7 @@ export function StudentEnrollment() {
               className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <CheckCircle className="w-4 h-4 mr-2" />
-              {isSaving ? 'Submitting...' : 'Submit Application'}
+              {isSaving ? t('form.nav.submitting') : t('form.nav.submit')}
             </Button>
           )}
         </div>
@@ -3583,30 +3665,27 @@ export function StudentEnrollment() {
       <AlertDialog open={missingParentDialogOpen} onOpenChange={setMissingParentDialogOpen}>
         <AlertDialogContent className="sm:max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-[#8B1538]">Parent information incomplete</AlertDialogTitle>
+            <AlertDialogTitle className="text-[#8B1538]">{t('form.dialog.parentTitle')}</AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-2 text-sm text-gray-600">
                 <p>
-                  You did not fill in{' '}
-                  <span className="font-medium text-gray-900">
-                    {missingParentParts.join(' and ')}
-                  </span>{' '}
-                  information.
+                  {t('form.dialog.parentBody', {
+                    parts: missingParentParts.join(
+                      locale === 'tl' ? ' at ' : ' and ',
+                    ),
+                  })}
                 </p>
-                <p>
-                  You can still continue if this matches your household (for example, single-parent or
-                  guardian-led homes).
-                </p>
+                <p>{t('form.dialog.parentHint')}</p>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Go back</AlertDialogCancel>
+            <AlertDialogCancel>{t('form.dialog.goBack')}</AlertDialogCancel>
             <AlertDialogAction
               className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
               onClick={() => void handleMissingParentContinue()}
             >
-              Continue anyway
+              {t('form.dialog.continue')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

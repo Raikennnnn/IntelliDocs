@@ -12,6 +12,7 @@ require_once __DIR__ . '/school_year_helpers.php';
 require_once __DIR__ . '/enrollment_status_helpers.php';
 require_once __DIR__ . '/cohort_helpers.php';
 require_once __DIR__ . '/grade12_continuation_helpers.php';
+require_once __DIR__ . '/strand_helpers.php';
 require_once __DIR__ . '/user_consents.php';
 require_once __DIR__ . '/document_authenticity_consent.php';
 require_once __DIR__ . '/section_assignment.php';
@@ -677,6 +678,9 @@ if ($method === 'POST') {
     $documentsAuthenticityConfirmed = parseConsentFlag($payload['documents_authenticity_confirmed'] ?? false);
     if (!is_array($formData)) {
         $formData = [];
+    }
+    if (isset($formData['strand'])) {
+        $formData['strand'] = normalizeStrandCode((string)$formData['strand']);
     }
 
     $gradeLevel = (string)($formData['gradeLevel'] ?? '');

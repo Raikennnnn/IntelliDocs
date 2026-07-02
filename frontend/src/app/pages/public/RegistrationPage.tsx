@@ -294,8 +294,10 @@ export function RegistrationPage() {
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
-          className="flex w-full min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 py-4 pb-8 sm:px-6 sm:py-6 lg:w-1/2"
-          style={{ backgroundColor: BRAND.surface }}
+          className="flex w-full min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 py-6 pb-10 sm:px-6 sm:py-8 lg:w-1/2"
+          style={{
+            background: `linear-gradient(160deg, ${BRAND.greenLight} 0%, ${BRAND.surface} 42%, #ffffff 100%)`,
+          }}
         >
           <div className="w-full max-w-md">
             <button
@@ -308,6 +310,10 @@ export function RegistrationPage() {
               <span className="text-sm font-medium">Back</span>
             </button>
 
+            <div
+              className="rounded-2xl border border-gray-200 bg-white p-5 shadow-xl sm:p-7"
+              style={{ borderTopWidth: 4, borderTopColor: BRAND.maroon }}
+            >
             {step === 'register' ? (
               <>
                 <PublicSectionEyebrow>Register</PublicSectionEyebrow>
@@ -579,29 +585,42 @@ export function RegistrationPage() {
               </form>
             </>
             )}
+            </div>
           </div>
         </div>
 
         <div
           className="relative hidden h-full min-h-0 overflow-hidden lg:block lg:w-1/2"
-          style={{ backgroundColor: BRAND.surface }}
+          style={{
+            background: `linear-gradient(150deg, ${BRAND.greenLight} 0%, ${BRAND.surface} 45%, #ffffff 100%)`,
+          }}
         >
           <img
             src={registrationImage}
             alt="NSDGA students and vocational programs"
             className="h-full w-full object-contain object-center"
           />
-          <div className="absolute bottom-0 left-[38%] z-[2] w-[18rem] -translate-x-1/2 p-5 text-left sm:w-[20rem] sm:p-7">
-            <PublicSectionEyebrow>NSDGA Marikina</PublicSectionEyebrow>
-            <p className="text-xl font-bold leading-tight" style={{ color: BRAND.maroon }}>
-              Senior High School
-            </p>
-            <p className="mt-1 text-lg font-semibold" style={{ color: BRAND.green }}>
-              Register
-            </p>
-            <p className="mt-3 max-w-sm text-xs" style={{ color: BRAND.slate }}>
-              Grades 11 &amp; 12 — Academic and TVL strands with online document submission.
-            </p>
+          <div
+            className="pointer-events-none absolute inset-0 z-[1]"
+            style={{
+              background:
+                'linear-gradient(to top, rgba(0,0,0,0.74) 0%, rgba(0,0,0,0.30) 34%, rgba(0,0,0,0) 62%)',
+            }}
+            aria-hidden
+          />
+          <div className="absolute inset-x-0 bottom-0 z-[2] p-8 lg:p-10">
+            <div className="max-w-md rounded-2xl border border-white/15 bg-black/35 p-6 shadow-2xl backdrop-blur-md">
+              <PublicSectionEyebrow light>NSDGA Marikina</PublicSectionEyebrow>
+              <p className="text-2xl font-bold leading-tight text-white">
+                Senior High School
+              </p>
+              <p className="mt-1 text-base font-semibold" style={{ color: BRAND.heroAccent }}>
+                Online Registration
+              </p>
+              <p className="mt-3 max-w-sm text-sm leading-relaxed text-white/85">
+                Grades 11 &amp; 12 — Academic and TECHPRO strands with online document submission.
+              </p>
+            </div>
           </div>
         </div>
       </div>

@@ -22,7 +22,6 @@ import {
   Users,
 } from 'lucide-react';
 
-import applicationFormSample from '../../assets/admission-samples/application-form.svg';
 import reportCardSf9Sample from '../../assets/admission-samples/report-card-sf9.svg';
 import sf10Form137Sample from '../../assets/admission-samples/sf10-form137.svg';
 import psaBirthSample from '../../assets/admission-samples/psa-birth-certificate.svg';
@@ -114,7 +113,6 @@ function AdmissionSampleImage({
 }
 
 const admissionRequirements = [
-  { label: 'Completed Application Form', slug: 'application-form', fallbackSrc: applicationFormSample },
   { label: 'Copy of Report Card (Form 9 / SF9)', slug: 'report-card-sf9', fallbackSrc: reportCardSf9Sample },
   { label: 'SF10 / Form 137', slug: 'sf10-form137', fallbackSrc: sf10Form137Sample },
   { label: 'PSA Birth Certificate', slug: 'psa-birth-certificate', fallbackSrc: psaBirthSample },

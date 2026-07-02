@@ -7,25 +7,27 @@ import { PublicSectionEyebrow } from './PublicSectionEyebrow';
 
 export function AuthPageHeader() {
   return (
-    <header className="relative z-20 flex h-14 w-full items-center border-b border-white/10 bg-[#8b1538]/95 px-4 shadow-md backdrop-blur-sm sm:h-16 sm:px-6 lg:px-8">
+    <header className="relative z-20 w-full border-b border-white/10 bg-[#8b1538]/95 shadow-md backdrop-blur-sm">
       <div
         className="pointer-events-none absolute inset-y-0 left-0 w-1.5 sm:w-2"
         style={{ backgroundColor: BRAND.green }}
         aria-hidden
       />
-      <Link to="/landing" className="flex min-w-0 items-center gap-2 sm:gap-3 pl-2 sm:pl-3">
-        <div className="size-9 shrink-0 sm:size-10">
-          <img alt="NSDGA" className="h-full w-full object-contain" src={schoolLogo} />
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-bold leading-tight text-white sm:text-base">
-            Nuestra Señora De Guia
-          </p>
-          <p className="truncate text-[11px] font-semibold text-white/90 sm:text-xs">
-            Academy of Marikina
-          </p>
-        </div>
-      </Link>
+      <div className="section-container flex h-16 items-center">
+        <Link to="/landing" className="flex min-w-0 items-center gap-3">
+          <div className="size-10 shrink-0">
+            <img alt="NSDGA" className="h-full w-full object-contain" src={schoolLogo} />
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-base font-bold leading-tight text-white">
+              Nuestra Señora De Guia
+            </p>
+            <p className="truncate text-xs font-semibold text-white/90">
+              Academy of Marikina
+            </p>
+          </div>
+        </Link>
+      </div>
     </header>
   );
 }

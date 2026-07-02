@@ -27,26 +27,35 @@ import {
   UsersRound,
   Layers,
 } from 'lucide-react';
+import { useStudentLocaleOptional } from '../context/StudentLocaleContext';
+import { STUDENT_NAV_PATH_KEYS } from '../lib/studentLocale';
+import { StudentLanguageToggle } from '../components/student/StudentLanguageToggle';
 
 interface DashboardLayoutProps {
   children: ReactNode;
   navigation: Array<{ name: string; path: string; icon: React.ComponentType<{ className?: string }> }>;
+  studentPortal?: boolean;
 }
 
 function DashboardNavLinks({
   navigation,
   location,
   onNavigate,
+  studentLocale,
 }: {
   navigation: DashboardLayoutProps['navigation'];
   location: ReturnType<typeof useLocation>;
   onNavigate?: () => void;
+  studentLocale: ReturnType<typeof useStudentLocaleOptional>;
 }) {
   return (
     <nav className="space-y-1">
       {navigation.map((item) => {
         const active =
           location.pathname === item.path || location.pathname.startsWith(`${item.path}/`);
+        const labelKey = STUDENT_NAV_PATH_KEYS[item.path];
+        const label =
+          studentLocale && labelKey ? studentLocale.t(labelKey) : item.name;
         return (
           <Link
             key={item.path}
@@ -57,7 +66,7 @@ function DashboardNavLinks({
             }`}
           >
             <item.icon className="h-5 w-5 shrink-0" />
-            <span className="text-sm sm:text-base">{item.name}</span>
+            <span className="text-sm sm:text-base">{label}</span>
           </Link>
         );
       })}
@@ -65,11 +74,12 @@ function DashboardNavLinks({
   );
 }
 
-export function DashboardLayout({ children, navigation }: DashboardLayoutProps) {
+export function DashboardLayout({ children, navigation, studentPortal = false }: DashboardLayoutProps) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const studentLocale = useStudentLocaleOptional();
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -112,7 +122,8 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
               <p className="truncate text-xs capitalize text-white/80 sm:text-sm">{user?.role} Portal</p>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2 sm:gap-4">
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            {studentPortal && studentLocale ? <StudentLanguageToggle /> : null}
             <div className="hidden max-w-[180px] text-right md:block lg:max-w-none">
               <p className="truncate text-sm font-medium text-white">{user?.name}</p>
               <p className="truncate text-xs text-green-100">{user?.email}</p>
@@ -124,7 +135,9 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
               className="border-white bg-white px-2 text-[#8B1538] hover:bg-green-50 sm:px-3"
             >
               <LogOut className="h-4 w-4 sm:mr-2" />
-              <span className="hidden sm:inline">Logout</span>
+              <span className="hidden sm:inline">
+                {studentLocale ? studentLocale.t('nav.logout') : 'Logout'}
+              </span>
             </Button>
           </div>
         </div>
@@ -133,21 +146,31 @@ export function DashboardLayout({ children, navigation }: DashboardLayoutProps) 
       <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
         <SheetContent side="left" className="w-[min(100vw-2rem,18rem)] p-0">
           <SheetHeader className="border-b border-gray-200 px-4 py-4 text-left">
-            <SheetTitle className="text-base text-[#8B1538]">Menu</SheetTitle>
-            <p className="text-xs text-gray-500 capitalize">{user?.role} portal</p>
+            <SheetTitle className="text-base text-[#8B1538]">
+              {studentLocale ? studentLocale.t('nav.menu') : 'Menu'}
+            </SheetTitle>
+            <p className="text-xs text-gray-500 capitalize">
+              {studentLocale ? studentLocale.t('nav.portal') : `${user?.role} portal`}
+            </p>
           </SheetHeader>
           <div className="overflow-y-auto p-4">
+            {studentPortal && studentLocale ? (
+              <div className="mb-4">
+                <StudentLanguageToggle className="w-full border-gray-200 bg-gray-50 p-1 [&_button]:flex-1 [&_button.text-white]:text-gray-700 [&_button.bg-white]:bg-white [&_button.bg-white]:text-[#8B1538]" />
+              </div>
+            ) : null}
             <DashboardNavLinks
               navigation={navigation}
               location={location}
               onNavigate={() => setMobileNavOpen(false)}
+              studentLocale={studentLocale}
             />
           </div>
         </SheetContent>
       </Sheet>
 
       <aside className="fixed left-0 top-16 z-40 hidden h-[calc(100vh-4rem)] w-64 overflow-y-auto border-r border-gray-200 bg-white p-4 lg:block">
-        <DashboardNavLinks navigation={navigation} location={location} />
+        <DashboardNavLinks navigation={navigation} location={location} studentLocale={studentLocale} />
       </aside>
 
       <main className="min-h-screen overflow-x-hidden pt-14 sm:pt-16 lg:ml-64">

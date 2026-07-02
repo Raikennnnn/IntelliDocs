@@ -37,6 +37,41 @@ function queueEmail(PDO $pdo, string $recipientEmail, string $subject, string $b
 }
 
 /**
+ * Detects whether a queued email body is already a full HTML document/fragment
+ * (so we can send it as-is) versus legacy plain text (auto-wrapped).
+ */
+function emailBodyIsHtml(string $body): bool
+{
+    $trimmed = ltrim($body);
+    if ($trimmed === '' || $trimmed[0] !== '<') {
+        return false;
+    }
+
+    return stripos($trimmed, '<!doctype') !== false
+        || stripos($trimmed, '<html') !== false
+        || stripos($trimmed, '<table') !== false
+        || stripos($trimmed, '<div') !== false;
+}
+
+/**
+ * Produces a readable plain-text fallback from an HTML email body for clients
+ * that prefer text/plain (and for Brevo's textContent field).
+ */
+function emailHtmlToPlainText(string $html): string
+{
+    $text = preg_replace('/<(head|style|script)\b[^>]*>.*?<\/\1>/is', '', $html) ?? $html;
+    $text = preg_replace('/<br\s*\/?>/i', "\n", $text) ?? $text;
+    $text = preg_replace('/<\/(p|div|tr|h[1-6]|li|td)>/i', "\n", $text) ?? $text;
+    $text = strip_tags($text);
+    $text = html_entity_decode($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $text = preg_replace('/[ \t]+/', ' ', $text) ?? $text;
+    $text = preg_replace('/\n[ \t]+/', "\n", $text) ?? $text;
+    $text = preg_replace('/\n{3,}/', "\n\n", $text) ?? $text;
+
+    return trim($text);
+}
+
+/**
  * Brevo transactional email API transport (optional, production friendly).
  */
 function sendViaBrevo(string $recipientEmail, string $subject, string $bodyText): array
@@ -53,14 +88,20 @@ function sendViaBrevo(string $recipientEmail, string $subject, string $bodyText)
         return [false, 'PHP cURL extension is not enabled on this host'];
     }
 
+    $isHtml = emailBodyIsHtml($bodyText);
+    $htmlContent = $isHtml
+        ? $bodyText
+        : '<div style="font-family:Arial,sans-serif;line-height:1.5;color:#111">'
+            . nl2br(htmlspecialchars($bodyText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'))
+            . '</div>';
+    $textContent = $isHtml ? emailHtmlToPlainText($bodyText) : $bodyText;
+
     $payload = json_encode([
         'sender' => ['email' => $fromEmail, 'name' => $fromName],
         'to' => [['email' => $recipientEmail]],
         'subject' => $subject,
-        'textContent' => $bodyText,
-        'htmlContent' => '<div style="font-family:Arial,sans-serif;line-height:1.5;color:#111">'
-            . nl2br(htmlspecialchars($bodyText, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'))
-            . '</div>',
+        'textContent' => $textContent,
+        'htmlContent' => $htmlContent,
     ], JSON_UNESCAPED_UNICODE);
 
     $ch = curl_init('https://api.brevo.com/v3/smtp/email');
@@ -96,9 +137,11 @@ function sendViaPhpMail(string $recipientEmail, string $subject, string $bodyTex
 {
     $fromEmail = (string)(getenv('MAIL_FROM_ADDRESS') ?: 'no-reply@intellidocs.local');
     $fromName = (string)(getenv('MAIL_FROM_NAME') ?: 'Nuestra Señora De Guia Academy');
+    $isHtml = emailBodyIsHtml($bodyText);
     $headers = [
         'From: ' . $fromName . ' <' . $fromEmail . '>',
-        'Content-Type: text/plain; charset=UTF-8',
+        'MIME-Version: 1.0',
+        'Content-Type: ' . ($isHtml ? 'text/html' : 'text/plain') . '; charset=UTF-8',
     ];
     $ok = @mail($recipientEmail, $subject, $bodyText, implode("\r\n", $headers));
     return $ok ? [true, null] : [false, 'PHP mail() failed'];

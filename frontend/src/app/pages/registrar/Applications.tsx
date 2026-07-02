@@ -20,6 +20,7 @@ import {
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { apiFetch } from "../../lib/api";
+import { STRANDS, formatStrandDisplay, normalizeStrandCode } from "../../lib/strands";
 
 interface Application {
   id: string;
@@ -136,7 +137,8 @@ export function Applications() {
       app.email.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesFilter =
       filterStatus === "All" || app.status === filterStatus;
-    const matchesStrand = filterStrand === "All" || app.strand === filterStrand;
+    const matchesStrand =
+      filterStrand === "All" || normalizeStrandCode(app.strand) === filterStrand;
     const matchesGradeLevel =
       filterGradeLevel === "All" || app.gradeLevel === filterGradeLevel;
     return matchesSearch && matchesFilter && matchesStrand && matchesGradeLevel;
@@ -244,12 +246,11 @@ export function Applications() {
                 className="h-10 px-3 rounded-md border border-gray-300 bg-white text-sm focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]"
               >
                 <option value="All">All Strands</option>
-                <option value="STEM">STEM</option>
-                <option value="HUMSS">HUMSS</option>
-                <option value="ABM">ABM</option>
-                <option value="TVL-ICT">TVL-ICT</option>
-                <option value="TVL-EIM">TVL-EIM</option>
-                <option value="TVL-BPP/FBS">TVL-BPP/FBS</option>
+                {STRANDS.map((strand) => (
+                  <option key={strand.code} value={strand.code}>
+                    {formatStrandDisplay(strand.code)}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="flex items-center gap-2">

@@ -39,6 +39,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
 import { apiFetch, formatApiError, parseApiJson } from "../../lib/api";
+import { formatStrandDisplay } from "../../lib/strands";
 import {
   getSchoolYearAttendedOptions,
   isValidSchoolYearAttended,
@@ -1035,7 +1036,7 @@ function formatCrossCheckDetected(field: string, detected: string): string {
       .replace(/^TO WHOM IT MAY CONCERN[,:\s]*/i, "")
       .replace(/\s+OF\s+GRADE\s+\d+.*$/i, "")
       .replace(/\s+IS\s+A\s+.*$/i, "")
-      .replace(/\s*-\s*(HUMSS|STEM|ABM|ICT|EIM|GAS|TVL|BPP|FBS).*$/i, "");
+      .replace(/\s*-\s*(ASSH|HUMSS|STEM|BAE|ABM|CP|ICT|IT|EIM|HT|GAS|TVL|TECHPRO|BPP|FBS).*$/i, "");
     const certMatch = d.match(
       /\b([A-Z][A-Za-z.'-]+(?:\s+(?:[A-Z]\.?|[A-Z][A-Za-z.'-]+)){1,5})\b/i,
     );
@@ -1467,7 +1468,7 @@ export function ReviewDocuments() {
             );
           }
         } else if (sa.warning === 'eim_female_manual_placement') {
-          toast.warning('Female applicant for EIM was not auto-placed. Please assign her section manually from the Sections page.');
+          toast.warning('Female applicant for Industrial Technologies (TECHPRO - IT) was not auto-placed. Please assign her section manually from the Sections page.');
         } else if (sa.warning) {
           toast.warning('Section auto-assignment was skipped. Please assign this student to a section manually.');
         }
@@ -2122,7 +2123,7 @@ export function ReviewDocuments() {
             </div>
             <div>
               <p className="text-gray-600">Strand</p>
-              <p className="font-medium">{application.strand}</p>
+              <p className="font-medium">{formatStrandDisplay(application.strand)}</p>
             </div>
           </div>
         </CardContent>
@@ -2369,7 +2370,7 @@ export function ReviewDocuments() {
                 </div>
                 <div>
                   <p className="text-gray-600">Strand</p>
-                  <p className="font-medium">{application.strand}</p>
+                  <p className="font-medium">{formatStrandDisplay(application.strand)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Preferred Schedule</p>
@@ -3162,7 +3163,7 @@ export function ReviewDocuments() {
                       <div>
                         <p className="text-xs text-gray-500">Strand / Grade</p>
                         <p className="font-medium">
-                          {selectedDocument.strand} — Grade {selectedDocument.gradeLevel}
+                          {formatStrandDisplay(selectedDocument.strand)} — Grade {selectedDocument.gradeLevel}
                         </p>
                       </div>
                     </div>

@@ -183,6 +183,16 @@ export async function parseApiJson<T>(
   const text = await res.text();
   const trimmed = text.trim();
   if (trimmed.startsWith('<!') || trimmed.toLowerCase().startsWith('<html')) {
+    if (status === 524 || /error code:\s*524|cloudflare/i.test(trimmed)) {
+      return {
+        ok: false,
+        status,
+        error:
+          'Cloudflare timed out (HTTP 524) while waiting for document verification. ' +
+            'OCR can take 1–3 minutes per file. In Cloudflare DNS, set the domain to DNS only (grey cloud), ' +
+            'or on the droplet run: bash scripts/fix_ai_502_droplet.sh',
+      };
+    }
     if (status === 502 || status === 504 || /gateway timeout|bad gateway/i.test(trimmed)) {
       return {
         ok: false,

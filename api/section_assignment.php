@@ -10,7 +10,7 @@ declare(strict_types=1);
  *      name ascending — A, B, C, …).
  *   2. When every existing section for that strand is full, automatically
  *      create the next section using the next free letter (A → B → C → …).
- *   3. Special case for the "TVL - EIM" strand: it is boys-first. A male
+ *   3. Special case for the "TECHPRO - IT" strand: it is boys-first. A male
  *      student is auto-assigned as usual; a female student is NOT
  *      auto-assigned — instead we return a warning so the registrar can
  *      manually place her (so the registrar consciously decides whether to
@@ -39,7 +39,7 @@ if (!function_exists('columnExists')) {
 }
 
 /** Strands where the entire roster is reserved for boys by default. */
-const SECTION_BOYS_FIRST_STRAND_LIST = ['TVL - EIM'];
+const SECTION_BOYS_FIRST_STRAND_LIST = ['TECHPRO - IT', 'TVL - EIM'];
 const SECTION_AUTO_DEFAULT_BOYS = 23;
 const SECTION_AUTO_DEFAULT_GIRLS = 22;
 const SECTION_AUTO_BOYS_FIRST_BOYS = 45;
@@ -146,7 +146,11 @@ function ensureSectionAssignmentSchema(PDO $pdo): void
 /** True for strands that default to boys-first rosters (EIM today). */
 function isBoysFirstStrandFor(string $strand): bool
 {
-    return in_array($strand, SECTION_BOYS_FIRST_STRAND_LIST, true);
+    if (!function_exists('isBoysFirstStrandCode')) {
+        require_once __DIR__ . '/strand_helpers.php';
+    }
+
+    return isBoysFirstStrandCode($strand);
 }
 
 /** Normalise gender strings to "male", "female", or "" for unknown. */

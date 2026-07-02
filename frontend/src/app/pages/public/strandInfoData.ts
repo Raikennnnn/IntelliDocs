@@ -18,12 +18,12 @@ export const STRAND_SLUGS: StrandSlug[] = ['humss', 'abm', 'stem', 'ict', 'eim',
 export const STRAND_INFO: Record<StrandSlug, StrandInfo> = {
   humss: {
     slug: 'humss',
-    title: 'Humanities and Social Sciences',
-    shorthand: 'HUMSS',
+    title: 'Arts, Social Sciences, and Humanities',
+    shorthand: 'ASSH',
     trackLabel: 'Academic Track',
     trackType: 'academic',
     intro:
-      'HUMSS develops strong reading, writing, research, and critical thinking skills through the lens of people, society, and culture.',
+      'ASSH develops strong reading, writing, research, and critical thinking skills through the lens of people, society, and culture.',
     overview: [
       'You will engage with literature, history, philosophy, politics, and communication—disciplines that help explain how communities work and how ideas shape the world.',
       'This strand is a strong fit if you see yourself in education, law, public service, media, psychology, or the liberal arts at the tertiary level.',
@@ -45,12 +45,12 @@ export const STRAND_INFO: Record<StrandSlug, StrandInfo> = {
   },
   abm: {
     slug: 'abm',
-    title: 'Accountancy, Business, and Management',
-    shorthand: 'ABM',
+    title: 'Business and Entrepreneurship',
+    shorthand: 'BAE',
     trackLabel: 'Academic Track',
     trackType: 'academic',
     intro:
-      'ABM introduces how organizations create value: accounting fundamentals, marketing, entrepreneurship, and how financial decisions support business goals.',
+      'BAE introduces how organizations create value: accounting fundamentals, marketing, entrepreneurship, and how financial decisions support business goals.',
     overview: [
       'You will practice basic bookkeeping and financial literacy, explore how products reach customers, and learn what it takes to plan and pitch a small venture.',
       'The strand suits learners who enjoy organizing information, working with numbers, and leading projects or teams.',
@@ -99,15 +99,15 @@ export const STRAND_INFO: Record<StrandSlug, StrandInfo> = {
   },
   ict: {
     slug: 'ict',
-    title: 'Information and Communications Technology',
-    shorthand: 'ICT',
-    trackLabel: 'Technical-Vocational-Livelihood (TVL)',
+    title: 'Computer Programming',
+    shorthand: 'CP',
+    trackLabel: 'TECHPRO',
     trackType: 'tvl',
     intro:
-      'ICT focuses on how computers, networks, and software work together so learners can support digital systems in school, community, or workplace settings.',
+      'Computer Programming focuses on how computers, networks, and software work together so learners can build and support digital systems.',
     overview: [
       'Hands-on topics typically include computer assembly and maintenance, networking basics, programming logic, and productivity tools used in modern offices.',
-      'TVL ICT can lead to national certifications (NC) that recognize skills employers value, alongside options to continue in IT-related college programs.',
+      'TECHPRO Computer Programming can lead to national certifications (NC) that recognize skills employers value, alongside options to continue in IT-related college programs.',
     ],
     focusAreas: [
       'Computer systems and troubleshooting',
@@ -125,12 +125,12 @@ export const STRAND_INFO: Record<StrandSlug, StrandInfo> = {
   },
   eim: {
     slug: 'eim',
-    title: 'Electrical Installation and Maintenance',
-    shorthand: 'EIM',
-    trackLabel: 'Technical-Vocational-Livelihood (TVL)',
+    title: 'Industrial Technologies',
+    shorthand: 'IT',
+    trackLabel: 'TECHPRO',
     trackType: 'tvl',
     intro:
-      'EIM trains safe practices in residential and commercial electrical wiring, fault finding, and maintenance aligned to industry standards.',
+      'Industrial Technologies trains safe practices in residential and commercial electrical wiring, fault finding, and maintenance aligned to industry standards.',
     overview: [
       'You will read plans and symbols, select materials, install and test circuits, and maintain equipment while following occupational health and safety rules.',
       'This strand suits learners who prefer concrete tasks, working with tools, and clear procedures that connect directly to trade and industry jobs.',
@@ -150,12 +150,12 @@ export const STRAND_INFO: Record<StrandSlug, StrandInfo> = {
   },
   'bpp-fbs': {
     slug: 'bpp-fbs',
-    title: 'Bread and Pastry Production / Food and Beverage Services',
-    shorthand: 'BPP / FBS',
-    trackLabel: 'Technical-Vocational-Livelihood (TVL)',
+    title: 'Hospitality and Tourism',
+    shorthand: 'HT',
+    trackLabel: 'TECHPRO',
     trackType: 'tvl',
     intro:
-      'This specialization combines kitchen production skills with front-of-house service so learners understand both how food is made and how guests are cared for.',
+      'Hospitality and Tourism combines kitchen production skills with front-of-house service so learners understand both how food is made and how guests are cared for.',
     overview: [
       'Bread and Pastry Production covers mixing methods, baking, plating, and quality checks; Food and Beverage Services covers service sequence, sanitation, and guest experience.',
       'Expect a mix of kitchen lab work, service simulations, and lessons on hygiene, costing, and teamwork in hospitality settings.',

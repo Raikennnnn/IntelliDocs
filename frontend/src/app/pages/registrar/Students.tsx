@@ -44,6 +44,7 @@ import {
   DialogDescription,
 } from "../../components/ui/dialog";
 import { toast } from "sonner";
+import { normalizeStrandCode, STRAND_CODES, formatStrandDisplay } from "../../lib/strands";
 
 type Student = {
   userId: number;
@@ -94,16 +95,8 @@ type Student = {
   preferredShift?: "morning" | "afternoon" | null;
 };
 
-/** One row of the reassignment endpoint's `sections` list. */
 /** Canonical strands — keep in sync with api/registrar_sections.php SECTION_STRANDS. */
-const REGISTRAR_STRANDS = [
-  "STEM",
-  "HUMSS",
-  "ABM",
-  "TVL - ICT",
-  "TVL - EIM",
-  "TVL - BPP/FBS",
-] as const;
+const REGISTRAR_STRANDS = [...STRAND_CODES];
 
 type ReassignSectionOption = {
   id: number;

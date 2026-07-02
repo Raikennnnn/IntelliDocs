@@ -2,9 +2,14 @@ import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const symlinkRoot = path.resolve(process.cwd());
+const realRoot = fs.realpathSync(symlinkRoot);
+const viteClientRoot = path.resolve(symlinkRoot, './node_modules/vite/dist/client');
+const clientRootReal = fs.existsSync(viteClientRoot) ? fs.realpathSync(viteClientRoot) : viteClientRoot;
+const allowedRoots = [symlinkRoot, realRoot, clientRootReal].filter(Boolean);
 
 function figmaAssetPlugin(): Plugin {
   return {
@@ -47,72 +52,76 @@ function resolveViteBase(env: Record<string, string>): string {
 }
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, __dirname, '');
+  const env = loadEnv(mode, realRoot, '');
   const phpPublicBase = env.VITE_API_BASE || '/IntelliDocs/public';
   const apiTarget = env.VITE_API_TARGET || 'http://127.0.0.1';
 
   return {
-  // Dev server stays at / ; production build uses subpath on XAMPP or / on droplet.
-  base: mode === 'production' ? resolveViteBase(env) : '/',
-  plugins: [tailwindcss(), figmaAssetPlugin(), react()],
-  server: {
-    host: '127.0.0.1',
-    port: 3001,
-    strictPort: false,
-    proxy: {
-      '/api': {
-        target: apiTarget,
-        changeOrigin: true,
-        secure: false,
-        rewrite: (reqPath) => phpPublicBase + reqPath,
+    root: realRoot,
+    base: mode === 'production' ? resolveViteBase(env) : '/',
+    plugins: [tailwindcss(), figmaAssetPlugin(), react()],
+    server: {
+      host: '127.0.0.1',
+      port: 3001,
+      strictPort: false,
+      fs: {
+        strict: false,
+        allow: allowedRoots,
       },
-      '/IntelliDocs/public/uploads': {
-        target: apiTarget,
-        changeOrigin: true,
-        secure: false,
-      },
-      '/uploads': {
-        target: apiTarget,
-        changeOrigin: true,
-        secure: false,
-        rewrite: (reqPath) => phpPublicBase + reqPath,
-      },
-    },
-  },
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src/app'),
-    },
-  },
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes('node_modules')) {
-            return undefined;
-          }
-          if (id.includes('react-dom') || id.includes('react-router') || /\/react\//.test(id)) {
-            return 'vendor-react';
-          }
-          if (id.includes('@radix-ui')) {
-            return 'vendor-radix';
-          }
-          if (id.includes('lucide-react')) {
-            return 'vendor-icons';
-          }
-          if (id.includes('recharts') || id.includes('d3-')) {
-            return 'vendor-charts';
-          }
-          if (id.includes('@mui') || id.includes('@emotion')) {
-            return 'vendor-mui';
-          }
-          if (id.includes('react-pdf') || id.includes('pdfjs-dist')) {
-            return 'vendor-pdf';
-          }
-          return undefined;
+      proxy: {
+        '/api': {
+          target: apiTarget,
+          changeOrigin: true,
+          secure: false,
+          rewrite: (reqPath) => phpPublicBase + reqPath,
+        },
+        '/IntelliDocs/public/uploads': {
+          target: apiTarget,
+          changeOrigin: true,
+          secure: false,
+        },
+        '/uploads': {
+          target: apiTarget,
+          changeOrigin: true,
+          secure: false,
+          rewrite: (reqPath) => phpPublicBase + reqPath,
         },
       },
     },
-  },
-};
+    resolve: {
+      alias: {
+        '@': path.resolve(realRoot, './src/app'),
+      },
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) {
+              return undefined;
+            }
+            if (id.includes('react-dom') || id.includes('react-router') || /\/react\//.test(id)) {
+              return 'vendor-react';
+            }
+            if (id.includes('@radix-ui')) {
+              return 'vendor-radix';
+            }
+            if (id.includes('lucide-react')) {
+              return 'vendor-icons';
+            }
+            if (id.includes('recharts') || id.includes('d3-')) {
+              return 'vendor-charts';
+            }
+            if (id.includes('@mui') || id.includes('@emotion')) {
+              return 'vendor-mui';
+            }
+            if (id.includes('react-pdf') || id.includes('pdfjs-dist')) {
+              return 'vendor-pdf';
+            }
+            return undefined;
+          },
+        },
+      },
+    },
+  };
 });
