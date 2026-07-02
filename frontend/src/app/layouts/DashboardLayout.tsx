@@ -156,7 +156,7 @@ export function DashboardLayout({ children, navigation, studentPortal = false }:
           <div className="overflow-y-auto p-4">
             {studentPortal && studentLocale ? (
               <div className="mb-4">
-                <StudentLanguageToggle className="w-full border-gray-200 bg-gray-50 p-1 [&_button]:flex-1 [&_button.text-white]:text-gray-700 [&_button.bg-white]:bg-white [&_button.bg-white]:text-[#8B1538]" />
+                <StudentLanguageToggle variant="drawer" className="w-full [&_button]:flex-1" />
               </div>
             ) : null}
             <DashboardNavLinks
