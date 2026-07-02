@@ -22,6 +22,10 @@ for f in favicon.png apple-touch-icon.png; do
     cp "$APP_DIR/$f" "$ROOT/$f"
   fi
 done
+if [ -d "$APP_DIR/admission-samples" ]; then
+  mkdir -p "$ROOT/admission-samples"
+  cp -r "$APP_DIR/admission-samples/"* "$ROOT/admission-samples/"
+fi
 # Drop legacy CodeIgniter flame icon if present
 rm -f "$ROOT/favicon.ico"
 

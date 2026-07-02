@@ -68,6 +68,11 @@ rm -rf "$APP_ROOT/public/app/"*
 cp -r dist/* "$APP_ROOT/public/app/"
 bash "$APP_ROOT/scripts/sync_spa_to_root.sh"
 
+if [ -d dist/admission-samples ]; then
+  mkdir -p "$APP_ROOT/public/admission-samples"
+  cp -r dist/admission-samples/* "$APP_ROOT/public/admission-samples/"
+fi
+
 step "Verify all JS chunks exist"
 bash "$APP_ROOT/scripts/verify_frontend_assets.sh"
 

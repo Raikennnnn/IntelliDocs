@@ -6,7 +6,7 @@ sf10-form137.jpg
 psa-birth-certificate.jpg
 id-picture-2x2.jpg
 good-moral-certificate.jpg
-transcript-tor.jpg
+transcript-tor.png
 
 After `npm run build`, copy these files into dist/admission-samples/ as well if you deploy only the dist folder.
 
