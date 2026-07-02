@@ -25,6 +25,16 @@ import {
   Archive
 } from 'lucide-react';
 
+/** Fixed action column widths so enrollment controls align across every school year row. */
+const SCHOOL_YEAR_ACTION_SLOTS =
+  'flex items-center justify-end gap-2 w-full min-w-[41rem]';
+const SCHOOL_YEAR_ACTION_SLOT_PRIMARY = 'w-[10.75rem] shrink-0 flex justify-end';
+const SCHOOL_YEAR_ACTION_SLOT_ONGOING = 'w-[8.25rem] shrink-0 flex justify-end';
+const SCHOOL_YEAR_ACTION_SLOT_END = 'w-[9.75rem] shrink-0 flex justify-end';
+const SCHOOL_YEAR_ACTION_SLOT_HIDE = 'w-[6.25rem] shrink-0 flex justify-end';
+const SCHOOL_YEAR_ACTION_SLOT_DELETE = 'w-[5.75rem] shrink-0 flex justify-end';
+const SCHOOL_YEAR_ACTION_BUTTON = 'w-full whitespace-nowrap';
+
 /** Parse "YYYY-YYYY" for date pickers and suggested academic-year bounds. */
 function parseSchoolYearInput(input: string): {
   startYear: number;
@@ -724,7 +734,7 @@ export function SchoolYearManagement() {
                   <TableHead className="font-semibold text-center">Status</TableHead>
                   <TableHead className="font-semibold text-center">Enrolled Students</TableHead>
                   <TableHead className="font-semibold">Created By</TableHead>
-                  <TableHead className="font-semibold text-center">Actions</TableHead>
+                  <TableHead className="font-semibold text-right min-w-[41rem]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -791,93 +801,107 @@ export function SchoolYearManagement() {
                       <span className="text-2xl font-bold text-gray-900">{sy.enrolledStudents}</span>
                     </TableCell>
                     <TableCell className="text-sm text-gray-600">{sy.createdBy}</TableCell>
-                    <TableCell className="text-center">
-                      <div className="flex items-center justify-center gap-2 flex-wrap">
-                      {sy.status === 'Inactive' && !isEnded ? (
-                        <Button
-                          size="sm"
-                          onClick={() => handleActivateSchoolYear(sy)}
-                          disabled={isSaving}
-                          className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
-                        >
-                          <Power className="w-4 h-4 mr-1" />
-                          Set Enrollment
-                        </Button>
-                      ) : isEnded ? (
-                        <Button
-                          size="sm"
-                          onClick={() => handleReopenEnrollment(sy)}
-                          disabled={isSaving}
-                          className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
-                        >
-                          <Power className="w-4 h-4 mr-1" />
-                          Reopen enrollment
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleCloseEnrollment(sy)}
-                          disabled={isSaving}
-                          className="border-red-600 text-red-600 hover:bg-red-50"
-                        >
-                          <PowerOff className="w-4 h-4 mr-1" />
-                          Close Enrollment
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleSetOngoingSchoolYear(sy)}
-                        disabled={isSaving || isEnded}
-                        className={sy.year === ongoingSchoolYearLabel ? 'border-blue-600 text-blue-700' : ''}
-                      >
-                        Set Ongoing
-                      </Button>
-                      {!isEnded ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleEndSchoolYear(sy)}
-                          disabled={isSaving}
-                          className="border-gray-500 text-gray-600 hover:bg-gray-100"
-                        >
-                          End School Year
-                        </Button>
-                      ) : null}
-                      {isHidden ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleUnhideSchoolYear(sy)}
-                          disabled={isSaving}
-                        >
-                          <Eye className="w-4 h-4 mr-1" />
-                          Unhide
-                        </Button>
-                      ) : canHideYear(sy) ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleHideSchoolYear(sy)}
-                          disabled={isSaving}
-                        >
-                          <Archive className="w-4 h-4 mr-1" />
-                          Hide
-                        </Button>
-                      ) : null}
-                      {canDeleteYear(sy) ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleDeleteSchoolYear(sy)}
-                          disabled={isSaving}
-                          className="border-red-600 text-red-600 hover:bg-red-50"
-                        >
-                          <Trash2 className="w-4 h-4 mr-1" />
-                          Delete
-                        </Button>
-                      ) : null}
+                    <TableCell className="align-middle">
+                      <div className={SCHOOL_YEAR_ACTION_SLOTS}>
+                        <div className={SCHOOL_YEAR_ACTION_SLOT_PRIMARY}>
+                          {sy.status === 'Inactive' && !isEnded ? (
+                            <Button
+                              size="sm"
+                              onClick={() => handleActivateSchoolYear(sy)}
+                              disabled={isSaving}
+                              className={`${SCHOOL_YEAR_ACTION_BUTTON} bg-[#2D5016] hover:bg-[#2D5016]/90 text-white`}
+                            >
+                              <Power className="w-4 h-4 mr-1" />
+                              Set Enrollment
+                            </Button>
+                          ) : isEnded ? (
+                            <Button
+                              size="sm"
+                              onClick={() => handleReopenEnrollment(sy)}
+                              disabled={isSaving}
+                              className={`${SCHOOL_YEAR_ACTION_BUTTON} bg-[#2D5016] hover:bg-[#2D5016]/90 text-white`}
+                            >
+                              <Power className="w-4 h-4 mr-1" />
+                              Reopen enrollment
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleCloseEnrollment(sy)}
+                              disabled={isSaving}
+                              className={`${SCHOOL_YEAR_ACTION_BUTTON} border-red-600 text-red-600 hover:bg-red-50`}
+                            >
+                              <PowerOff className="w-4 h-4 mr-1" />
+                              Close Enrollment
+                            </Button>
+                          )}
+                        </div>
+                        <div className={SCHOOL_YEAR_ACTION_SLOT_ONGOING}>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSetOngoingSchoolYear(sy)}
+                            disabled={isSaving || isEnded}
+                            className={`${SCHOOL_YEAR_ACTION_BUTTON} ${
+                              sy.year === ongoingSchoolYearLabel ? 'border-blue-600 text-blue-700' : ''
+                            }`}
+                          >
+                            Set Ongoing
+                          </Button>
+                        </div>
+                        <div className={SCHOOL_YEAR_ACTION_SLOT_END}>
+                          {!isEnded ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleEndSchoolYear(sy)}
+                              disabled={isSaving}
+                              className={`${SCHOOL_YEAR_ACTION_BUTTON} border-gray-500 text-gray-600 hover:bg-gray-100`}
+                            >
+                              End School Year
+                            </Button>
+                          ) : null}
+                        </div>
+                        <div className={SCHOOL_YEAR_ACTION_SLOT_HIDE}>
+                          {isHidden ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleUnhideSchoolYear(sy)}
+                              disabled={isSaving}
+                              className={SCHOOL_YEAR_ACTION_BUTTON}
+                            >
+                              <Eye className="w-4 h-4 mr-1" />
+                              Unhide
+                            </Button>
+                          ) : canHideYear(sy) ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleHideSchoolYear(sy)}
+                              disabled={isSaving}
+                              className={SCHOOL_YEAR_ACTION_BUTTON}
+                            >
+                              <Archive className="w-4 h-4 mr-1" />
+                              Hide
+                            </Button>
+                          ) : null}
+                        </div>
+                        <div className={SCHOOL_YEAR_ACTION_SLOT_DELETE}>
+                          {canDeleteYear(sy) ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleDeleteSchoolYear(sy)}
+                              disabled={isSaving}
+                              className={`${SCHOOL_YEAR_ACTION_BUTTON} border-red-600 text-red-600 hover:bg-red-50`}
+                            >
+                              <Trash2 className="w-4 h-4 mr-1" />
+                              Delete
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
                     </TableCell>
                   </TableRow>
