@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../..
 import { Input } from '../../components/ui/input';
 import { Badge } from '../../components/ui/badge';
 import { Alert, AlertDescription } from '../../components/ui/alert';
+import { formatStrandSectionTitle } from '../../lib/strands';
 
 /**
  * Admin Students directory.
@@ -199,7 +200,7 @@ export function Students() {
               >
                 {strandSelectOptions.map((s) => (
                   <option key={s} value={s}>
-                    {s === 'all' ? 'All strands' : s}
+                    {s === 'all' ? 'All strands' : formatStrandSectionTitle(s)}
                   </option>
                 ))}
               </select>
@@ -282,7 +283,9 @@ export function Students() {
                       <td className="py-3 pr-4 text-gray-700">
                         {s.gradeLevelNumber > 0 ? `Grade ${s.gradeLevelNumber}` : (s.gradeLevel || '—')}
                       </td>
-                      <td className="py-3 pr-4 text-gray-700">{s.strand || '—'}</td>
+                      <td className="py-3 pr-4 text-gray-700">
+                        {s.strand ? formatStrandSectionTitle(s.strand) : '—'}
+                      </td>
                       <td className="py-3 pr-4 text-gray-700">{s.schoolYear || '—'}</td>
                       <td className="py-3 pr-4">
                         <Badge className={statusBadgeClass(s.enrollmentStatusRaw)}>

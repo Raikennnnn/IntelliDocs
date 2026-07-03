@@ -44,7 +44,7 @@ import {
   DialogDescription,
 } from "../../components/ui/dialog";
 import { toast } from "sonner";
-import { normalizeStrandCode, STRAND_CODES, formatStrandDisplay } from "../../lib/strands";
+import { normalizeStrandCode, STRAND_CODES, formatStrandDisplay, formatStrandSectionTitle } from "../../lib/strands";
 
 type Student = {
   userId: number;
@@ -1242,7 +1242,7 @@ export function Students() {
               <option value="all">All strands</option>
               {strandSelectOptions.map((st) => (
                 <option key={st} value={st}>
-                  {st}
+                  {formatStrandSectionTitle(st)}
                 </option>
               ))}
             </select>
@@ -1321,7 +1321,9 @@ export function Students() {
                     ) : (
                       <ChevronDown className="w-4 h-4 text-gray-500" />
                     )}
-                    <span className="font-semibold text-[#8B1538]">{strandKey}</span>
+                    <span className="font-semibold text-[#8B1538]">
+                      {formatStrandSectionTitle(strandKey)}
+                    </span>
                     <Badge variant="outline" className="border-gray-300 text-gray-600">
                       {group.total} student{group.total === 1 ? "" : "s"}
                     </Badge>

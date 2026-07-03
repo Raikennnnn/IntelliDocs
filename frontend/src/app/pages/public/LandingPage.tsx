@@ -75,7 +75,7 @@ const SCHOOL_TRAITS = [
   {
     Icon: BookOpen,
     title: 'Academic & TVL Tracks',
-    description: 'HUMSS, ABM, STEM, ICT, EIM, and BPP/FBS pathways under one SHS program.',
+    description: 'ASSH, BAE, STEM, and TECHPRO (CP, IT, HT) pathways under one SHS program.',
   },
   {
     Icon: ShieldCheck,

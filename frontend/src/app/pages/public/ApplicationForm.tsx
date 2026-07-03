@@ -18,6 +18,7 @@ import {
   ArrowRight,
   Send
 } from 'lucide-react';
+import { STRANDS, formatStrandDisplay } from '../../lib/strands';
 
 interface FormData {
   // Personal Information
@@ -529,8 +530,11 @@ export function ApplicationForm() {
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:border-[#2D5016] focus:ring-1 focus:ring-[#2D5016]"
                   >
                     <option value="">Select Strand</option>
-                    <option value="HUMSS">HUMSS - Humanities and Social Sciences</option>
-                    <option value="TVL">TVL - Technical-Vocational-Livelihood</option>
+                    {STRANDS.map((strand) => (
+                      <option key={strand.code} value={strand.code}>
+                        {formatStrandDisplay(strand.code)}
+                      </option>
+                    ))}
                   </select>
                 </div>
 

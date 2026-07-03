@@ -32,6 +32,11 @@ import {
 import { Label } from "../../components/ui/label";
 import { toast } from "sonner";
 import { cn } from "../../components/ui/utils";
+import {
+  formatStrandListTitle,
+  formatStrandSectionTitle,
+  isBoysFirstStrand,
+} from "../../lib/strands";
 
 /** Class shift values mirrored from the backend ENUM. */
 type SectionShift = "morning" | "afternoon";
@@ -517,7 +522,7 @@ function shiftLabel(shift: SectionShift): string {
 
 function sectionOptionLabel(section: Section, includeStrand: boolean): string {
   const base = `${section.name} — ${shiftLabel(section.shift ?? "morning")} (G${section.gradeLevel ?? "11"})`;
-  return includeStrand ? `${section.strand} · ${base}` : base;
+  return includeStrand ? `${formatStrandSectionTitle(section.strand)} · ${base}` : base;
 }
 
 type RosterYearFilter = "ongoing" | "enrollment" | "all" | string;
@@ -832,9 +837,9 @@ export function Sections() {
     });
   }, [strands, filteredSections, strandFilter, sectionsByStrandAndGrade]);
 
-  const isBoysFirstStrand = useCallback(
-    (strand: string) => Boolean(defaults?.boysFirstStrands?.includes(strand)),
-    [defaults],
+  const isBoysFirstStrandForSection = useCallback(
+    (strand: string) => isBoysFirstStrand(strand),
+    [],
   );
 
   const openAddDialog = (
@@ -957,7 +962,7 @@ export function Sections() {
         return;
       }
       toast.success(
-        `Added ${gradeLabel(String(json.section.gradeLevel ?? newGrade))} section "${json.section.name}" (${shiftLabel(json.section.shift ?? newShift).toLowerCase()}) to ${json.section.strand}.`,
+        `Added ${gradeLabel(String(json.section.gradeLevel ?? newGrade))} section "${json.section.name}" (${shiftLabel(json.section.shift ?? newShift).toLowerCase()}) to ${formatStrandSectionTitle(json.section.strand)}.`,
       );
       setDialogOpen(false);
       setNewName("");
@@ -971,7 +976,7 @@ export function Sections() {
   };
 
   const deleteSection = async (section: Section) => {
-    if (!confirm(`Delete section "${section.name}" from ${section.strand}? This cannot be undone.`)) {
+    if (!confirm(`Delete section "${section.name}" from ${formatStrandSectionTitle(section.strand)}? This cannot be undone.`)) {
       return;
     }
     setDeletingId(section.id);
@@ -1104,7 +1109,7 @@ export function Sections() {
               <option value="all">All strands</option>
               {strands.map((st) => (
                 <option key={st} value={st}>
-                  {st}
+                  {formatStrandSectionTitle(st)}
                 </option>
               ))}
             </select>
@@ -1206,7 +1211,7 @@ export function Sections() {
           </div>
           {defaults?.boysFirstStrands?.length ? (
             <div>
-              <span className="font-semibold">Exception &mdash; {defaults.boysFirstStrands.join(", ")}:</span>{" "}
+              <span className="font-semibold">Exception &mdash; {formatStrandListTitle(defaults.boysFirstStrands)}:</span>{" "}
               boys are auto-placed normally. Girls applying to this strand are{" "}
               <span className="font-semibold">not</span> auto-placed &mdash; you&rsquo;ll be warned
               so you can decide where to put them.
@@ -1215,13 +1220,13 @@ export function Sections() {
         </AlertDescription>
       </Alert>
 
-      {/* Explainer for the EIM exception */}
+      {/* Explainer for boys-first TECHPRO — IT sections */}
       {defaults?.boysFirstStrands?.length ? (
         <Alert className="border-amber-200 bg-amber-50">
           <Info className="h-4 w-4 text-amber-700" />
           <AlertDescription className="text-amber-900">
             <span className="font-semibold">Boys-first strand:</span>{" "}
-            {defaults.boysFirstStrands.join(", ")} sections are configured for{" "}
+            {formatStrandListTitle(defaults.boysFirstStrands)} sections are configured for{" "}
             {defaults.boysFirstBoys} boys, but girls may still apply if they choose. Capacity can be
             adjusted later if a girl enrolls.
           </AlertDescription>
@@ -1248,13 +1253,15 @@ export function Sections() {
               (n, g) => n + (gradeMap.get(g)?.length ?? 0),
               0,
             );
-            const boysFirst = isBoysFirstStrand(strand);
+            const boysFirst = isBoysFirstStrandForSection(strand);
             return (
               <Card key={strand} className="p-5">
                 <div className="flex items-center justify-between gap-3 mb-4">
                   <div className="flex items-center gap-2 min-w-0">
                     <GraduationCap className="h-5 w-5 text-[#8B1538] shrink-0" />
-                    <h3 className="text-lg font-semibold text-gray-900 truncate">{strand}</h3>
+                    <h3 className="text-lg font-semibold text-gray-900 truncate">
+                      {formatStrandSectionTitle(strand)}
+                    </h3>
                     {boysFirst ? (
                       <Badge variant="outline" className="border-amber-400 text-amber-800">
                         Boys-first
@@ -1353,8 +1360,8 @@ export function Sections() {
                                   <div className="flex items-start justify-between gap-2 mb-3">
                                     <div className="min-w-0">
                                       <p className="font-semibold text-gray-900 truncate">
-                                        {gradeLabel(String(section.gradeLevel ?? grade))} – {strand}{" "}
-                                        {section.name}
+                                        {gradeLabel(String(section.gradeLevel ?? grade))} –{" "}
+                                        {formatStrandSectionTitle(strand)} {section.name}
                                       </p>
                                       <p className="text-xs text-gray-500">
                                         Capacity {section.capacity}
@@ -1472,7 +1479,7 @@ export function Sections() {
               {rosterSection ? (
                 <span className="font-normal text-gray-600">
                   — {gradeLabel(String(rosterSection.gradeLevel ?? "11"))}{" "}
-                  {rosterSection.strand} {rosterSection.name} (
+                  {formatStrandSectionTitle(rosterSection.strand)} {rosterSection.name} (
                   {shiftLabel(rosterSection.shift ?? "morning")})
                 </span>
               ) : null}
@@ -1500,7 +1507,7 @@ export function Sections() {
                 students={rosterStudents}
                 maxBoys={rosterSection.maxBoys}
                 maxGirls={rosterSection.maxGirls}
-                sectionLabel={`${gradeLabel(String(rosterSection.gradeLevel ?? "11"))} · ${rosterSection.strand} ${rosterSection.name}`}
+                sectionLabel={`${gradeLabel(String(rosterSection.gradeLevel ?? "11"))} · ${formatStrandSectionTitle(rosterSection.strand)} ${rosterSection.name}`}
                 schoolYearLabel={rosterSchoolYear}
                 schoolYearEnded={rosterSchoolYearEnded || rosterArchived}
                 rosterArchived={rosterArchived || rosterSchoolYearEnded}
@@ -1593,14 +1600,14 @@ export function Sections() {
                 {strands.length === 0 ? <option value="">No strands available</option> : null}
                 {strands.map((s) => (
                   <option key={s} value={s}>
-                    {s}
+                    {formatStrandSectionTitle(s)}
                   </option>
                 ))}
               </select>
-              {newStrand && isBoysFirstStrand(newStrand) ? (
+              {newStrand && isBoysFirstStrandForSection(newStrand) ? (
                 <p className="text-xs text-amber-800 flex items-start gap-1">
                   <Info className="h-3 w-3 mt-0.5 shrink-0" />
-                  {newStrand} sections default to {defaults?.boysFirstBoys ?? 45} boys (no girl
+                  {formatStrandSectionTitle(newStrand)} sections default to {defaults?.boysFirstBoys ?? 45} boys (no girl
                   seats reserved). Girls who apply will need a registrar adjustment.
                 </p>
               ) : null}
@@ -1664,17 +1671,17 @@ export function Sections() {
               <div className="flex items-center justify-between">
                 <span className="font-medium">Capacity</span>
                 <span className="font-semibold text-gray-900">
-                  {(isBoysFirstStrand(newStrand)
+                  {(isBoysFirstStrandForSection(newStrand)
                     ? defaults?.boysFirstBoys ?? 45
                     : defaults?.maxBoys ?? 23) +
-                    (isBoysFirstStrand(newStrand)
+                    (isBoysFirstStrandForSection(newStrand)
                       ? defaults?.boysFirstGirls ?? 0
                       : defaults?.maxGirls ?? 22)}{" "}
                   students
                 </span>
               </div>
               <p className="text-xs text-gray-600 mt-1">
-                {isBoysFirstStrand(newStrand)
+                {isBoysFirstStrandForSection(newStrand)
                   ? `${defaults?.boysFirstBoys ?? 45} boys (no reserved girl seats)`
                   : `${defaults?.maxBoys ?? 23} boys + ${defaults?.maxGirls ?? 22} girls`}
               </p>

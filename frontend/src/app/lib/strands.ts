@@ -121,6 +121,23 @@ export function formatStrandDisplay(raw: string | null | undefined): string {
   return `${def.label} — ${def.fullName}`;
 }
 
+/** Compact title for section lists and filters (e.g. STEM, TECHPRO — IT, ASSH). */
+export function formatStrandSectionTitle(raw: string | null | undefined): string {
+  const def = getStrandDefinition(raw);
+  if (!def) {
+    const trimmed = String(raw ?? "").trim();
+    return trimmed || "Unassigned";
+  }
+  if (def.track === "techpro") {
+    return `${def.trackLabel} — ${def.label}`;
+  }
+  return def.label;
+}
+
+export function formatStrandListTitle(codes: string[]): string {
+  return codes.map((code) => formatStrandSectionTitle(code)).join(", ");
+}
+
 /** Strands that default to boys-first section rosters. */
 export const BOYS_FIRST_STRAND_CODES: StrandCode[] = ["TECHPRO - IT"];
 
