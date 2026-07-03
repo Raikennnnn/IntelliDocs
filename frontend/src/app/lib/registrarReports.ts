@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import { apiFetch } from './api';
 import { buildFormalReportDocumentHtml } from './formalReportDocument';
 import type { ReportGroup } from './reportGroupedLayout';
@@ -33,17 +34,18 @@ export type RegistrarReportJson = {
   error?: string;
 };
 
-function reportUrl(
-  report: RegistrarReportType,
-  schoolYear: string,
-  format: 'json' | 'csv' | 'print',
-): string {
+function reportUrl(report: RegistrarReportType, schoolYear: string): string {
   const params = new URLSearchParams({
     report,
-    format,
+    format: 'json',
     school_year: schoolYear,
   });
   return `/api/registrar/reports?${params.toString()}`;
+}
+
+function exportFilename(hint: string, extension: 'xlsx'): string {
+  const safe = hint.replace(/[^a-z0-9_-]+/gi, '_').replace(/^_|_$/g, '') || 'report';
+  return `${safe}_${new Date().toISOString().slice(0, 10)}.${extension}`;
 }
 
 function buildPrintHtml(data: RegistrarReportJson): string {
@@ -60,11 +62,47 @@ function buildPrintHtml(data: RegistrarReportJson): string {
   });
 }
 
+/** Print HTML in a hidden iframe — avoids pop-up blockers. */
+function printHtmlInFrame(html: string): void {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('title', 'Report print');
+  iframe.style.cssText =
+    'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';
+  document.body.appendChild(iframe);
+
+  const cleanup = () => {
+    window.setTimeout(() => iframe.remove(), 500);
+  };
+
+  const win = iframe.contentWindow;
+  const doc = iframe.contentDocument ?? win?.document;
+  if (!win || !doc) {
+    iframe.remove();
+    throw new Error('Could not open the print view. Please try again.');
+  }
+
+  doc.open();
+  doc.write(html);
+  doc.close();
+
+  const triggerPrint = () => {
+    win.focus();
+    win.print();
+    cleanup();
+  };
+
+  if (doc.readyState === 'complete') {
+    window.setTimeout(triggerPrint, 150);
+  } else {
+    iframe.addEventListener('load', () => window.setTimeout(triggerPrint, 150), { once: true });
+  }
+}
+
 export async function fetchRegistrarReport(
   report: RegistrarReportType,
   schoolYear: string,
 ): Promise<RegistrarReportJson> {
-  const res = await apiFetch(reportUrl(report, schoolYear, 'json'));
+  const res = await apiFetch(reportUrl(report, schoolYear));
   const text = await res.text();
   let json: RegistrarReportJson = {};
   try {
@@ -78,31 +116,25 @@ export async function fetchRegistrarReport(
   return json;
 }
 
-export async function downloadRegistrarReportCsv(
+export async function downloadRegistrarReportExcel(
   report: RegistrarReportType,
   schoolYear: string,
   filenameHint: string,
 ): Promise<void> {
-  const res = await apiFetch(reportUrl(report, schoolYear, 'csv'));
-  if (!res.ok) {
-    const text = await res.text();
-    let json: { error?: string } = {};
-    try {
-      json = JSON.parse(text);
-    } catch {
-      /* ignore */
-    }
-    throw new Error(json.error || 'Export failed. Please try again.');
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${filenameHint}_${new Date().toISOString().slice(0, 10)}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  const data = await fetchRegistrarReport(report, schoolYear);
+  const columns = data.columns ?? [];
+  const rows = data.rows ?? [];
+
+  const sheetRows: string[][] =
+    columns.length > 0
+      ? [columns, ...rows.map((row) => columns.map((col) => String(row[col] ?? '')))]
+      : [['Message'], ['No data for this report and school year.']];
+
+  const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+  const workbook = XLSX.utils.book_new();
+  const sheetName = (data.title ?? 'Report').slice(0, 31).replace(/[\\/?*[\]]/g, '');
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheetName || 'Report');
+  XLSX.writeFile(workbook, exportFilename(filenameHint, 'xlsx'));
 }
 
 export async function printRegistrarReport(
@@ -110,12 +142,10 @@ export async function printRegistrarReport(
   schoolYear: string,
 ): Promise<void> {
   const data = await fetchRegistrarReport(report, schoolYear);
-  const html = buildPrintHtml(data);
-  const win = window.open('', '_blank', 'noopener,noreferrer,width=1100,height=800');
-  if (!win) {
-    throw new Error('Pop-up blocked. Allow pop-ups to print this report.');
-  }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
+  printHtmlInFrame(buildPrintHtml(data));
+}
+
+/** Print report data already loaded in the on-screen preview (no pop-up). */
+export function printRegistrarReportPreview(): void {
+  window.print();
 }

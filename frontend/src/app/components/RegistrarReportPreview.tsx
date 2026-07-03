@@ -172,12 +172,12 @@ export function RegistrarReportPreview({
 
             {data && isGrouped && (data.groupCount ?? 0) > PREVIEW_GROUP_LIMIT ? (
               <p className="mt-4 text-center font-sans text-[10px] text-gray-500 print:hidden">
-                Showing first {PREVIEW_GROUP_LIMIT} students. Export CSV for the full report.
+                Showing first {PREVIEW_GROUP_LIMIT} students. Export Excel for the full report.
               </p>
             ) : null}
             {data && !isGrouped && (data.rowCount ?? 0) > PREVIEW_ROW_LIMIT ? (
               <p className="mt-4 text-center font-sans text-[10px] text-gray-500 print:hidden">
-                Showing first {PREVIEW_ROW_LIMIT} rows. Export CSV for the full report.
+                Showing first {PREVIEW_ROW_LIMIT} rows. Export Excel for the full report.
               </p>
             ) : null}
           </article>

@@ -21,9 +21,10 @@ import { Alert, AlertDescription } from '../../components/ui/alert';
 import { useSchoolYear } from '../../context/SchoolYearContext';
 import { RegistrarReportPreview } from '../../components/RegistrarReportPreview';
 import {
-  downloadRegistrarReportCsv,
+  downloadRegistrarReportExcel,
   fetchRegistrarReport,
   printRegistrarReport,
+  printRegistrarReportPreview,
   type RegistrarReportJson,
   type RegistrarReportType,
 } from '../../lib/registrarReports';
@@ -206,28 +207,25 @@ export function Reports() {
     setPreviewReportId(null);
   };
 
-  const printPreview = async () => {
-    if (previewReportId) {
-      await runExport(previewReportId, 'print', previewData?.title ?? 'Report');
-      return;
-    }
-    window.print();
+  const printPreview = () => {
+    if (!previewData) return;
+    printRegistrarReportPreview();
   };
 
   const runExport = async (
     report: RegistrarReportType,
-    mode: 'csv' | 'print',
+    mode: 'excel' | 'print',
     label: string,
   ) => {
     const key = `${report}-${mode}`;
     setExportingId(key);
     try {
-      if (mode === 'csv') {
-        await downloadRegistrarReportCsv(report, apiSchoolYearParam, report);
-        toast.success(`${label} exported as CSV`);
+      if (mode === 'excel') {
+        await downloadRegistrarReportExcel(report, apiSchoolYearParam, report);
+        toast.success(`${label} exported as Excel`);
       } else {
         await printRegistrarReport(report, apiSchoolYearParam);
-        toast.success(`${label} opened for printing`);
+        toast.success(`${label} — use your browser print dialog to print or save as PDF`);
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Export failed');
@@ -236,13 +234,13 @@ export function Reports() {
     }
   };
 
-  const exportAllCsv = async () => {
-    setExportingId('bulk-csv');
+  const exportAllExcel = async () => {
+    setExportingId('bulk-excel');
     try {
       for (const card of REPORT_CARDS) {
-        await downloadRegistrarReportCsv(card.id, apiSchoolYearParam, card.id);
+        await downloadRegistrarReportExcel(card.id, apiSchoolYearParam, card.id);
       }
-      toast.success('All reports exported as CSV files');
+      toast.success('All reports exported as Excel files');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Bulk export failed');
     } finally {
@@ -321,7 +319,7 @@ export function Reports() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {REPORT_CARDS.map((report) => {
           const Icon = report.icon;
-          const busyCsv = exportingId === `${report.id}-csv`;
+          const busyExcel = exportingId === `${report.id}-excel`;
           const busyPrint = exportingId === `${report.id}-print`;
           return (
             <Card key={report.id} className="border hover:shadow-md transition-shadow">
@@ -366,15 +364,15 @@ export function Reports() {
                     type="button"
                     size="sm"
                     className="w-full bg-[#2D5016] hover:bg-[#1D3010] sm:w-auto"
-                    disabled={busyCsv}
-                    onClick={() => runExport(report.id, 'csv', report.title)}
+                    disabled={busyExcel}
+                    onClick={() => runExport(report.id, 'excel', report.title)}
                   >
-                    {busyCsv ? (
+                    {busyExcel ? (
                       <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
                     ) : (
                       <FileSpreadsheet className="w-4 h-4 mr-1.5" />
                     )}
-                    Export CSV
+                    Export Excel
                   </Button>
                 </div>
               </CardContent>
@@ -386,21 +384,21 @@ export function Reports() {
       <Card>
         <CardHeader>
           <CardTitle>Bulk Export</CardTitle>
-          <CardDescription>Download every report type for the selected school year as CSV files.</CardDescription>
+          <CardDescription>Download every report type for the selected school year as Excel files.</CardDescription>
         </CardHeader>
         <CardContent>
           <Button
             type="button"
             variant="outline"
-            disabled={exportingId === 'bulk-csv'}
-            onClick={exportAllCsv}
+            disabled={exportingId === 'bulk-excel'}
+            onClick={exportAllExcel}
           >
-            {exportingId === 'bulk-csv' ? (
+            {exportingId === 'bulk-excel' ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
             ) : (
               <Download className="w-4 h-4 mr-2" />
             )}
-            Export All Reports (CSV)
+            Export All Reports (Excel)
           </Button>
         </CardContent>
       </Card>
@@ -410,9 +408,7 @@ export function Reports() {
         loading={previewLoading}
         data={previewData}
         onClose={closePreview}
-        onPrint={() => {
-          void printPreview();
-        }}
+        onPrint={printPreview}
       />
     </div>
   );

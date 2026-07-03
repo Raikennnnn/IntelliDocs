@@ -319,9 +319,9 @@ export function buildFormalReportDocumentHtml(input: FormalReportDocumentInput):
 
   const rowNote =
     !isGrouped && input.rowLimit != null && (input.rows?.length ?? 0) > input.rowLimit
-      ? `<p class="footnote">Showing first ${input.rowLimit} rows. Export CSV for the full report.</p>`
+      ? `<p class="footnote">Showing first ${input.rowLimit} rows. Export Excel for the full report.</p>`
       : isGrouped && input.groupLimit != null && groups.length > input.groupLimit
-        ? `<p class="footnote">Showing first ${input.groupLimit} students. Export CSV for the full report.</p>`
+        ? `<p class="footnote">Showing first ${input.groupLimit} students. Export Excel for the full report.</p>`
         : '';
 
   const logoHtml = head.schoolLogoUrl
