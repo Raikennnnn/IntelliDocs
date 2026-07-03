@@ -103,6 +103,11 @@ export function UserManagement() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!editingUser && !showAddUser) return;
+    window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+  }, [editingUser, showAddUser]);
+
   const handleAddUser = async () => {
     if (!newUser.name || !newUser.email || !newUser.password) {
       toast.error("Please fill in all fields");
