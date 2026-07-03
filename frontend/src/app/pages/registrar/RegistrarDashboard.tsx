@@ -3,7 +3,7 @@ import { Users, CheckCircle, AlertCircle, TrendingUp } from 'lucide-react';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import { STRANDS, formatStrandDisplay, normalizeStrandCode } from '../../lib/strands';
+import { STRANDS, formatStrandFullName, formatStrandSectionTitle, normalizeStrandCode } from '../../lib/strands';
 import { useSchoolYear } from '../../context/SchoolYearContext';
 
 type StrandRow = {
@@ -197,9 +197,9 @@ export function RegistrarDashboard() {
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-2xl font-bold text-[#8B1538]">
-                        {formatStrandDisplay(strand.name)}
+                        {formatStrandSectionTitle(strand.name)}
                       </CardTitle>
-                      <p className="text-sm text-gray-600 mt-1">{meta.fullName}</p>
+                      <p className="text-sm text-gray-600 mt-1">{formatStrandFullName(strand.name)}</p>
                     </div>
                     <div className={`w-12 h-12 rounded-full ${meta.bg} flex items-center justify-center`}>
                       <Users className={`w-6 h-6 ${meta.icon}`} />
