@@ -16,6 +16,8 @@ import { AuthPageHeader } from '../../components/public/AuthPageShell';
 import { PublicSectionEyebrow } from '../../components/public/PublicSectionEyebrow';
 import { PasswordStrengthChecker } from '../../components/public/PasswordStrengthChecker';
 import { BRAND } from '../../lib/publicBrand';
+import { LegalDocumentModal } from '../../components/public/LegalDocumentModal';
+import type { LegalDocumentId } from '../../content/legalDocuments';
 
 // Registration Page Component
 export function RegistrationPage() {
@@ -34,6 +36,7 @@ export function RegistrationPage() {
   const [termsPrivacyAccepted, setTermsPrivacyAccepted] = useState(false);
   const [dpaAccepted, setDpaAccepted] = useState(false);
   const [showPasswordHints, setShowPasswordHints] = useState(false);
+  const [openLegalDoc, setOpenLegalDoc] = useState<LegalDocumentId | null>(null);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -444,23 +447,21 @@ export function RegistrationPage() {
                       <label htmlFor="terms-privacy" className="cursor-pointer font-normal">
                         I have read and agree to the
                       </label>{' '}
-                      <Link
-                        to="/legal/terms"
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => setOpenLegalDoc('terms')}
                         className="font-semibold text-[#8B1538] hover:underline"
                       >
                         NSDGA Terms of Use
-                      </Link>{' '}
+                      </button>{' '}
                       <span className="text-gray-600">and</span>{' '}
-                      <Link
-                        to="/legal/privacy"
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => setOpenLegalDoc('privacy')}
                         className="font-semibold text-[#8B1538] hover:underline"
                       >
                         Privacy Policy
-                      </Link>
+                      </button>
                       <span className="text-gray-600">.</span>
                     </div>
                   </div>
@@ -475,14 +476,13 @@ export function RegistrationPage() {
                       <label htmlFor="dpa" className="cursor-pointer font-normal">
                         I consent to the processing of my personal data as described in the
                       </label>{' '}
-                      <Link
-                        to="/legal/dpa"
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => setOpenLegalDoc('dpa')}
                         className="font-semibold text-[#8B1538] hover:underline"
                       >
                         Data Processing Agreement (DPA)
-                      </Link>
+                      </button>
                       <span className="text-gray-600">.</span>
                     </div>
                   </div>
@@ -626,6 +626,11 @@ export function RegistrationPage() {
           </div>
         </div>
       </div>
+
+      <LegalDocumentModal
+        docId={openLegalDoc}
+        onClose={() => setOpenLegalDoc(null)}
+      />
     </div>
   );
 }
