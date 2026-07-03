@@ -240,14 +240,20 @@ function processPendingEmailQueue(PDO $pdo, int $limit = 20): array
     return $sentIds;
 }
 
-function otpEmailSubject(): string
+function otpEmailSubject(string $purpose = 'registration'): string
 {
-    return 'NSDGA IntelliDocs - Email verification code';
+    return strtolower(trim($purpose)) === 'login'
+        ? 'NSDGA IntelliDocs - Sign-in verification code'
+        : 'NSDGA IntelliDocs - Email verification code';
 }
 
-function buildOtpEmailBody(string $otp): string
+function buildOtpEmailBody(string $otp, string $purpose = 'registration'): string
 {
-    return "Your NSDGA IntelliDocs verification code is: {$otp}\n\n"
+    $intro = strtolower(trim($purpose)) === 'login'
+        ? 'Enter this code to sign in to NSDGA IntelliDocs.'
+        : 'Enter this code to verify your email and finish creating your account.';
+
+    return "{$intro}\n\nYour verification code is: {$otp}\n\n"
         . "This code expires in 10 minutes.\n"
         . "If you did not request this, you can ignore this email.";
 }

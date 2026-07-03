@@ -112,4 +112,4 @@ if ($clearLockouts || $verifyEmail) {
     echo "  lockouts:        cleared\n";
 }
 echo "\nSign in with email OR school username and the password above.\n";
-echo "Students still need the login OTP emailed after password step.\n";
+echo "All portal roles need the login OTP emailed after the password step when MFA is enabled.\n";

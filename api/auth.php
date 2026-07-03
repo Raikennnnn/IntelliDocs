@@ -688,7 +688,7 @@ if ($action === 'login') {
                 ]);
                 exit;
             }
-            $queueId = queueEmail($pdo, $accountEmail, otpEmailSubject(), buildOtpEmailBodyWithExpiry($pdo, $otpCode));
+            $queueId = queueEmail($pdo, $accountEmail, otpEmailSubject('login'), buildOtpEmailBodyWithExpiry($pdo, $otpCode, 'login'));
             $otpSent = processSingleQueuedEmail($pdo, $queueId);
             $mailError = $otpSent ? null : getEmailQueueLastError($pdo, $queueId);
             appLogEvent($pdo, 'login_password_verified', 'auth', 'success', (int)$user['id'], 'user', (string)$user['id'], [
@@ -1040,7 +1040,7 @@ if ($action === 'resend_login_otp') {
             ]);
             exit;
         }
-        $queueId = queueEmail($pdo, $accountEmail, otpEmailSubject(), buildOtpEmailBodyWithExpiry($pdo, $otpCode));
+        $queueId = queueEmail($pdo, $accountEmail, otpEmailSubject('login'), buildOtpEmailBodyWithExpiry($pdo, $otpCode, 'login'));
         $sent = processSingleQueuedEmail($pdo, $queueId);
         $mailError = $sent ? null : getEmailQueueLastError($pdo, $queueId);
 
@@ -1334,7 +1334,7 @@ if ($action === 'forgot_password') {
         $otpCode = generateOtpCode();
         storeOtpCode($pdo, $accountEmail, $otpCode, $otpMinutes, 'password_reset');
         $subject = 'NSDGA IntelliDocs password reset code';
-        $body = buildOtpEmailBodyWithExpiry($pdo, $otpCode);
+        $body = buildOtpEmailBodyWithExpiry($pdo, $otpCode, 'password_reset');
         $queueId = queueEmail($pdo, $accountEmail, $subject, $body);
         $sent = processSingleQueuedEmail($pdo, $queueId);
         $mailError = $sent ? null : getEmailQueueLastError($pdo, $queueId);

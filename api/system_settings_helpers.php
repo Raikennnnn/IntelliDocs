@@ -217,11 +217,11 @@ function saveSystemEmailConfig(PDO $pdo, array $payload): void
     writeSystemSetting($pdo, 'otp_expiry_minutes', (string)max(5, min(60, $otpExpiry)));
 }
 
-function buildOtpEmailBodyWithExpiry(PDO $pdo, string $otp): string
+function buildOtpEmailBodyWithExpiry(PDO $pdo, string $otp, string $purpose = 'registration'): string
 {
     $minutes = getOtpExpiryMinutes($pdo);
 
-    return renderOtpEmailHtml($otp, $minutes);
+    return renderOtpEmailHtml($otp, $minutes, $purpose);
 }
 
 /**
@@ -229,7 +229,7 @@ function buildOtpEmailBodyWithExpiry(PDO $pdo, string $otp): string
  * Uses table layout + inline styles for broad compatibility (Gmail, Outlook,
  * Apple Mail). The mail transports auto-generate a plain-text fallback.
  */
-function renderOtpEmailHtml(string $otp, int $minutes): string
+function renderOtpEmailHtml(string $otp, int $minutes, string $purpose = 'registration'): string
 {
     $safeOtp = htmlspecialchars($otp, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     $safeMinutes = (int)$minutes;
@@ -239,6 +239,17 @@ function renderOtpEmailHtml(string $otp, int $minutes): string
     $ink = '#101828';
     $slate = '#4a5565';
     $year = date('Y');
+
+    $purposeKey = strtolower(trim($purpose));
+    $isLogin = $purposeKey === 'login';
+    $isPasswordReset = $purposeKey === 'password_reset';
+    $eyebrow = $isLogin ? 'Sign-in verification' : ($isPasswordReset ? 'Password reset' : 'Email verification');
+    $headline = $isLogin ? 'Complete your sign-in' : ($isPasswordReset ? 'Reset your password' : 'Confirm your email address');
+    $intro = $isLogin
+        ? 'Enter the code below to sign in to NSDGA IntelliDocs.'
+        : ($isPasswordReset
+            ? 'Enter the code below to reset your NSDGA IntelliDocs password.'
+            : 'Enter the code below to verify your email and finish creating your account.');
 
     $codeCells = '';
     foreach (str_split($safeOtp) as $digit) {
@@ -282,9 +293,9 @@ Nuestra Señora De Guia Academy
 </tr>
 <tr>
 <td style="padding:36px 32px 8px 32px;font-family:Arial,Helvetica,sans-serif;">
-<p style="margin:0 0 6px 0;font-size:13px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:{$green};">Email Verification</p>
-<h1 style="margin:0 0 12px 0;font-size:24px;line-height:1.25;color:{$ink};">Confirm your email address</h1>
-<p style="margin:0;font-size:15px;line-height:1.6;color:{$slate};">Use the verification code below to finish securing your NSDGA IntelliDocs account.</p>
+<p style="margin:0 0 6px 0;font-size:13px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:{$green};">{$eyebrow}</p>
+<h1 style="margin:0 0 12px 0;font-size:24px;line-height:1.25;color:{$ink};">{$headline}</h1>
+<p style="margin:0;font-size:15px;line-height:1.6;color:{$slate};">{$intro}</p>
 </td>
 </tr>
 <tr>

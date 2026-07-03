@@ -2,7 +2,7 @@
 # System Restart Session Validation — run on the droplet as root.
 # Expects sessions to be invalidated after restart (server_boot_epoch).
 #
-# Usage (registrar/admin — no login OTP):
+# Usage (all roles require login OTP when AUTH_LOGIN_OTP_REQUIRED=1):
 #   bash scripts/test_session_restart_validation.sh 'registrar@school.edu' 'YourPassword'
 #
 # Optional env:
@@ -16,7 +16,7 @@ APP_ROOT="${APP_ROOT:-/var/www/intellidocs}"
 
 if [ -z "$CRED" ] || [ -z "$PASS" ]; then
   echo "Usage: bash $0 <credential> <password>"
-  echo "Tip: use a registrar or admin account (students need login OTP)."
+  echo "Tip: complete the login OTP step after password (all roles when MFA is enabled)."
   exit 1
 fi
 
@@ -50,8 +50,21 @@ if [ "$SUCCESS" != "true" ]; then
 fi
 
 if [ "$(json_field "$LOGIN_JSON" requires_otp 2>/dev/null || echo false)" = "true" ]; then
-  echo "Login requires OTP (student account). Use a registrar/admin account for this test."
-  exit 1
+  OTP_CODE="${3:-$(json_field "$LOGIN_JSON" dev_otp 2>/dev/null || true)}"
+  if [ -z "$OTP_CODE" ]; then
+    echo "Login requires OTP. Pass the 6-digit code as the third argument, or enable MAIL_DEV_OTP_FALLBACK on localhost."
+    exit 1
+  fi
+  EMAIL="$(json_field "$LOGIN_JSON" email 2>/dev/null || echo "$CRED")"
+  LOGIN_JSON="$(curl -fsS -X POST "${BASE_URL}/api/auth" \
+    -H 'Content-Type: application/json' \
+    -d "{\"action\":\"verify_login_otp\",\"email\":$(php -r 'echo json_encode($argv[1]);' "$EMAIL"),\"otp\":$(php -r 'echo json_encode($argv[1]);' "$OTP_CODE")}")"
+  SUCCESS="$(json_field "$LOGIN_JSON" success 2>/dev/null || echo false)"
+  if [ "$SUCCESS" != "true" ]; then
+    echo "OTP verification failed:"
+    echo "$LOGIN_JSON" | php -r 'echo json_encode(json_decode(stream_get_contents(STDIN)), JSON_PRETTY_PRINT);'
+    exit 1
+  fi
 fi
 
 TOKEN="$(json_field "$LOGIN_JSON" token 2>/dev/null || true)"

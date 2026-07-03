@@ -527,13 +527,13 @@ if (!function_exists('loginOtpRequired')) {
 }
 
 if (!function_exists('loginOtpRequiredForRole')) {
-    /** Login MFA applies to students/applicants only; staff portals skip OTP. */
+    /** Login MFA after password for all portal roles when AUTH_LOGIN_OTP_REQUIRED is on. */
     function loginOtpRequiredForRole(string $role): bool
     {
         if (!loginOtpRequired()) {
             return false;
         }
         $r = strtolower(trim($role));
-        return !in_array($r, ['admin', 'registrar'], true);
+        return in_array($r, ['admin', 'registrar', 'student'], true);
     }
 }
