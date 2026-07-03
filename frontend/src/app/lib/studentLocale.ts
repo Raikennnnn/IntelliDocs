@@ -88,7 +88,7 @@ const messages = {
     'form.strand': 'Strand',
     'form.preferredSchedule': 'Preferred Schedule',
     'form.ph.firstName': 'Enter first name',
-    'form.ph.middleName': 'e.g. Marie (or N/A if none)',
+    'form.ph.middleName': 'Enter middle name',
     'form.ph.middleInitial': 'M.I.',
     'form.ph.lastName': 'Enter last name',
     'form.ph.extension': 'Jr., Sr., III, etc.',
@@ -103,7 +103,6 @@ const messages = {
     'form.ph.barangayFirst': 'Enter city / municipality first',
     'form.ph.birthDate': 'MM/DD/YYYY',
     'form.ph.birthPlaceOther': 'If not in NCR, type your birth place',
-    'form.hint.middleName': 'Enter your full middle name. Use N/A if you do not have one.',
     'form.hint.birthDate': 'Format: MM/DD/YYYY (example: 03/15/2010)',
     'form.hint.grade12Section':
       'You stay in section {section} for Grade 12 unless you change your class time below. If you switch to morning or afternoon, the system places you in the section with the most available seats for your chosen shift.',
@@ -374,7 +373,7 @@ const messages = {
     'form.strand': 'Strand',
     'form.preferredSchedule': 'Napiling Iskedyul',
     'form.ph.firstName': 'Ilagay ang pangalan',
-    'form.ph.middleName': 'hal. Marie (o N/A kung wala)',
+    'form.ph.middleName': 'Ilagay ang gitnang pangalan',
     'form.ph.middleInitial': 'G.I.',
     'form.ph.lastName': 'Ilagay ang apelyido',
     'form.ph.extension': 'Jr., Sr., III, atbp.',
@@ -389,7 +388,6 @@ const messages = {
     'form.ph.barangayFirst': 'Ilagay muna ang lungsod / munisipalidad',
     'form.ph.birthDate': 'MM/DD/YYYY',
     'form.ph.birthPlaceOther': 'Kung wala sa NCR, i-type ang lugar ng kapanganakan',
-    'form.hint.middleName': 'Ilagay ang buong gitnang pangalan. Gamitin ang N/A kung wala.',
     'form.hint.birthDate': 'Format: MM/DD/YYYY (halimbawa: 03/15/2010)',
     'form.hint.grade12Section':
       'Mananatili ka sa section {section} para sa Grade 12 maliban kung papalitan mo ang oras ng klase sa ibaba. Kung lilipat sa umaga o hapon, ilalagay ka ng sistema sa section na may pinakamaraming bakanteng upuan para sa napiling shift.',

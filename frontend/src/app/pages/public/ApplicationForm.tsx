@@ -245,6 +245,7 @@ export function ApplicationForm() {
                       id="middleName"
                       value={formData.middleName}
                       onChange={(e) => handleInputChange('middleName', e.target.value)}
+                      placeholder="Enter middle name"
                       className="focus:border-[#2D5016] focus:ring-[#2D5016]"
                     />
                   </div>

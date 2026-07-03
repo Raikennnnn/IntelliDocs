@@ -51,6 +51,7 @@ import {
   isValidEnrollmentLrn,
   isValidPhilippineMobileNumber,
   isValidSchoolYearAttended,
+  middleInitialFromMiddleName,
   formatBirthDateUsDisplay,
   parseBirthDateUsToYmd,
   sanitizeBirthDateUsInput,
@@ -79,7 +80,6 @@ import {
   MAX_DOCUMENT_UPLOAD_LABEL,
 } from "../../lib/uploadLimits";
 import { useStudentLocale } from "../../context/StudentLocaleContext";
-import { EnrollmentGuide } from "../../components/student/EnrollmentGuide";
 import {
   translateEmergencyContact,
   translateEnrollmentDocumentName,
@@ -1317,6 +1317,15 @@ export function StudentEnrollment() {
       return;
     }
     const sanitized = sanitizeEnrollmentFieldValue(field, value);
+    if (field === 'middleName') {
+      const middleName = UPPERCASE_FIELDS.has(field) ? sanitized.toUpperCase() : sanitized;
+      setFormData((prev) => ({
+        ...prev,
+        middleName,
+        middleInitial: middleInitialFromMiddleName(middleName),
+      }));
+      return;
+    }
     if (UPPERCASE_FIELDS.has(field)) {
       setFormData((prev) => ({ ...prev, [field]: sanitized.toUpperCase() }));
       return;
@@ -2324,9 +2333,6 @@ export function StudentEnrollment() {
 
   return (
     <div className="space-y-0">
-      <div className="px-4 pt-4 sm:px-6">
-        <EnrollmentGuide allowRestore />
-      </div>
       {enrollmentAllowed && showNewEnrollmentForm && schoolYearCurrent && !showGrade12Prompt && (
         <div className="px-6 pt-6">
           <Alert className="border-[#2D5016]/30 bg-[#2D5016]/5">
@@ -2466,7 +2472,6 @@ export function StudentEnrollment() {
                       disabled={isPermanentlyLockedField}
                       className={`uppercase${isPermanentlyLockedField ? lockedPrefillInputClass : ""}`}
                     />
-                    <p className="text-xs text-gray-500">{t('form.hint.middleName')}</p>
                   </div>
                   <div className="space-y-2">
                     <RequiredLabel htmlFor="middleInitial">{t('form.middleInitial')}</RequiredLabel>

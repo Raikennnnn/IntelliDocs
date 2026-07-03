@@ -140,6 +140,15 @@ export function hasValidPersonName(value: string): boolean {
   return trimmed.length > 0 && /[A-Za-zñÑ]/.test(trimmed);
 }
 
+/** First letter of middle name for the M.I. field (empty when none or N/A). */
+export function middleInitialFromMiddleName(middleName: string): string {
+  const trimmed = sanitizePersonNameInput(middleName).trim();
+  if (!trimmed) return "";
+  const upper = trimmed.toUpperCase();
+  if (upper === "NA" || upper === "NONE") return "";
+  return sanitizeMiddleInitialInput(trimmed).slice(0, 1);
+}
+
 /** Non-empty text-only field with at least one letter (after sanitization). */
 export function hasValidTextOnlyContent(value: string): boolean {
   const trimmed = sanitizeTextOnlyInput(value).trim();
