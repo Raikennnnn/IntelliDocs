@@ -30,8 +30,8 @@ step "Ensure nginx site includes security snippet"
 if grep -qF "$INCLUDE_LINE" "$SITE_FILE"; then
   echo "Already included in $SITE_FILE"
 else
-  # Insert after the first server_name line inside the server block.
-  sed -i "0,/server_name[^;]*;/s//&\n    ${INCLUDE_LINE}/" "$SITE_FILE"
+  # Insert after the first server_name line (use # delimiter — path contains slashes).
+  sed -i "0,/server_name[^;]*;/s#&#\n    ${INCLUDE_LINE}#" "$SITE_FILE"
   echo "Added include to $SITE_FILE"
 fi
 
