@@ -66,12 +66,18 @@ step "Remove duplicate fastcgi timeout directives"
 clean_duplicate_fastcgi_timeouts
 
 step "Write clean IntelliDocs nginx site (HTTP)"
+if [ -f "${APP_ROOT}/scripts/nginx/intellidocs-security-headers.conf" ]; then
+  install -m 0644 "${APP_ROOT}/scripts/nginx/intellidocs-security-headers.conf" \
+    /etc/nginx/snippets/intellidocs-security-headers.conf
+fi
 cat > "$SITE_AVAIL" <<EOF
 # IntelliDocs — auto-repaired site config
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name nsdgam.com www.nsdgam.com _;
+
+    include snippets/intellidocs-security-headers.conf;
 
     root ${APP_ROOT}/public;
     index index.html index.php;

@@ -149,6 +149,7 @@ AUTH_ALLOW_LEGACY_HEADER=0
 | Old UI after deploy (small report dialog, signature overlay) | Deploy was only updating `public/app/` while nginx serves **`public/index.html` + `public/assets/`**. Re-run the latest `deploy_droplet.sh`, then hard refresh |
 | Blank SPA | Re-run deploy script; check `public/index.html` and `public/assets/index-*.js` exist |
 | OCR errors | `apt install tesseract-ocr`; restart `intellidocs-ai` |
+| Security scan: missing CSP / HSTS / Referrer-Policy | On droplet: `bash scripts/configure_nginx_security_headers.sh` then re-scan (nginx only, no app code change) |
 
 ### Fix: `fatal: not a git repository`
 

@@ -236,6 +236,11 @@ if [ -f "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" ]; then
   bash "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" || true
 fi
 
+step "Configure nginx security headers (CSP, HSTS, etc.)"
+if [ -f "$APP_ROOT/scripts/configure_nginx_security_headers.sh" ]; then
+  bash "$APP_ROOT/scripts/configure_nginx_security_headers.sh" || true
+fi
+
 step "Permissions + reload web stack"
 chown -R www-data:www-data "$APP_ROOT/public" "$APP_ROOT/uploads" "$APP_ROOT/ai/assets" 2>/dev/null || true
 chmod -R u+rwX "$APP_ROOT/uploads" 2>/dev/null || true
