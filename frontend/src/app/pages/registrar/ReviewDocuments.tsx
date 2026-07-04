@@ -367,7 +367,7 @@ function applicationWithVerifySchoolYear(app: any, schoolYear: string): any {
   return { ...app, lastSchoolYearAttended: trimmed };
 }
 
-const AI_VERIFY_PAYLOAD_VERSION = 59;
+const AI_VERIFY_PAYLOAD_VERSION = 60;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -1120,7 +1120,6 @@ export function ReviewDocuments() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const previewImgRef = useRef<HTMLImageElement | null>(null);
-  const [previewImgBox, setPreviewImgBox] = useState<{ w: number; h: number } | null>(null);
   const [previewLightboxOpen, setPreviewLightboxOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1727,7 +1726,6 @@ export function ReviewDocuments() {
       setPreviewDisplayKind(null);
       setPreviewError(null);
       setPreviewLoading(false);
-      setPreviewImgBox(null);
       return;
     }
     let cancelled = false;
@@ -1822,30 +1820,6 @@ export function ReviewDocuments() {
       cancelled = true;
     };
   }, [isDocumentDialogOpen, selectedDocument?.id]);
-
-  // Track rendered image size to scale overlay rectangles.
-  useEffect(() => {
-    if (!isDocumentDialogOpen) return;
-    const img = previewImgRef.current;
-    if (!img) return;
-    const update = () => {
-      const r = img.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) setPreviewImgBox({ w: r.width, h: r.height });
-    };
-    update();
-    let ro: ResizeObserver | null = null;
-    try {
-      ro = new ResizeObserver(() => update());
-      ro.observe(img);
-    } catch {
-      // ignore
-    }
-    window.addEventListener("resize", update);
-    return () => {
-      window.removeEventListener("resize", update);
-      if (ro) ro.disconnect();
-    };
-  }, [isDocumentDialogOpen, previewObjectUrl, previewDisplayKind]);
 
   useEffect(() => {
     setAiResultsByDocId({});
@@ -3655,112 +3629,6 @@ export function ReviewDocuments() {
                   const kind =
                     previewDisplayKind ??
                     guessDocKind(selectedDocument.mimeType, selectedDocument.fileName || selectedDocument.name);
-                  const id = String(selectedDocument.id ?? "");
-                  const raw = aiResultsByDocId[id];
-                  const docType = resolveEffectiveDocType(selectedDocument, raw);
-                  const r = aiResultForDisplay(docType, raw);
-                  const cells = Array.isArray(r?.tamper_cells) ? r?.tamper_cells : [];
-                  const fields = Array.isArray((r as any)?.tamper_fields) ? ((r as any).tamper_fields as any[]) : [];
-                  const fieldChecksAll = Array.isArray(r?.field_checks) ? r.field_checks : [];
-                  const mismatches = filterFieldChecksForDocType(docType, fieldChecksAll).filter(
-                    (fc) =>
-                      fc &&
-                      String(fc.field || "").toLowerCase() !== "signature" &&
-                      fc.ok === false &&
-                      typeof fc.x === "number" &&
-                      typeof fc.y === "number" &&
-                      typeof fc.w === "number" &&
-                      typeof fc.h === "number",
-                  );
-                  const natW = typeof r?.image_width === "number" ? r.image_width : null;
-                  const natH = typeof r?.image_height === "number" ? r.image_height : null;
-                  const hasAny =
-                    cells.length > 0 || fields.length > 0 || mismatches.length > 0;
-                  const canOverlay = hasAny && natW && natH && previewImgBox;
-                  const sx = canOverlay ? previewImgBox!.w / natW! : 1;
-                  const sy = canOverlay ? previewImgBox!.h / natH! : 1;
-                  const imageOverlay =
-                    canOverlay && kind === "image" && previewImgBox ? (
-                      <div
-                        className="pointer-events-none absolute left-1/2 top-1/2"
-                        style={{
-                          width: previewImgBox.w,
-                          height: previewImgBox.h,
-                          transform: "translate(-50%, -50%)",
-                        }}
-                      >
-                        {cells.filter((c) => String(c.risk || "").toLowerCase() === "high").map((c, idx) => {
-                          const risk = c.risk || "warning";
-                          const color =
-                            risk === "high"
-                              ? "border-rose-600 bg-rose-500/10"
-                              : "border-amber-500 bg-amber-400/10";
-                          return (
-                            <div
-                              key={idx}
-                              className={`absolute rounded-sm border-2 ${color}`}
-                              style={{
-                                left: `${c.x * sx}px`,
-                                top: `${c.y * sy}px`,
-                                width: `${c.w * sx}px`,
-                                height: `${c.h * sy}px`,
-                              }}
-                              title={`Suspicious cell: ${c.text}`}
-                            />
-                          );
-                        })}
-                        {fields.map((f, idx) => {
-                          const risk = f.risk || "warning";
-                          const color =
-                            risk === "high"
-                              ? "border-fuchsia-600 bg-fuchsia-500/10"
-                              : risk === "info"
-                                ? "border-blue-400 bg-blue-400/10"
-                                : "border-sky-500 bg-sky-400/10";
-                          return (
-                            <div
-                              key={`f-${idx}`}
-                              className={`absolute rounded-sm border-2 ${color}`}
-                              style={{
-                                left: `${f.x * sx}px`,
-                                top: `${f.y * sy}px`,
-                                width: `${f.w * sx}px`,
-                                height: `${f.h * sy}px`,
-                              }}
-                              title={
-                                f.field === "Portrait"
-                                  ? "Portrait area scanned for edits"
-                                  : `Suspicious field (${f.field}): ${f.text}`
-                              }
-                            />
-                          );
-                        })}
-                        {mismatches.map((m, idx) => {
-                          const detected = String(m.detected || "").trim();
-                          const detectedLabel = detected ? `, saw "${detected}"` : "";
-                          return (
-                            <div
-                              key={`m-${idx}`}
-                              className="absolute rounded-full border-[3px] border-blue-600 bg-blue-500/10"
-                              style={{
-                                left: `${m.x * sx}px`,
-                                top: `${m.y * sy}px`,
-                                width: `${m.w * sx}px`,
-                                height: `${m.h * sy}px`,
-                                boxShadow: "0 0 0 1px rgba(255,255,255,0.85) inset",
-                              }}
-                              title={`Mismatch (${String(m.field)}): expected "${String(m.expected)}"${detectedLabel}`}
-                            >
-                              <span
-                                className="absolute -top-5 left-0 whitespace-nowrap rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white shadow"
-                              >
-                                {String(m.field)} mismatch
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : null;
 
                   return (
                     <div className="min-h-0 flex-1">
@@ -3773,15 +3641,6 @@ export function ReviewDocuments() {
                       fitHeightClass="h-[min(480px,calc(96dvh-18rem))] min-h-[220px]"
                       onLightboxOpenChange={setPreviewLightboxOpen}
                       imageRef={previewImgRef}
-                      onImageLoad={() => {
-                        const img = previewImgRef.current;
-                        if (!img) return;
-                        const rect = img.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {
-                          setPreviewImgBox({ w: rect.width, h: rect.height });
-                        }
-                      }}
-                      imageOverlay={imageOverlay}
                       unavailableFallback={
                         <div className="text-center text-sm text-gray-600">
                           <p className="mb-3">Preview is not available for this file type.</p>

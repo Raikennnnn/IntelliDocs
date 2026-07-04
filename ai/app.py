@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 59
+AI_VERIFY_PAYLOAD_VERSION = 60
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -4194,22 +4194,22 @@ def _build_security_levels(
 
     cells = tamper_cells or []
     fields = tamper_fields or []
+    cells_scoring, fields_scoring = _tamper_hotspots_for_scoring(cells, fields)
     tamper_pct = int(round(_clamp01(tamper_score) * 100))
-    high_risk = any(str(c.get("risk")) == "high" for c in cells) or any(
-        str(f.get("risk")) == "high" for f in fields
+    high_risk = any(str(c.get("risk")) == "high" for c in cells_scoring) or any(
+        str(f.get("risk")) == "high" and float(f.get("ratio") or 0) >= 1.55
+        for f in fields_scoring
     )
     warn_hotspots = sum(
         1
-        for x in (cells + fields)
+        for x in (cells_scoring + fields_scoring)
         if str(x.get("risk") or "").lower() == "warning"
     )
-    # Level 3 should reflect tamper/integrity only.
-    # Overall pass still requires Levels 1–3, but we don't want a quality/match failure
-    # to incorrectly show "possible edits" when integrity is clean (e.g., 100%).
+    # Tamper (T) — pass unless integrity is clearly low or multiple strong identity-field signals.
     l3_pass = (
-        tamper_score >= 0.50
-        and not (high_risk and tamper_score < 0.65)
-        and not (warn_hotspots >= 2 and tamper_score < 0.72)
+        tamper_score >= 0.42
+        and not (high_risk and tamper_score < 0.55)
+        and not (warn_hotspots >= 5 and tamper_score < 0.65)
     )
     l3_concern = _concern_display_score(l3_pass, tamper_pct)
     if l3_pass:
@@ -4963,10 +4963,10 @@ def _tamper_check(filepath: str) -> tuple[float, list[str]]:
                 var = float(np.var(arr))
 
                 # Heuristic thresholds (empirical; adjust as you collect samples).
-                if var > 120.0:
+                if var > 165.0:
                     signals.append("ELA: strong local compression artifacts detected")
                     score -= 0.55
-                elif var > 70.0:
+                elif var > 95.0:
                     signals.append("ELA: moderate compression artifacts detected")
                     score -= 0.30
             finally:
@@ -5006,6 +5006,23 @@ def _tamper_check(filepath: str) -> tuple[float, list[str]]:
     return _clamp01(score), signals
 
 
+def _tamper_hotspots_for_scoring(
+    cells: list[dict] | None,
+    fields: list[dict] | None,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Hotspots used for headline tamper % — excludes whole-image REGION grid noise
+    that false-flags stamps, letterhead, and CamScanner artifacts on real scans.
+    """
+    cells_out = list(cells or [])
+    fields_out = [
+        f
+        for f in (fields or [])
+        if str(f.get("field") or "").strip().upper() not in ("REGION", "PORTRAIT")
+    ]
+    return cells_out, fields_out
+
+
 def _merge_localized_tamper_score(
     global_score: float,
     cells: list[dict] | None,
@@ -5018,8 +5035,7 @@ def _merge_localized_tamper_score(
     lower the headline tamper_score so the UI matches human-visible hotspots.
     """
     s = _clamp01(float(global_score))
-    cells = cells or []
-    fields = fields or []
+    cells, fields = _tamper_hotspots_for_scoring(cells, fields)
     merged = list(cells) + list(fields)
     if is_photo:
         merged = [x for x in merged if str(x.get("risk") or "").lower() in ("high", "warning")]
@@ -5032,27 +5048,23 @@ def _merge_localized_tamper_score(
     warn = 0
     for x in merged:
         r = str(x.get("risk") or "").lower().strip()
-        if r == "high":
+        ratio = float(x.get("ratio") or 0)
+        if r == "high" and ratio >= 1.5:
             high += 1
         elif r in ("warning", ""):
             warn += 1
         elif r == "info":
             continue
     if high == 0 and warn == 0:
-        warn = len(merged)
+        return s, []
 
-    # Penalize: high-risk regions are strong evidence of inconsistent compression / edits.
+    # Light penalty — scanned school forms trigger many soft warnings; reserve hard fails for strong signals.
     if is_photo:
-        penalty = min(0.55, high * 0.28 + warn * 0.12)
+        penalty = min(0.40, high * 0.22 + warn * 0.08)
     else:
-        penalty = min(0.78, high * 0.22 + warn * 0.10)
+        penalty = min(0.32, high * 0.10 + warn * 0.04)
     s2 = _clamp01(s - penalty)
-    signals = []
-    if penalty > 0.0:
-        signals.append(
-            f"Integrity adjusted by hotspots: -{int(round(penalty * 100))}% (high={high}, warning={warn})"
-        )
-    return s2, signals
+    return s2, []
 
 
 def _synthetic_check(filepath: str, *, ocr_confidence: float | None = None, word_count: int | None = None) -> tuple[float, list[str]]:
@@ -10686,27 +10698,9 @@ def verify_doc():
                     "SF9: possible header-field tampering signals detected (review highlighted fields)"
                 ]
 
-        # Other doc types: field-only tamper hints (names, IDs, etc.)
+        # SF10/Form137: skip localized tamper — grade tables and CamScanner stamps false-flag constantly.
         if effective_doc_type in ("sf10", "form137", "form157"):
-            diff_arr, _ = _compute_ela_diff(scan_path)
-            if diff_arr is None:
-                diff_arr = _compute_noise_residual(scan_path)
-            fm = {
-                "LRN": ["LRN", "IRN", "URN"],
-                "NAME": ["NAME"],
-                "SCHOOL": ["SCHOOL"],
-                "GRADE": ["GRADE"],
-                "SY": ["SY", "SCHOOL YEAR", "SCHOOLYEAR"],
-            }
-            fields = _keyword_field_tamper(diff_arr, boxes, img_w, img_h, fm, search_y_max_ratio=0.8)
-            if fields:
-                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + fields
-                payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                    f"SF10/Form137: {len(fields)} suspicious field(s) detected"
-                ]
-                payload["issues"] = (payload.get("issues") or []) + [
-                    "SF10/Form137: possible field tampering signals detected (review highlighted fields)"
-                ]
+            pass
 
         if effective_doc_type in ("birth_certificate", "birthcert"):
             diff_arr, _ = _compute_ela_diff(scan_path)
@@ -10727,72 +10721,35 @@ def verify_doc():
                 img_w,
                 img_h,
                 fm,
-                search_y_max_ratio=0.95,
-                min_ratio_high=1.45,
-                min_ratio_warn=1.32,
+                search_y_max_ratio=0.78,
+                min_ratio_high=1.55,
+                min_ratio_warn=1.42,
             )
             if fields:
                 payload["tamper_fields"] = (payload.get("tamper_fields") or []) + fields
                 payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
                     f"Birth cert: {len(fields)} suspicious field(s) detected"
                 ]
-                payload["issues"] = (payload.get("issues") or []) + [
-                    "Birth cert: possible field tampering signals detected (review highlighted fields)"
-                ]
 
         if effective_doc_type in ("good_moral", "goodmoral") and img_w and img_h:
             _append_good_moral_signature_field_check(payload, scan_path, boxes, img_w, img_h)
 
-        if effective_doc_type in ("good_moral", "goodmoral"):
-            diff_arr, _ = _compute_ela_diff(scan_path)
-            if diff_arr is None:
-                diff_arr = _compute_noise_residual(scan_path)
-            fm = {
-                "NAME": ["CERTIFY", "CERTIFIES"],
-                "SCHOOL": ["HIGH SCHOOL", "ACADEMY", "NATIONAL HIGH"],
-                "DATE": ["FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"],
-                "GOOD MORAL": ["GOOD MORAL", "MORAL CHARACTER"],
-                "GRADE": ["GRADE", "GR."],
-            }
-            fields = _keyword_field_tamper(
-                diff_arr, boxes, img_w, img_h, fm, search_y_max_ratio=0.95, min_ratio_high=1.28, min_ratio_warn=1.14
-            )
-            if fields:
-                payload["tamper_fields"] = (payload.get("tamper_fields") or []) + fields
-                payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                    f"Good moral: {len(fields)} suspicious field(s) detected"
-                ]
-                payload["issues"] = (payload.get("issues") or []) + [
-                    "Good moral: possible field tampering signals detected (review highlighted fields)"
-                ]
+        # Good moral: skip localized tamper — letterhead, stamps, and CamScanner edges false-flag constantly.
 
-        # OCR-INDEPENDENT whole-image hotspot scan (catches edits even when OCR misses the labels).
-        # Skip for 2×2 photos — natural face/hair edges against white backgrounds look like outliers.
-        if not is_photo_verify:
+        # Whole-image grid scan — birth cert only (watermarks); other types false-flag scans/stamps.
+        if not is_photo_verify and effective_doc_type in ("birth_certificate", "birthcert"):
             try:
                 tmap = _compute_tamper_map(scan_path)
-                if effective_doc_type in ("birth_certificate", "birthcert"):
-                    # PSA scans include security print / watermarks that look like outliers.
-                    region_hits = _grid_hotspot_tamper(
-                        tmap,
-                        img_w,
-                        img_h,
-                        high_z=3.55,
-                        warn_z=3.15,
-                        min_high_cells=3,
-                    )
-                else:
-                    region_hits = _grid_hotspot_tamper(tmap, img_w, img_h)
+                region_hits = _grid_hotspot_tamper(
+                    tmap,
+                    img_w,
+                    img_h,
+                    high_z=3.55,
+                    warn_z=3.15,
+                    min_high_cells=3,
+                )
                 if region_hits:
                     payload["tamper_fields"] = (payload.get("tamper_fields") or []) + region_hits
-                    n_high = sum(1 for r in region_hits if str(r.get("risk")) == "high")
-                    payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                        f"Region scan: {len(region_hits)} area(s) with inconsistent compression/noise"
-                        + (f" ({n_high} high-risk)" if n_high else "")
-                    ]
-                    payload["issues"] = (payload.get("issues") or []) + [
-                        "Possible edited region(s) detected by whole-image scan (review highlighted areas)"
-                    ]
             except Exception:
                 pass
 
@@ -10818,22 +10775,32 @@ def verify_doc():
             payload["tamper_signals"] = (payload.get("tamper_signals") or []) + merge_signals
 
         try:
+            identity_fields = frozenset(
+                {
+                    "NAME",
+                    "LRN",
+                    "DATE OF BIRTH",
+                    "PLACE OF BIRTH",
+                    "SEX",
+                    "REGISTRY NO",
+                    "FATHER NAME",
+                    "MOTHER NAME",
+                    "GOOD MORAL",
+                }
+            )
             edit_fields = [
                 f
                 for f in fields_all
-                if str(f.get("risk")) in ("high", "warning")
-                and str(f.get("field") or "") not in ("Portrait", "REGION")
+                if str(f.get("risk")) == "high"
+                and str(f.get("field") or "").upper() in identity_fields
             ]
             if edit_fields and not is_photo_verify:
                 peak = max(float(f.get("ratio") or 0) for f in edit_fields)
-                if peak >= 2.8:
-                    cap = _clamp01(0.40 - min(0.12, peak * 0.015))
+                if peak >= 3.6:
+                    cap = _clamp01(0.45 - min(0.10, peak * 0.012))
                     if cap < tamper_score:
                         tamper_score = cap
                         payload["tamper_score"] = tamper_score
-                        payload["tamper_signals"] = (payload.get("tamper_signals") or []) + [
-                            f"Strong local edit signal detected (peak ratio {peak:.1f})"
-                        ]
         except Exception:
             pass
 
@@ -10845,8 +10812,8 @@ def verify_doc():
                 oc = float(avg_conf)
             except Exception:
                 oc = 1.0
-            if missing >= 4 and oc < 0.48:
-                tamper_score = _clamp01(tamper_score - 0.14)
+            if missing >= 5 and oc < 0.40:
+                tamper_score = _clamp01(tamper_score - 0.08)
                 payload["tamper_score"] = tamper_score
 
         if effective_doc_type in ("birth_certificate", "birthcert", "good_moral", "goodmoral"):
@@ -10868,7 +10835,7 @@ def verify_doc():
         # confidence / ai_score / weighted overall all use the document-match score only.
         payload["match_score"] = float(payload.get("confidence", 0.0))
 
-        if tamper_score < 0.35:
+        if tamper_score < 0.28:
             # High risk: force failure and add a visible issue.
             payload["status"] = "failed"
             payload["issues"] = (payload.get("issues") or []) + ["High tamper risk: possible image manipulation"]
