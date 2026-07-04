@@ -69,7 +69,9 @@ step "Write clean IntelliDocs nginx site (HTTP)"
 if [ -f "${APP_ROOT}/scripts/nginx/intellidocs-security-headers.conf" ]; then
   install -m 0644 "${APP_ROOT}/scripts/nginx/intellidocs-security-headers.conf" \
     /etc/nginx/snippets/intellidocs-security-headers.conf
+  sed -i 's/\r$//' /etc/nginx/snippets/intellidocs-security-headers.conf
 fi
+SEC_HDRS="$(grep -E '^[[:space:]]*add_header ' /etc/nginx/snippets/intellidocs-security-headers.conf 2>/dev/null | sed 's/^/        /' || true)"
 cat > "$SITE_AVAIL" <<EOF
 # IntelliDocs — auto-repaired site config
 server {
@@ -77,7 +79,7 @@ server {
     listen [::]:80 default_server;
     server_name nsdgam.com www.nsdgam.com _;
 
-    include snippets/intellidocs-security-headers.conf;
+${SEC_HDRS}
 
     root ${APP_ROOT}/public;
     index index.html index.php;
@@ -89,7 +91,7 @@ server {
     }
 
     location = /index.html {
-        include snippets/intellidocs-security-headers.conf;
+${SEC_HDRS}
         add_header Cache-Control "no-cache, no-store, must-revalidate";
         add_header Pragma "no-cache";
         add_header Expires "0";
@@ -97,13 +99,13 @@ server {
     }
 
     location /assets/ {
-        include snippets/intellidocs-security-headers.conf;
+${SEC_HDRS}
         add_header Cache-Control "public, max-age=31536000, immutable";
         try_files \$uri =404;
     }
 
     location ~ \.php\$ {
-        include snippets/intellidocs-security-headers.conf;
+${SEC_HDRS}
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:${PHP_SOCK};
         fastcgi_param HTTP_AUTHORIZATION \$http_authorization;
@@ -117,7 +119,7 @@ server {
     }
 
     location ~* \.(png|jpg|jpeg|gif|webp|svg|ico|woff2?)\$ {
-        include snippets/intellidocs-security-headers.conf;
+${SEC_HDRS}
         expires 7d;
         add_header Cache-Control "public";
         try_files \$uri =404;
@@ -147,6 +149,8 @@ systemctl --no-pager --full status nginx | head -n 8
 step "Smoke check"
 curl -fsS -o /dev/null -w "HTTP /landing -> %{http_code}\n" "http://127.0.0.1/landing" || true
 curl -fsS -o /dev/null -w "HTTP /api/school-year -> %{http_code}\n" "http://127.0.0.1/api/school-year" || true
+curl -sSI "http://127.0.0.1/index.html" | grep -iE '^(content-security-policy|strict-transport-security|referrer-policy|x-content-type-options|x-frame-options):' || \
+  echo "WARNING: security headers missing on /index.html"
 
 printf '\nNginx repair finished.\n'
 printf 'If curl shows 200/301/302, wait ~30s then reload https://nsdgam.com\n'
