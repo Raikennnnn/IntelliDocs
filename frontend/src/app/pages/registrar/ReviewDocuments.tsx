@@ -77,7 +77,6 @@ import {
   documentConcernFromAi,
   levelConcernPercent,
   syntheticConcernPercent,
-  tamperConcernPercent,
 } from "../../lib/concernScore";
 import {
   REJECTION_REASON_PRESETS,
@@ -368,7 +367,7 @@ function applicationWithVerifySchoolYear(app: any, schoolYear: string): any {
   return { ...app, lastSchoolYearAttended: trimmed };
 }
 
-const AI_VERIFY_PAYLOAD_VERSION = 57;
+const AI_VERIFY_PAYLOAD_VERSION = 59;
 
 /** Good moral: grade level and strand are not enrollment cross-checks. */
 const GOOD_MORAL_EXCLUDED_CROSS_FIELDS = new Set(["grade level", "strand / track"]);
@@ -400,9 +399,30 @@ function filterFieldChecksForDocType(docType: AiDocType, fieldChecks: FieldCheck
   return filtered;
 }
 
+function isTechnicalTamperIssue(issue: string): boolean {
+  const lower = issue.toLowerCase();
+  return (
+    lower.includes("integrity adjusted") ||
+    lower.includes("integrity capped") ||
+    lower.includes("region scan") ||
+    lower.includes("whole-image") ||
+    lower.includes("suspicious field") ||
+    lower.includes("suspicious grade cell") ||
+    lower.includes("possible edited region") ||
+    lower.includes("possible field tampering") ||
+    lower.includes("possible grade-area tampering") ||
+    lower.includes("high tamper risk") ||
+    lower.includes("strong local edit") ||
+    lower.includes("ela:") ||
+    lower.includes("synthetic-like") ||
+    lower.includes("edited with software")
+  );
+}
+
 function filterIssuesForDisplay(docType: AiDocType, issues: string[]): string[] {
   return issues.filter((issue) => {
     const lower = issue.toLowerCase();
+    if (isTechnicalTamperIssue(issue)) return false;
     if (docType !== "good_moral" && lower.includes("signature")) return false;
     if (docType !== "birth_certificate" && docType !== "good_moral" && (lower.includes("seal") || lower.includes("logo"))) return false;
     return true;
@@ -510,11 +530,15 @@ function rebuildMismatchSecurityLevel(
     };
   }
 
-  const levels = security.levels.map((lv) =>
-    /mismatch|enrollment/i.test(lv.title)
-      ? { ...lv, ...mismatchLevel, level: lv.level }
-      : lv,
-  );
+  const levels = security.levels.map((lv) => {
+    if (/mismatch|enrollment/i.test(lv.title)) {
+      return { ...lv, ...mismatchLevel, level: lv.level };
+    }
+    if (/tamper|integrity/i.test(lv.title)) {
+      return { ...lv, issues: [] };
+    }
+    return lv;
+  });
   const tamperOk = levels.find((l) => /tamper|integrity/i.test(l.title))?.pass ?? true;
   return {
     ...security,
@@ -1199,26 +1223,7 @@ export function ReviewDocuments() {
   const documentConcernPercent = (r: AiVerifyResponse | undefined): number | null =>
     documentAverageConcernFromAi(r);
 
-  const tamperPercent = (r: AiVerifyResponse | undefined): number | null => tamperConcernPercent(r);
-
   const syntheticPercent = (r: AiVerifyResponse | undefined): number | null => syntheticConcernPercent(r);
-
-  const tamperPercentForDoc = (
-    r: AiVerifyResponse | undefined,
-    docType: AiDocType,
-  ): number | null => {
-    const direct = tamperPercent(r);
-    if (direct !== null) return direct;
-    if (docType !== "photo_2x2" || !r) return null;
-    const aiLv = r.security_levels?.levels?.find((l) =>
-      /ai tamper|authenticity/i.test(l.title),
-    );
-    if (aiLv) return levelConcernPercent(aiLv);
-    if (typeof r.tamper_score === "number" && Number.isFinite(r.tamper_score)) {
-      return r.tamper_score >= 0.5 ? 0 : Math.max(1, Math.round((1 - r.tamper_score) * 100));
-    }
-    return null;
-  };
 
   const syntheticPercentForDoc = (
     r: AiVerifyResponse | undefined,
@@ -1235,69 +1240,6 @@ export function ReviewDocuments() {
       return syntheticConcernPercent(r);
     }
     return null;
-  };
-
-  const summarizeTamper = (
-    r: AiVerifyResponse | undefined,
-    docType: AiDocType,
-  ): { title: string; body: string; tone: string } | null => {
-    if (!r) return null;
-    const isPhoto = docType === "photo_2x2";
-    if (r.tamper_applicable === false && !isPhoto) {
-      return {
-        title: "Tamper check: Not applicable",
-        body: "Tamper scan is not run for this document type.",
-        tone: "border-gray-200 bg-gray-50 text-gray-700",
-      };
-    }
-
-    const cells = Array.isArray(r?.tamper_cells) ? r.tamper_cells : [];
-    const fields = Array.isArray(r?.tamper_fields) ? r.tamper_fields : [];
-
-    const hasHigh =
-      cells.some((c) => c?.risk === "high") || fields.some((f) => f?.risk === "high");
-    const hasWarn =
-      cells.some((c) => c?.risk === "warning") || fields.some((f) => f?.risk === "warning");
-
-    const concernPct = tamperPercentForDoc(r, docType) ?? 0;
-    const risk =
-      concernPct <= 10 ? "Clear" : hasHigh ? "High concern" : hasWarn ? "Review" : concernRiskLabel(concernPct);
-    const tone = concernScoreSurfaceClasses(concernPct);
-
-    const parts: string[] = [];
-    if (!isPhoto) {
-      if (cells.length > 0) parts.push(`${cells.length} suspicious grade cell(s)`);
-      if (fields.length > 0) parts.push(`${fields.length} suspicious field(s)`);
-    } else {
-      const actionable = fields.filter(
-        (f) => String(f?.risk || "").toLowerCase() in { high: 1, warning: 1 },
-      );
-      const portraitOnly =
-        fields.length > 0 &&
-        actionable.length === 0 &&
-        fields.some((f) => String(f?.field || "").toLowerCase() === "portrait");
-      if (actionable.length > 0) {
-        parts.push(`${actionable.length} suspicious region(s)`);
-      } else if (portraitOnly) {
-        parts.push("portrait area scanned — no edit hotspots");
-      }
-    }
-    const what = parts.length
-      ? parts.join(" and ")
-      : isPhoto
-        ? "no manipulation signals on this photo"
-        : "no suspicious areas detected";
-
-    let body = `Result: ${what}.`;
-    if (hasHigh) {
-      body += isPhoto
-        ? " Review the portrait for possible edits or AI generation."
-        : " Recommend manual verification and compare to original source.";
-    } else if (hasWarn) {
-      body += " Recommend a quick manual check of highlighted areas.";
-    }
-
-    return { title: `Tamper check: ${risk}`, body, tone };
   };
   
   const loadApplication = async () => {
@@ -3284,7 +3226,7 @@ export function ReviewDocuments() {
                           <p className="mb-3 text-xs text-gray-500">
                             {docType === "photo_2x2"
                               ? "Image quality and AI authenticity for this 2×2 photo."
-                              : "Mismatch compares enrollment data to the scan. Tamper looks for edit signals."}
+                              : "Scores use MM (enrollment mismatch) and T (tamper) only — average = document concern."}
                           </p>
                           <SecurityLevelsPanel security={r.security_levels} />
                         </div>
@@ -3317,12 +3259,12 @@ export function ReviewDocuments() {
                     const { visual: visualDocChecks, labels: labelDocChecks } =
                       splitDocChecksForDisplay(allDocChecks);
                     const sealScan = r?.seal_scan;
-                    const tamperPct = tamperPercentForDoc(r, docType);
-                    const tamperSummary = summarizeTamper(r, docType);
-                    const showTamper = visibility.tamper && tamperPct !== null && tamperSummary;
-                    const syntheticPct = syntheticPercentForDoc(r, docType);
+                    const syntheticPct =
+                      docType === "photo_2x2" ? syntheticPercentForDoc(r, docType) : null;
                     const showSynthetic =
-                      visibility.synthetic && Boolean(r && syntheticPct !== null);
+                      docType === "photo_2x2" &&
+                      visibility.synthetic &&
+                      Boolean(r && syntheticPct !== null);
                     const docTitle = docCheckShortTitle(docType);
                     const docSummary =
                       visibility.labels && labelDocChecks.length
@@ -3352,7 +3294,6 @@ export function ReviewDocuments() {
                         : null;
 
                     if (
-                      !showTamper &&
                       !showSynthetic &&
                       !docSummary &&
                       !sealSummary &&
@@ -3362,13 +3303,6 @@ export function ReviewDocuments() {
                       return null;
                     }
 
-                    const tamperSignals = Array.isArray(r?.tamper_signals) ? r.tamper_signals : [];
-                    const tamperCells = Array.isArray((r as any)?.tamper_cells)
-                      ? ((r as any).tamper_cells as any[])
-                      : [];
-                    const tamperFields = Array.isArray((r as any)?.tamper_fields)
-                      ? ((r as any).tamper_fields as any[])
-                      : [];
                     const syntheticSignals = Array.isArray(r?.synthetic_signals) ? r.synthetic_signals : [];
                     const syntheticRisk =
                       syntheticPct !== null ? concernRiskLabel(syntheticPct) : "Clear";
@@ -3393,101 +3327,6 @@ export function ReviewDocuments() {
                         </div>
 
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        {showTamper && tamperSummary ? (
-                          <section
-                            className={cn(tileClass, tamperSummary.tone)}
-                            aria-labelledby="ai-tamper-heading"
-                          >
-                            <h3
-                              id="ai-tamper-heading"
-                              className="text-[11px] font-semibold uppercase tracking-wide text-gray-600"
-                            >
-                              Tamper check
-                            </h3>
-                            <div className="mt-2 flex flex-1 flex-col">
-                              <p className="font-semibold">{tamperSummary.title}</p>
-                              <p className="mt-1 flex-1 leading-relaxed">{tamperSummary.body}</p>
-                              {tamperPct !== null ? (
-                                <p className="mt-1 text-sm">
-                                  Tamper concern:{" "}
-                                  <span
-                                    className={cn(
-                                      "font-semibold tabular-nums",
-                                      concernScoreTextClass(tamperPct),
-                                    )}
-                                  >
-                                    {tamperPct}%
-                                  </span>
-                                  <span className="text-gray-600">
-                                    {" "}
-                                    — 0% is clean; higher means more edit/manipulation concern.
-                                  </span>
-                                </p>
-                              ) : null}
-                            </div>
-                            <details className="mt-2">
-                              <summary className="cursor-pointer text-xs font-medium text-gray-600 hover:text-gray-900">
-                                View tamper details
-                              </summary>
-                              <div className="mt-2 space-y-3 text-sm text-gray-700">
-                                {tamperSignals.length > 0 && (
-                                  <div>
-                                    <p className="font-medium text-gray-800">Signals</p>
-                                    <ul className="mt-1 list-inside list-disc space-y-1">
-                                      {tamperSignals.map((s, idx) => (
-                                        <li key={idx}>{s}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                                {tamperCells.length > 0 && (
-                                  <div>
-                                    <p className="font-medium text-gray-800">Suspicious cells (SF9)</p>
-                                    <ul className="mt-1 list-inside list-disc space-y-1">
-                                      {tamperCells.slice(0, 8).map((c, idx) => (
-                                        <li key={idx}>
-                                          Value <span className="font-semibold">{String(c.text)}</span>{" "}
-                                          {c.risk ? `(${String(c.risk)})` : ""}{" "}
-                                          {typeof c.ela_var === "number" ? `• ELA var: ${c.ela_var}` : ""}{" "}
-                                          {typeof c.ratio === "number" ? `• ratio: ${c.ratio}` : ""}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                    {tamperCells.length > 8 && (
-                                      <p className="mt-1 text-xs text-gray-500">
-                                        Showing 8 of {tamperCells.length}.
-                                      </p>
-                                    )}
-                  </div>
-                                )}
-                                {tamperFields.length > 0 && (
-                                  <div>
-                                    <p className="font-medium text-gray-800">Suspicious fields</p>
-                                    <ul className="mt-1 list-inside list-disc space-y-1">
-                                      {tamperFields.slice(0, 8).map((f, idx) => (
-                                        <li key={idx}>
-                                          <span className="font-semibold">{String(f.field)}</span>:{" "}
-                                          <span className="font-medium">{String(f.text)}</span>{" "}
-                                          {f.risk ? `(${String(f.risk)})` : ""}{" "}
-                                          {typeof f.ratio === "number" ? `• ratio: ${f.ratio}` : ""}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                    {tamperFields.length > 8 && (
-                                      <p className="mt-1 text-xs text-gray-500">
-                                        Showing 8 of {tamperFields.length}.
-                                      </p>
-                                    )}
-                </div>
-                                )}
-                                <p className="text-xs text-gray-500">
-                                  Tip: highlighted boxes are drawn on the preview image on the right.
-                                </p>
-              </div>
-                            </details>
-                          </section>
-                        ) : null}
-
                         {showSynthetic && syntheticPct !== null ? (
                           <section
                             className={cn(tileClass, syntheticTone)}

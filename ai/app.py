@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 57
+AI_VERIFY_PAYLOAD_VERSION = 59
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -3135,6 +3135,71 @@ def _extract_school_years_from_text(text: str) -> list[str]:
     return out
 
 
+def _normalize_school_year_label(sy: str) -> str:
+    import re
+
+    m = re.search(r"(\d{4})\s*[-/]\s*(\d{4})", (sy or "").strip())
+    if not m or not _school_year_span_valid(m.group(1), m.group(2)):
+        return (sy or "").strip()
+    return f"{m.group(1)}-{m.group(2)}"
+
+
+def _school_year_start_year(sy: str) -> int | None:
+    norm = _normalize_school_year_label(sy)
+    if not norm or "-" not in norm:
+        return None
+    try:
+        return int(norm.split("-", 1)[0])
+    except ValueError:
+        return None
+
+
+def _latest_school_year_from_list(years: list[str]) -> str:
+    best = ""
+    best_start = -1
+    for y in years or []:
+        start = _school_year_start_year(y)
+        if start is None:
+            continue
+        if start > best_start:
+            best_start = start
+            best = _normalize_school_year_label(y)
+    return best
+
+
+def _school_year_match_permanent_record(expected_sy: str, text: str) -> tuple[bool | None, str, str]:
+    """
+  Form 137 / SF10 lists many historical school years (Grade 7, 8, 9…).
+  Compare last-school-year-attended against any row, or accept when the
+  student's last year is the same as or newer than the latest year visible.
+  """
+    exp = _normalize_school_year_label(expected_sy)
+    if not exp:
+        return None, "", ""
+    exp_start = _school_year_start_year(exp)
+    if exp_start is None:
+        return None, "", ""
+
+    found = [_normalize_school_year_label(y) for y in _extract_school_years_from_text(text)]
+    found = [y for y in found if y]
+    if not found:
+        return False, "", ""
+
+    if exp in found:
+        return True, exp, ""
+
+    latest = _latest_school_year_from_list(found)
+    latest_start = _school_year_start_year(latest)
+    if latest_start is not None and exp_start >= latest_start:
+        return (
+            True,
+            exp,
+            "Form 137 shows earlier grade years; last school year attended is the same as or after the latest year visible on this scan.",
+        )
+
+    return False, latest or found[0], ""
+
+
 def _extract_lrn_from_ocr_boxes(
     _boxes: list[dict] | None,
     _img_h: int | None,
@@ -4154,12 +4219,12 @@ def _build_security_levels(
             if hotspot_n == 0
             else "Minor integrity flags only — 0% concern; review preview if unsure."
         )
-        l3_issues = list(payload.get("tamper_signals") or [])[:4]
     else:
         l3_summary = (
             f"Possible edits detected — {l3_concern}% tamper concern; review highlighted areas."
         )
-        l3_issues = list(payload.get("tamper_signals") or [])[:6]
+    # Keep tamper scoring in summary only — detailed signals confuse registrars (MM + T average is enough).
+    l3_issues: list[str] = []
 
     l2_pack = _level_pack(
         level=2,
@@ -9980,12 +10045,16 @@ def _evaluate(
 
             sy_ok = school_year_match_linewise(exp_sy, norm_lines) if run_school_year_check else None
             detected_sy = ""
+            sy_note = ""
             if run_school_year_check:
-                found_years = _extract_school_years_from_text(norm_text)
-                if found_years:
-                    detected_sy = found_years[0]
-                    if exp_sy and exp_sy in found_years:
-                        detected_sy = exp_sy
+                if doc_type in ("sf10", "form137", "form157"):
+                    sy_ok, detected_sy, sy_note = _school_year_match_permanent_record(exp_sy, norm_text)
+                else:
+                    found_years = _extract_school_years_from_text(norm_text)
+                    if found_years:
+                        detected_sy = found_years[0]
+                        if exp_sy and exp_sy in found_years:
+                            detected_sy = exp_sy
             if run_school_year_check and sy_ok is not None:
                 row = {
                     "field": "School year",
@@ -9994,6 +10063,8 @@ def _evaluate(
                     "ok": bool(sy_ok),
                     "match_ratio": 1.0 if sy_ok else 0.0,
                 }
+                if sy_note:
+                    row["note"] = sy_note
                 if _academic_doc:
                     _attach_bbox(row, _school_year_value_bbox_from_boxes(normed_boxes, img_h))
                 else:
