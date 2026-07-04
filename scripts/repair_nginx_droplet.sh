@@ -89,6 +89,7 @@ server {
     }
 
     location = /index.html {
+        include snippets/intellidocs-security-headers.conf;
         add_header Cache-Control "no-cache, no-store, must-revalidate";
         add_header Pragma "no-cache";
         add_header Expires "0";
@@ -96,11 +97,13 @@ server {
     }
 
     location /assets/ {
+        include snippets/intellidocs-security-headers.conf;
         add_header Cache-Control "public, max-age=31536000, immutable";
         try_files \$uri =404;
     }
 
     location ~ \.php\$ {
+        include snippets/intellidocs-security-headers.conf;
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:${PHP_SOCK};
         fastcgi_param HTTP_AUTHORIZATION \$http_authorization;
@@ -114,6 +117,7 @@ server {
     }
 
     location ~* \.(png|jpg|jpeg|gif|webp|svg|ico|woff2?)\$ {
+        include snippets/intellidocs-security-headers.conf;
         expires 7d;
         add_header Cache-Control "public";
         try_files \$uri =404;
