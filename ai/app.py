@@ -196,6 +196,8 @@ _bootstrap_ocr()
 ALLOWED_ORIGINS = {
     "http://127.0.0.1:3001",
     "http://localhost:3001",
+    "https://nsdgam.com",
+    "https://www.nsdgam.com",
 }
 
 
@@ -205,8 +207,6 @@ def _corsify(resp):
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
         resp.headers["Access-Control-Allow-Credentials"] = "true"
-    else:
-        resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp

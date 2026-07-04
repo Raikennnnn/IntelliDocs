@@ -79,12 +79,21 @@ server {
     listen [::]:80 default_server;
     server_name nsdgam.com www.nsdgam.com _;
 
+    server_tokens off;
+
+    error_page 404 /errors/404.html;
+
 ${SEC_HDRS}
 
     root ${APP_ROOT}/public;
     index index.html index.php;
 
     client_max_body_size 32M;
+
+    location = /errors/404.html {
+        internal;
+${SEC_HDRS}
+    }
 
     location /api/ {
         try_files \$uri /index.php?\$query_string;

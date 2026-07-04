@@ -2,12 +2,15 @@
 // public/api_index.php - API entry point
 $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?? '';
 
-$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-if (preg_match('#^http://(127\.0\.0\.1|localhost)(:\\d+)?$#', $origin)) {
+$origin = trim($_SERVER['HTTP_ORIGIN'] ?? '');
+$corsAllowed = $origin !== '' && (
+    preg_match('#^https://(www\.)?nsdgam\.com$#', $origin)
+    || preg_match('#^http://(127\.0\.0\.1|localhost)(:\d+)?$#', $origin)
+);
+if ($corsAllowed) {
     header('Access-Control-Allow-Origin: ' . $origin);
     header('Access-Control-Allow-Credentials: true');
-} else {
-    header('Access-Control-Allow-Origin: *');
+    header('Vary: Origin');
 }
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, X-User-Id, Authorization');
