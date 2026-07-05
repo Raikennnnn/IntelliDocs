@@ -7,6 +7,7 @@ import {
 } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { PasswordInput } from "../../components/ui/password-input";
 import { Label } from "../../components/ui/label";
 import { Alert, AlertDescription } from "../../components/ui/alert";
 import {
@@ -466,9 +467,8 @@ export function SystemSettings() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="emailPassword">{apiKeyLabel}</Label>
-              <Input
+              <PasswordInput
                 id="emailPassword"
-                type="password"
                 value={emailConfig.emailPassword}
                 onChange={(e) =>
                   setEmailConfig({ ...emailConfig, emailPassword: e.target.value })

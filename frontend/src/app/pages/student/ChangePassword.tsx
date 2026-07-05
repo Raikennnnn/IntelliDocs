@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router';
 import { apiFetch, setSessionToken } from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../../components/ui/button';
-import { Input } from '../../components/ui/input';
+import { PasswordInput } from '../../components/ui/password-input';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import schoolLogo from '../../../assets/logo.png';
 import homePageImage from '../../../assets/homepage-Bxdbuq6s.png';
@@ -206,8 +206,7 @@ export function ChangePassword() {
 
               <div className="space-y-2">
                 <label className="block font-medium text-sm text-black">New Password</label>
-                <Input
-                  type="password"
+                <PasswordInput
                   autoComplete="new-password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
@@ -220,8 +219,7 @@ export function ChangePassword() {
 
               <div className="space-y-2">
                 <label className="block font-medium text-sm text-black">Confirm New Password</label>
-                <Input
-                  type="password"
+                <PasswordInput
                   autoComplete="new-password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}

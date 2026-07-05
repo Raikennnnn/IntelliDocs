@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { PasswordInput } from "../ui/password-input";
 import { Label } from "../ui/label";
 import { X, Mail, Lock, User, CheckCircle } from "lucide-react";
 import { toast } from "sonner";
@@ -167,9 +168,8 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                   <Lock className="w-4 h-4" />
                   Password *
                 </Label>
-                <Input
+                <PasswordInput
                   id="password"
-                  type="password"
                   name="password"
                   autoComplete="new-password"
                   value={formData.password}
@@ -184,9 +184,8 @@ export function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
                   <Lock className="w-4 h-4" />
                   Confirm Password *
                 </Label>
-                <Input
+                <PasswordInput
                   id="confirmPassword"
-                  type="password"
                   name="confirmPassword"
                   autoComplete="new-password"
                   value={formData.confirmPassword}

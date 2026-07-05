@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
+import { PasswordInput } from '../../components/ui/password-input';
 import { 
   Shield, 
   Clock, 
@@ -530,8 +531,7 @@ export function SystemConfig() {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     SMTP Password
                   </label>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={emailSettings.smtpPassword}
                     onChange={(e) => setEmailSettings({...emailSettings, smtpPassword: e.target.value})}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B1538]"

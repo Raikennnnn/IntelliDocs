@@ -2,8 +2,9 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { PasswordInput } from "../ui/password-input";
 import { Label } from "../ui/label";
-import { X, Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { X, Mail, Lock } from "lucide-react";
 import { toast } from "sonner";
 
 interface LoginModalProps {
@@ -18,7 +19,6 @@ export function LoginModal({ isOpen, onClose, onSwitchToRegister }: LoginModalPr
     email: '',
     password: '',
   });
-  const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   if (!isOpen) return null;
@@ -109,28 +109,14 @@ export function LoginModal({ isOpen, onClose, onSwitchToRegister }: LoginModalPr
                 <Lock className="w-4 h-4" />
                 Password
               </Label>
-              <div className="relative">
-                <Input
-                  id="login-password"
-                  type={showPassword ? 'text' : 'password'}
-                  value={formData.password}
-                  onChange={(e) => handleInputChange('password', e.target.value)}
-                  placeholder="Enter your password"
-                  required
-                  className="pr-10"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
-                >
-                  {showPassword ? (
-                    <EyeOff className="w-4 h-4" />
-                  ) : (
-                    <Eye className="w-4 h-4" />
-                  )}
-                </button>
-              </div>
+              <PasswordInput
+                id="login-password"
+                autoComplete="current-password"
+                value={formData.password}
+                onChange={(e) => handleInputChange('password', e.target.value)}
+                placeholder="Enter your password"
+                required
+              />
             </div>
 
             <div className="flex items-center justify-between">

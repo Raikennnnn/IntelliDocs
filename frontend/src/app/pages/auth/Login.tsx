@@ -3,6 +3,7 @@ import { useNavigate, Link, useSearchParams, useLocation } from 'react-router';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { PasswordInput } from '../../components/ui/password-input';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Label } from '../../components/ui/label';
 import { toast } from 'sonner';
@@ -253,8 +254,8 @@ export function Login() {
                 </div>
                 <div className="space-y-2">
                   <label className="block font-medium text-sm text-black">Password</label>
-                  <Input
-                    type="password"
+                  <PasswordInput
+                    autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required

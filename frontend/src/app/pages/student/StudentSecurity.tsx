@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
-import { Input } from '../../components/ui/input';
+import { PasswordInput } from '../../components/ui/password-input';
 import { Label } from '../../components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '../../components/ui/dialog';
@@ -62,9 +62,9 @@ export function StudentSecurity() {
                       <div className="space-y-4">
                         <div>
                           <Label htmlFor="current">Current Password</Label>
-                          <Input 
+                          <PasswordInput 
                             id="current"
-                            type="password"
+                            autoComplete="current-password"
                             placeholder="Enter current password"
                             className="mt-1"
                             required
@@ -72,9 +72,9 @@ export function StudentSecurity() {
                         </div>
                         <div>
                           <Label htmlFor="new">New Password</Label>
-                          <Input 
+                          <PasswordInput 
                             id="new"
-                            type="password"
+                            autoComplete="new-password"
                             placeholder="Enter new password"
                             className="mt-1"
                             required
@@ -82,9 +82,9 @@ export function StudentSecurity() {
                         </div>
                         <div>
                           <Label htmlFor="confirm">Confirm New Password</Label>
-                          <Input 
+                          <PasswordInput 
                             id="confirm"
-                            type="password"
+                            autoComplete="new-password"
                             placeholder="Confirm new password"
                             className="mt-1"
                             required
