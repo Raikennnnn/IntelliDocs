@@ -40,14 +40,8 @@ import { Link, useParams } from "react-router";
 import { toast } from "sonner";
 import { apiFetch, formatApiError, parseApiJson } from "../../lib/api";
 import { formatStrandDisplay } from "../../lib/strands";
-import {
-  getSchoolYearAttendedOptions,
-  isValidSchoolYearAttended,
-  sanitizeSchoolYearInput,
-} from "../../lib/enrollmentFieldValidation";
 import { guessDocKind } from "../../lib/documentPreview";
 import { SecureDocumentPreview } from "../../components/SecureDocumentPreview";
-import { SchoolYearCombobox } from "../../components/SchoolYearCombobox";
 import {
   SecurityLevelsPanel,
   type SecurityLevels,
@@ -358,13 +352,6 @@ function resolveApplicationVerifyFields(app: any) {
     gradeLevel: String(app?.gradeLevel || "").trim(),
     strand: String(app?.strand || "").trim(),
   };
-}
-
-function applicationWithVerifySchoolYear(app: any, schoolYear: string): any {
-  if (!app) return app;
-  const trimmed = String(schoolYear || "").trim();
-  if (!trimmed) return app;
-  return { ...app, lastSchoolYearAttended: trimmed };
 }
 
 const AI_VERIFY_PAYLOAD_VERSION = 60;
@@ -1182,18 +1169,8 @@ export function ReviewDocuments() {
   const [docDecisionRemarks, setDocDecisionRemarks] = useState("");
   const [docRejectReasonPreset, setDocRejectReasonPreset] = useState<string>("other");
   const [docDecisionSubmitting, setDocDecisionSubmitting] = useState(false);
-  const [verifySchoolYear, setVerifySchoolYear] = useState("");
-  const [verifySchoolYearSaving, setVerifySchoolYearSaving] = useState(false);
 
-  const verifySchoolYearOptions = useMemo(
-    () => getSchoolYearAttendedOptions({ count: 15, extraYears: [verifySchoolYear] }),
-    [verifySchoolYear],
-  );
-
-  const applicationForVerify = useMemo(
-    () => applicationWithVerifySchoolYear(application, verifySchoolYear),
-    [application, verifySchoolYear],
-  );
+  const applicationForVerify = application;
 
   const resolveEffectiveDocType = (doc: any, ai?: AiVerifyResponse | null): AiDocType => {
     const fromAi = aiDocTypeFromResolved(String(ai?.resolved_doc_type ?? ""));
@@ -1294,7 +1271,6 @@ export function ReviewDocuments() {
       }
       const app = data.application ?? null;
       setApplication(app);
-      setVerifySchoolYear(String(app?.lastSchoolYearAttended ?? "").trim());
       setRemarks(String(app?.registrarRemarks ?? ""));
 
       const seeded: Record<string, AiVerifyResponse> = {};
@@ -1329,49 +1305,6 @@ export function ReviewDocuments() {
       setError(e instanceof Error ? e.message : "Failed to load application");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const saveVerifySchoolYear = async () => {
-    if (!application?.enrollmentId) return;
-    const trimmed = verifySchoolYear.trim();
-    if (!trimmed) {
-      toast.error("Enter the school year from the student's report card (e.g. 2019-2020).");
-      return;
-    }
-    if (!isValidSchoolYearAttended(trimmed)) {
-      toast.error("School year must be valid (e.g. 2023 or 2023-2024).");
-      return;
-    }
-    if (
-      trimmed === String(application.lastSchoolYearAttended ?? "").trim() &&
-      !verifySchoolYearSaving
-    ) {
-      return;
-    }
-    setVerifySchoolYearSaving(true);
-    try {
-      const res = await apiFetch("/api/registrar/application", {
-        method: "POST",
-        body: JSON.stringify({
-          action: "update_last_school_year",
-          enrollment_id: application.enrollmentId,
-          last_school_year_attended: trimmed,
-        }),
-      });
-      const data = await res.json().catch(() => ({} as any));
-      if (!res.ok || !data?.success) {
-        toast.error(formatApiError(data, 'Could not save school year. Please try again.'));
-        return;
-      }
-      setApplication((prev: any) =>
-        prev ? { ...prev, lastSchoolYearAttended: trimmed } : prev,
-      );
-      toast.success("School year saved. Re-run AI on SF9 / Form 137 / Good Moral to refresh checks.");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to save school year");
-    } finally {
-      setVerifySchoolYearSaving(false);
     }
   };
 
@@ -2348,42 +2281,13 @@ export function ReviewDocuments() {
                   <p className="text-gray-600">Section at Previous School</p>
                   <p className="font-medium">{application.sectionAtPreviousSchool}</p>
                 </div>
-                <div className="md:col-span-2 lg:col-span-3 space-y-2">
-                  <Label htmlFor="verifySchoolYear">Last School Year Attended (for document verification)</Label>
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <SchoolYearCombobox
-                      id="verifySchoolYear"
-                      value={verifySchoolYear}
-                      onChange={(value) => setVerifySchoolYear(sanitizeSchoolYearInput(value))}
-                      options={verifySchoolYearOptions}
-                      placeholder="Pick or type e.g. 2019-2020"
-                      className="flex-1"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="shrink-0"
-                      disabled={
-                        verifySchoolYearSaving ||
-                        !verifySchoolYear.trim() ||
-                        verifySchoolYear.trim() ===
-                          String(application.lastSchoolYearAttended ?? "").trim()
-                      }
-                      onClick={() => void saveVerifySchoolYear()}
-                    >
-                      {verifySchoolYearSaving ? (
-                        <>
-                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                          Saving…
-                        </>
-                      ) : (
-                        "Save"
-                      )}
-                    </Button>
-                  </div>
-                  <p className="text-xs text-gray-500">
-                    Must match the school year printed on the uploaded SF9 and Good Moral (e.g. both
-                    say 2019-2020 — not the year you are enrolling for). Save, then re-run AI.
+                <div>
+                  <p className="text-gray-600">Last School Year Attended (for document verification)</p>
+                  <p className="font-medium">{application.lastSchoolYearAttended || "—"}</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    From the student&apos;s enrollment form — not editable here. Must match the school year
+                    printed on SF9 and Good Moral. If incorrect, ask the student to update enrollment history
+                    and re-run AI.
                   </p>
                 </div>
               </div>
