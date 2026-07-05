@@ -479,16 +479,51 @@ function fieldCheckConcernLabel(fc: Pick<FieldCheckRow, "ok" | "match_ratio" | "
   return `${concern}% concern`;
 }
 
+type EnrollmentFieldScoreImpact = {
+  /** Points this field adds to document MM (0–100). */
+  mmContribution: number;
+  /** Points this field adds to document Avg from the MM half only (0–50). */
+  avgFromMismatch: number;
+  countsTowardMm: boolean;
+};
+
+/** How many MM / Avg points one enrollment field contributes (MM = avg of all MM fields). */
+function enrollmentFieldScoreImpact(
+  row: EnrollmentCrossRow,
+  allRows: EnrollmentCrossRow[],
+): EnrollmentFieldScoreImpact {
+  const mmRows = allRows.filter((r) => isEnrollmentMmField(String(r.field || "")));
+  const countsTowardMm = isEnrollmentMmField(String(row.field || ""));
+  const mmCount = mmRows.length || 1;
+  const concern = singleFieldCheckConcernPct(row as FieldCheckRow);
+  const mmContribution = countsTowardMm ? Math.round(concern / mmCount) : 0;
+  const avgFromMismatch = Math.round(mmContribution / 2);
+  return { mmContribution, avgFromMismatch, countsTowardMm };
+}
+
+function enrollmentFieldScoreImpactLabel(impact: EnrollmentFieldScoreImpact): string {
+  if (!impact.countsTowardMm) {
+    return "Not counted in MM";
+  }
+  if (impact.mmContribution <= 0) {
+    return "Adds 0% to MM · 0% to Avg";
+  }
+  return `Adds ${impact.mmContribution}% to MM · ${impact.avgFromMismatch}% to Avg`;
+}
+
 function isEnrollmentMmField(field: string): boolean {
   return !ENROLLMENT_MM_EXCLUDED_FIELDS.has(field.trim().toLowerCase());
 }
 
+/** MM score = average concern across every enrollment field (matches = 0%, mismatches = their concern). */
 function fieldCheckConcernPct(fieldChecks: FieldCheckRow[]): number {
-  const failed = fieldChecks.filter((fc) => fc.ok === false && isEnrollmentMmField(String(fc.field || "")));
-  if (!failed.length) return 0;
-  const perField = failed.map(singleFieldCheckConcernPct);
+  const enrollmentFields = fieldChecks.filter((fc) =>
+    isEnrollmentMmField(String(fc.field || "")),
+  );
+  if (!enrollmentFields.length) return 0;
+  const perField = enrollmentFields.map(singleFieldCheckConcernPct);
   return Math.max(
-    1,
+    0,
     Math.min(100, Math.round(perField.reduce((sum, n) => sum + n, 0) / perField.length)),
   );
 }
@@ -498,10 +533,11 @@ function rebuildMismatchSecurityLevel(
   fieldChecks: FieldCheckRow[],
   _docChecks: Array<{ field?: string; ok?: boolean }> = [],
 ): AiVerifyResponse["security_levels"] {
-  const failed = fieldChecks.filter(
-    (fc) => fc.ok === false && isEnrollmentMmField(String(fc.field || "")),
+  const enrollmentMmChecks = fieldChecks.filter((fc) =>
+    isEnrollmentMmField(String(fc.field || "")),
   );
-  const concern = failed.length ? fieldCheckConcernPct(failed) : 0;
+  const failed = enrollmentMmChecks.filter((fc) => fc.ok === false);
+  const concern = enrollmentMmChecks.length ? fieldCheckConcernPct(enrollmentMmChecks) : 0;
   const failedNames = failed.map((fc) => String(fc.field || "").trim()).filter(Boolean);
   const summaryFields = failedNames.slice(0, 6);
   const mismatchIssues = failedNames
@@ -3470,6 +3506,9 @@ export function ReviewDocuments() {
                               {docType === "good_moral"
                                 ? "Enrollment fields plus a visual signature scan on the document — re-run AI after updates."
                                 : "Compared against the student\u2019s enrollment form — re-run AI after form updates."}
+                              {" "}
+                              MM is the average of field concerns; each row shows its share of MM and Avg.
+                              Tamper (T) applies to the whole scan, not per field.
                             </p>
                             <div
                               className="mt-2 flex flex-wrap items-center gap-2"
@@ -3523,7 +3562,9 @@ export function ReviewDocuments() {
                                 Every enrollment field ({crossRows.length})
                               </summary>
                               <ul className="mt-2 space-y-1.5 border-l border-gray-200 pl-3">
-                                {crossRows.map((c, idx) => (
+                                {crossRows.map((c, idx) => {
+                                  const scoreImpact = enrollmentFieldScoreImpact(c, crossRows);
+                                  return (
                                   <li key={idx} className="flex items-start gap-2 leading-snug">
                                     <span
                                       className={`mt-2 inline-block h-4 w-4 shrink-0 rounded-full ${
@@ -3551,6 +3592,9 @@ export function ReviewDocuments() {
                                         {" "}
                                         · {c.ok === null ? "manual review" : fieldCheckConcernLabel(c)}
                                       </span>
+                                      <span className="block font-mono text-[11px] tabular-nums text-gray-500">
+                                        {enrollmentFieldScoreImpactLabel(scoreImpact)}
+                                      </span>
                                       <span className="block text-gray-600">
                                         Form: {String(c.expected).trim()}
                                         {String(c.detected || "").trim()
@@ -3559,7 +3603,8 @@ export function ReviewDocuments() {
                                       </span>
                                     </span>
                                   </li>
-                                ))}
+                                  );
+                                })}
                               </ul>
                             </details>
                           </section>

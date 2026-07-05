@@ -43,8 +43,8 @@ export function ConcernScoringHelp({ className }: { className?: string }) {
           <span className="font-mono tabular-nums">Avg = (MM + T) ÷ 2</span>
         </p>
         <p className="mt-1">
-          <strong className="font-medium text-gray-800">MM</strong> — enrollment form vs document
-          (name, PSA fields, school record).{" "}
+          <strong className="font-medium text-gray-800">MM</strong> — average concern across all
+          enrollment fields (matched fields = 0%; mismatches add their field concern).{" "}
           <strong className="font-medium text-gray-800">T</strong> — edit / tamper signals on the
           scan.
         </p>
