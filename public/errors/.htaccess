@@ -1,0 +1,2 @@
+# Custom error pages — no directory listing; only 404.html is referenced by the server.
+Options -Indexes

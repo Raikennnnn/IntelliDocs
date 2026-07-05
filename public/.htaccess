@@ -1,6 +1,16 @@
 # Disable directory browsing
 Options -Indexes
 
+# Deny direct download of this configuration file (Apache; nginx blocks via server config).
+<Files ".htaccess">
+	<IfModule mod_authz_core_module>
+		Require all denied
+	</IfModule>
+	<IfModule !mod_authz_core_module>
+		Deny from all
+	</IfModule>
+</Files>
+
 # ----------------------------------------------------------------------
 # Rewrite engine
 # ----------------------------------------------------------------------

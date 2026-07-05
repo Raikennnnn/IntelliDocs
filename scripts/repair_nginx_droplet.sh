@@ -90,9 +90,30 @@ ${SEC_HDRS}
 
     client_max_body_size 32M;
 
-    location = /errors/404.html {
-        internal;
+    location ~ /\.(?!well-known) {
+        deny all;
+        return 404;
+    }
+
+    location = /.htaccess {
+        deny all;
+        return 404;
+    }
+
+    location ^~ /uploads/ {
 ${SEC_HDRS}
+        autoindex off;
+        try_files \$uri =404;
+    }
+
+    location ^~ /errors/ {
+        autoindex off;
+        location = /errors/404.html {
+            internal;
+${SEC_HDRS}
+            try_files \$uri =404;
+        }
+        return 404;
     }
 
     location /api/ {
@@ -158,6 +179,9 @@ systemctl --no-pager --full status nginx | head -n 8
 step "Smoke check"
 curl -fsS -o /dev/null -w "HTTP /landing -> %{http_code}\n" "http://127.0.0.1/landing" || true
 curl -fsS -o /dev/null -w "HTTP /api/school-year -> %{http_code}\n" "http://127.0.0.1/api/school-year" || true
+if [ -f "${APP_ROOT}/scripts/verify_web_hardening.sh" ]; then
+  bash "${APP_ROOT}/scripts/verify_web_hardening.sh" "http://127.0.0.1" || true
+fi
 curl -sSI "http://127.0.0.1/index.html" | grep -iE '^(content-security-policy|strict-transport-security|referrer-policy|x-content-type-options|x-frame-options):' || \
   echo "WARNING: security headers missing on /index.html"
 

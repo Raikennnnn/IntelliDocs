@@ -1,2 +1,5 @@
 User-agent: *
-Disallow: 
+Allow: /
+
+# API is not for crawlers
+Disallow: /api/
