@@ -8,6 +8,7 @@ import {
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
+import { UsDateInput } from "../../components/UsDateInput";
 import { Label } from "../../components/ui/label";
 import {
   CheckCircle,
@@ -53,8 +54,6 @@ import {
   isValidSchoolYearAttended,
   middleInitialFromMiddleName,
   formatBirthDateUsDisplay,
-  parseBirthDateUsToYmd,
-  sanitizeBirthDateUsInput,
   sanitizeEnrollmentFieldValue,
   sanitizeEnrollmentFormData,
 } from "../../lib/enrollmentFieldValidation";
@@ -701,11 +700,10 @@ export function StudentEnrollment() {
   const [missingParentDialogOpen, setMissingParentDialogOpen] = useState(false);
   const [missingParentParts, setMissingParentParts] = useState<string[]>([]);
   const [formData, setFormData] = useState<EnrollmentFormData>(INITIAL_ENROLLMENT_FORM_DATA);
-  const [birthDateDisplay, setBirthDateDisplay] = useState("");
-
-  useEffect(() => {
-    setBirthDateDisplay(formatBirthDateUsDisplay(formData.birthDate));
-  }, [formData.birthDate]);
+  const birthDateBounds = useMemo(
+    () => birthDateBoundsForShs(SHS_MIN_AGE_YEARS, SHS_MAX_AGE_YEARS),
+    [],
+  );
   const submitInFlightRef = useRef(false);
   const readabilityInFlightRef = useRef(new Set<number>());
   const readabilityRetryRef = useRef(new Map<number, number>());
@@ -1356,18 +1354,6 @@ export function StudentEnrollment() {
     setFormData((prev) => ({ ...prev, [field]: sanitized }));
   };
 
-  const commitBirthDateFromDisplay = useCallback((): string | null => {
-    const trimmed = birthDateDisplay.trim();
-    if (!trimmed) {
-      setFormData((prev) => (prev.birthDate === "" ? prev : { ...prev, birthDate: "" }));
-      return null;
-    }
-    const ymd = parseBirthDateUsToYmd(trimmed);
-    if (!ymd) return null;
-    setFormData((prev) => (prev.birthDate === ymd ? prev : { ...prev, birthDate: ymd }));
-    return ymd;
-  }, [birthDateDisplay]);
-
   const handleMunicipalityChange = (municipality: string) => {
     setFormData((prev) => {
       const nextMunicipality = sanitizeAddressLabelInput(municipality);
@@ -1684,13 +1670,9 @@ export function StudentEnrollment() {
         return false;
       }
     }
-    const birthYmd = commitBirthDateFromDisplay();
+    const birthYmd = formData.birthDate.trim();
     if (!birthYmd) {
-      if (birthDateDisplay.trim()) {
-        toast.error(t('form.val.birthDateFormat'));
-      } else {
-        toast.error(t('form.val.requiredFields'));
-      }
+      toast.error(t('form.val.requiredFields'));
       return false;
     }
     const birthDateErr = birthDateValidationError(
@@ -2671,33 +2653,20 @@ export function StudentEnrollment() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <RequiredLabel htmlFor="birthDate">{t('form.birthDate')}</RequiredLabel>
-                    <Input
+                    <UsDateInput
                       id="birthDate"
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="bday"
+                      value={formData.birthDate}
+                      min={birthDateBounds.min}
+                      max={birthDateBounds.max}
                       placeholder={t('form.ph.birthDate')}
-                      value={birthDateDisplay}
-                      onChange={(e) => {
-                        const next = sanitizeBirthDateUsInput(e.target.value);
-                        setBirthDateDisplay(next);
-                        if (next.length === 10) {
-                          const ymd = parseBirthDateUsToYmd(next);
-                          if (ymd) {
-                            setFormData((prev) =>
-                              prev.birthDate === ymd ? prev : { ...prev, birthDate: ymd },
-                            );
-                          }
-                        }
-                      }}
-                      onBlur={() => {
-                        const ymd = commitBirthDateFromDisplay();
-                        if (birthDateDisplay.trim() && !ymd) {
-                          toast.error(t('form.val.birthDateFormat'));
-                        }
-                      }}
                       disabled={isPermanentlyLockedField}
                       className={isPermanentlyLockedField ? lockedPrefillInputClass.trim() : undefined}
+                      onChange={(ymd) =>
+                        setFormData((prev) =>
+                          prev.birthDate === ymd ? prev : { ...prev, birthDate: ymd },
+                        )
+                      }
+                      onBlurInvalid={() => toast.error(t('form.val.birthDateFormat'))}
                     />
                     <p className="text-xs text-gray-500">{t('form.hint.birthDate')}</p>
                   </div>
