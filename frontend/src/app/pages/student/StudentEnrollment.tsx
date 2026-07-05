@@ -539,7 +539,7 @@ function applyReEnrollmentFormPrefill(
   base: EnrollmentFormData,
   priorForm: Partial<EnrollmentFormData> | undefined,
   prior: PriorApprovedMeta | null,
-  options?: { promoteGrade?: boolean }
+  options?: { promoteGrade?: boolean; currentSection?: string | null },
 ): EnrollmentFormData {
   const promoteGrade = options?.promoteGrade !== false;
   const merged: EnrollmentFormData = { ...base, ...(priorForm ?? {}) };
@@ -559,6 +559,20 @@ function applyReEnrollmentFormPrefill(
 
   merged.enrollmentStatus = "old";
   merged.confirmInformation = false;
+
+  const priorGrade = prior?.grade_level_number ?? 0;
+  const priorSy = (prior?.school_year ?? "").trim();
+  const sectionRaw = (options?.currentSection ?? "").trim();
+
+  if (priorGrade >= 10 && priorSy !== "") {
+    merged.gradeLevelAtPreviousSchool = `Grade ${priorGrade}`;
+    merged.lastSchoolYearAttended = priorSy;
+    if (sectionRaw !== "") {
+      const sectionMatch = /^(\d+)-(.+)$/i.exec(sectionRaw);
+      const sectionSuffix = sectionMatch ? sectionMatch[2].trim() : sectionRaw;
+      merged.sectionAtPreviousSchool = `${priorGrade}-${sectionSuffix}`.toUpperCase();
+    }
+  }
 
   return merged;
 }
@@ -815,6 +829,7 @@ export function StudentEnrollment() {
           setPriorReenrollFormData(priorFormFromApi);
         }
         setCurrentStudentSection((json.student_section?.section ?? "").trim() || null);
+        const loadedStudentSection = (json.student_section?.section ?? "").trim() || null;
 
         const reEnrollEligible = Boolean(json.re_enrollment_eligible);
         const rowSy = (json.enrollment?.school_year ?? "").toString();
@@ -878,22 +893,30 @@ export function StudentEnrollment() {
             if (isInProgressCurrentSy && priorFormFromApi && isNewSyOpen) {
               return applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
                 promoteGrade: true,
+                currentSection: loadedStudentSection,
               });
             }
             if (reEnrollEligible && priorFormFromApi && !isNewSyOpen) {
               return applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
                 promoteGrade: false,
+                currentSection: loadedStudentSection,
               });
             }
             return merged;
           });
         } else if (isInProgressCurrentSy && priorFormFromApi && isNewSyOpen) {
           setFormData(prev =>
-            applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, { promoteGrade: true })
+            applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, {
+              promoteGrade: true,
+              currentSection: loadedStudentSection,
+            })
           );
         } else if (reEnrollEligible && priorFormFromApi && !isNewSyOpen) {
           setFormData(prev =>
-            applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, { promoteGrade: false })
+            applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, {
+              promoteGrade: false,
+              currentSection: loadedStudentSection,
+            })
           );
         }
 
@@ -1189,7 +1212,7 @@ export function StudentEnrollment() {
         INITIAL_ENROLLMENT_FORM_DATA,
         priorReenrollFormData ?? priorApproved?.form_data ?? {},
         priorApproved,
-        { promoteGrade: true }
+        { promoteGrade: true, currentSection: currentStudentSection }
       );
       setFormData(prefill);
       setCurrentStep(1);
@@ -1823,30 +1846,35 @@ export function StudentEnrollment() {
   };
 
   const validateStep3 = () => {
+    if (!formData.previousSchoolAttended.trim()) {
+      toast.error(t('form.val.previousSchool'));
+      return false;
+    }
+    if (!hasValidTextOnlyContent(formData.previousSchoolAttended)) {
+      toast.error(t('form.val.previousSchoolLetters'));
+      return false;
+    }
+    if (formData.schoolType !== 'public' && formData.schoolType !== 'private') {
+      toast.error(t('form.val.schoolType'));
+      return false;
+    }
+    if (!formData.gradeLevelAtPreviousSchool.trim()) {
+      toast.error(t('form.val.historyGradeLevel'));
+      return false;
+    }
+    if (!formData.sectionAtPreviousSchool.trim()) {
+      toast.error(t('form.val.section'));
+      return false;
+    }
+    if (!hasValidSectionLabel(formData.sectionAtPreviousSchool)) {
+      toast.error(t('form.val.sectionInvalid'));
+      return false;
+    }
     if (!formData.lastSchoolYearAttended.trim()) {
       toast.error(t('form.val.lastSchoolYear'));
       return false;
     }
-    if (
-      formData.previousSchoolAttended.trim() &&
-      !hasValidTextOnlyContent(formData.previousSchoolAttended)
-    ) {
-      toast.error(t('form.val.previousSchoolLetters'));
-      return false;
-    }
-    if (
-      formData.sectionAtPreviousSchool.trim() &&
-      !hasValidSectionLabel(formData.sectionAtPreviousSchool)
-    ) {
-      toast.error(
-        "Section must include letters (e.g. A, 10-A). Long numbers-only values are not allowed.",
-      );
-      return false;
-    }
-    if (
-      formData.lastSchoolYearAttended.trim() &&
-      !isValidSchoolYearAttended(formData.lastSchoolYearAttended)
-    ) {
+    if (!isValidSchoolYearAttended(formData.lastSchoolYearAttended)) {
       toast.error(t('form.val.lastSchoolYearInvalid'));
       return false;
     }
@@ -3036,12 +3064,13 @@ export function StudentEnrollment() {
                 <h2 className="text-2xl font-semibold mb-6">{t('enrollment.step3')}</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="previousSchoolAttended">{t('form.history.previousSchool')}</Label>
+                    <RequiredLabel htmlFor="previousSchoolAttended">{t('form.history.previousSchool')}</RequiredLabel>
                     <Input
                       id="previousSchoolAttended"
                       value={formData.previousSchoolAttended}
                       onChange={(e) => handleInputChange('previousSchoolAttended', e.target.value)}
                       placeholder={t('form.ph.previousSchool')}
+                      required
                       inputMode="text"
                       autoComplete="organization"
                       disabled={lockEnrollmentHistory}
@@ -3049,8 +3078,8 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>{t('form.history.schoolType')}</Label>
-                    <div className="flex gap-4 pt-2">
+                    <RequiredLabel>{t('form.history.schoolType')}</RequiredLabel>
+                    <div className="flex gap-4 pt-2" role="radiogroup" aria-required="true">
                       {(['public', 'private'] as const).map((type) => (
                         <label key={type} className="flex items-center gap-2">
                           <input
@@ -3068,11 +3097,12 @@ export function StudentEnrollment() {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="gradeLevelAtPreviousSchool">{t('form.history.gradeLevel')}</Label>
+                    <RequiredLabel htmlFor="gradeLevelAtPreviousSchool">{t('form.history.gradeLevel')}</RequiredLabel>
                     <select
                       id="gradeLevelAtPreviousSchool"
                       value={formData.gradeLevelAtPreviousSchool}
                       onChange={(e) => handleInputChange('gradeLevelAtPreviousSchool', e.target.value)}
+                      required
                       disabled={lockEnrollmentHistory}
                       className={`w-full h-10 px-3 rounded-md border border-gray-300 text-sm uppercase disabled:opacity-100 ${
                         lockEnrollmentHistory ? 'bg-gray-100 text-gray-700 cursor-not-allowed' : 'bg-white focus:ring-2 focus:ring-[#8B1538] focus:border-[#8B1538]'
@@ -3085,27 +3115,29 @@ export function StudentEnrollment() {
                     </select>
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="sectionAtPreviousSchool">{t('form.history.section')}</Label>
+                    <RequiredLabel htmlFor="sectionAtPreviousSchool">{t('form.history.section')}</RequiredLabel>
                     <Input
                       id="sectionAtPreviousSchool"
                       value={formData.sectionAtPreviousSchool}
                       onChange={(e) => handleInputChange('sectionAtPreviousSchool', e.target.value)}
                       placeholder={t('form.ph.section')}
+                      required
                       inputMode="text"
                       disabled={lockEnrollmentHistory}
                       className={`uppercase${lockEnrollmentHistory ? ' bg-gray-100 text-gray-700' : ''}`}
                     />
                   </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <Label htmlFor="lastSchoolYearAttended">{t('form.history.lastSchoolYear')} *</Label>
+                  <div className="space-y-2">
+                    <RequiredLabel htmlFor="lastSchoolYearAttended">{t('form.history.lastSchoolYear')}</RequiredLabel>
                     <SchoolYearCombobox
                       id="lastSchoolYearAttended"
                       value={formData.lastSchoolYearAttended}
                       onChange={(value) => handleInputChange("lastSchoolYearAttended", value)}
                       options={lastSchoolYearOptions}
                       placeholder={t('form.ph.lastSchoolYear')}
+                      disabled={lockEnrollmentHistory}
+                      className={lockEnrollmentHistory ? 'bg-gray-100 text-gray-700' : undefined}
                     />
-                    <p className="text-xs text-gray-500">{t('form.hint.lastSchoolYear')}</p>
                   </div>
                 </div>
               </CardContent>

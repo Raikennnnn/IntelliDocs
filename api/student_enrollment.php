@@ -105,6 +105,62 @@ function sanitizePriorFormDataForClient(array $formData): array
     return $formData;
 }
 
+/**
+ * When a student continues at NSDGA for a new SY, enrollment history should
+ * reflect the grade/section/SY they just completed — not their first SHS
+ * application (e.g. Grade 10 + 2019-2020 from before they joined).
+ */
+function formatPriorEnrollmentSectionLabel(int $gradeNumber, string $sectionName): string
+{
+    $sectionName = trim($sectionName);
+    if ($sectionName === '') {
+        return '';
+    }
+    if (preg_match('/^(\d+)\-(.+)$/i', $sectionName, $m)) {
+        return $gradeNumber . '-' . strtoupper(trim((string)$m[2]));
+    }
+
+    return $gradeNumber . '-' . strtoupper($sectionName);
+}
+
+/**
+ * @param array<string, mixed> $formData
+ * @param array<string, mixed> $priorApproved
+ * @param array{section?: string|null, shift?: string|null}|null $studentSection
+ * @return array<string, mixed>
+ */
+function syncEnrollmentHistoryForContinuingStudent(
+    array $formData,
+    array $priorApproved,
+    ?array $studentSection
+): array {
+    $priorGrade = (int)($priorApproved['grade_level_number'] ?? 0);
+    $priorSy = trim((string)($priorApproved['school_year'] ?? ''));
+    if ($priorGrade < 10 || $priorSy === '') {
+        return $formData;
+    }
+
+    $formData['gradeLevelAtPreviousSchool'] = 'Grade ' . $priorGrade;
+    $formData['lastSchoolYearAttended'] = $priorSy;
+
+    $sectionRaw = trim((string)($studentSection['section'] ?? ''));
+    if ($sectionRaw !== '') {
+        $formData['sectionAtPreviousSchool'] = formatPriorEnrollmentSectionLabel($priorGrade, $sectionRaw);
+    }
+
+    $prevSchool = trim((string)($formData['previousSchoolAttended'] ?? ''));
+    $looksLikeNsdga = $prevSchool === ''
+        || stripos($prevSchool, 'NUESTRA') !== false
+        || stripos($prevSchool, 'NSDGA') !== false
+        || stripos($prevSchool, 'GUIA') !== false
+        || stripos($prevSchool, 'MARIKINA') !== false;
+    if ($looksLikeNsdga) {
+        $formData['previousSchoolAttended'] = 'NUESTRA SEÑORA DE GUIA ACADEMY OF MARIKINA';
+    }
+
+    return $formData;
+}
+
 /** @return array<string, mixed>|null */
 function buildNewSchoolYearPrefillFormData(?array $priorApproved, ?array $studentSection = null): ?array
 {
@@ -136,7 +192,7 @@ function buildNewSchoolYearPrefillFormData(?array $priorApproved, ?array $studen
         $formData['preferredSchedule'] = assignmentShiftToFormLabel($shift);
     }
 
-    return $formData;
+    return syncEnrollmentHistoryForContinuingStudent($formData, $priorApproved, $studentSection);
 }
 
 /**
