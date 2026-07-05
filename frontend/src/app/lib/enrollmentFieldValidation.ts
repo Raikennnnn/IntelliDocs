@@ -111,6 +111,9 @@ export function sanitizeEnrollmentFieldValue(field: string, value: string): stri
   if (field === "lrn") {
     return sanitizeDigitsOnly(value, 12);
   }
+  if (field === "referralCardControlNumber") {
+    return sanitizeDigitsOnly(value, 6);
+  }
   if (PHONE_FIELDS.has(field)) {
     return sanitizeDigitsOnly(value, 11);
   }

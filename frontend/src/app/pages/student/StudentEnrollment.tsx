@@ -3439,6 +3439,9 @@ export function StudentEnrollment() {
                       <Label htmlFor="referralCardControlNumber">{t('form.payment.referralControl')}</Label>
                       <Input
                         id="referralCardControlNumber"
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={6}
                         value={formData.referralCardControlNumber}
                         onChange={(e) => handleInputChange('referralCardControlNumber', e.target.value)}
                         placeholder={t('form.ph.referralControl')}
