@@ -345,20 +345,28 @@ try {
     $loginByRole = ['student' => 0, 'registrar' => 0, 'admin' => 0];
     $failedByRole = ['student' => 0, 'registrar' => 0, 'admin' => 0];
     $activeByRole = ['student' => 0, 'registrar' => 0, 'admin' => 0];
-    if (tableExists($pdo, 'activity_logs')) {
-        $roleExpr = roleTablesExist($pdo)
-            ? "LOWER(CASE WHEN au_r.user_id IS NOT NULL THEN 'admin' WHEN ru_r.user_id IS NOT NULL THEN 'registrar' ELSE 'student' END)"
-            : (userRoleColumnExists($pdo) ? 'LOWER(u.role)' : "'student'");
-        $joinSplit = roleTablesExist($pdo)
-            ? 'LEFT JOIN admin_users au_r ON au_r.user_id = u.id LEFT JOIN registrar_users ru_r ON ru_r.user_id = u.id LEFT JOIN student_users su_r ON su_r.user_id = u.id'
-            : '';
 
+    $roleJoinSplit = roleTablesExist($pdo)
+        ? 'LEFT JOIN admin_users au_r ON au_r.user_id = u.id LEFT JOIN registrar_users ru_r ON ru_r.user_id = u.id LEFT JOIN student_users su_r ON su_r.user_id = u.id'
+        : '';
+    if (roleTablesExist($pdo)) {
+        $roleExpr = "LOWER(CASE WHEN u.id IS NULL THEN 'student' WHEN au_r.user_id IS NOT NULL THEN 'admin' WHEN ru_r.user_id IS NOT NULL THEN 'registrar' ELSE 'student' END)";
+    } elseif (userRoleColumnExists($pdo)) {
+        $roleExpr = "LOWER(CASE WHEN u.id IS NULL THEN 'student' WHEN TRIM(COALESCE(u.role, '')) = '' THEN 'student' ELSE u.role END)";
+    } else {
+        $roleExpr = "'student'";
+    }
+
+    $successLoginActionsSql = "'login', 'login_success', 'login_otp_verify'";
+
+    if (tableExists($pdo, 'activity_logs')) {
         $roleLoginStmt = $pdo->prepare("
             SELECT {$roleExpr} AS role_name, COUNT(*) AS total_count
             FROM activity_logs al
             INNER JOIN users u ON u.id = al.actor_user_id
-            {$joinSplit}
-            WHERE al.action = 'login'
+            {$roleJoinSplit}
+            WHERE al.action IN ({$successLoginActionsSql})
+              AND LOWER(al.status) = 'success'
               AND al.created_at >= (NOW() - INTERVAL {$rangeIntervalSql} DAY)
             GROUP BY {$roleExpr}
         ");
@@ -373,31 +381,11 @@ try {
             }
         }
 
-        $roleFailedStmt = $pdo->prepare("
-            SELECT {$roleExpr} AS role_name, COUNT(*) AS total_count
-            FROM activity_logs al
-            INNER JOIN users u ON u.id = al.actor_user_id
-            {$joinSplit}
-            WHERE al.action = 'login_attempt' AND al.status = 'failed'
-              AND al.created_at >= (NOW() - INTERVAL {$rangeIntervalSql} DAY)
-            GROUP BY {$roleExpr}
-        ");
-        $roleFailedStmt->execute();
-        foreach ($roleFailedStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
-            $rn = (string)($row['role_name'] ?? '');
-            if ($rn === 'applicant') {
-                $rn = 'student';
-            }
-            if (isset($failedByRole[$rn])) {
-                $failedByRole[$rn] = (int)($row['total_count'] ?? 0);
-            }
-        }
-
         $activeStmt = $pdo->prepare("
             SELECT {$roleExpr} AS role_name, COUNT(DISTINCT al.actor_user_id) AS total_count
             FROM activity_logs al
             INNER JOIN users u ON u.id = al.actor_user_id
-            {$joinSplit}
+            {$roleJoinSplit}
             WHERE al.actor_user_id IS NOT NULL
               AND al.created_at >= (NOW() - INTERVAL 15 MINUTE)
             GROUP BY {$roleExpr}
@@ -410,6 +398,53 @@ try {
             }
             if (isset($activeByRole[$rn])) {
                 $activeByRole[$rn] = (int)($row['total_count'] ?? 0);
+            }
+        }
+    }
+
+    if (tableExists($pdo, 'login_attempts')) {
+        $roleFailedStmt = $pdo->prepare("
+            SELECT {$roleExpr} AS role_name, COUNT(*) AS total_count
+            FROM login_attempts la
+            LEFT JOIN users u ON LOWER(TRIM(u.email)) = LOWER(TRIM(la.email))
+            {$roleJoinSplit}
+            WHERE la.success = 0
+              AND la.attempted_at >= (NOW() - INTERVAL {$rangeIntervalSql} DAY)
+            GROUP BY {$roleExpr}
+        ");
+        $roleFailedStmt->execute();
+        foreach ($roleFailedStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $rn = (string)($row['role_name'] ?? '');
+            if ($rn === 'applicant') {
+                $rn = 'student';
+            }
+            if (isset($failedByRole[$rn])) {
+                $failedByRole[$rn] = (int)($row['total_count'] ?? 0);
+            }
+        }
+    } elseif (tableExists($pdo, 'activity_logs')) {
+        $roleFailedStmt = $pdo->prepare("
+            SELECT {$roleExpr} AS role_name, COUNT(*) AS total_count
+            FROM activity_logs al
+            INNER JOIN users u ON u.id = al.actor_user_id
+            {$roleJoinSplit}
+            WHERE al.module = 'auth'
+              AND LOWER(al.status) = 'failed'
+              AND (
+                al.action IN ('login_attempt', 'login_otp_verify', 'login_otp_send', 'login')
+                OR al.action LIKE 'login_%'
+              )
+              AND al.created_at >= (NOW() - INTERVAL {$rangeIntervalSql} DAY)
+            GROUP BY {$roleExpr}
+        ");
+        $roleFailedStmt->execute();
+        foreach ($roleFailedStmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            $rn = (string)($row['role_name'] ?? '');
+            if ($rn === 'applicant') {
+                $rn = 'student';
+            }
+            if (isset($failedByRole[$rn])) {
+                $failedByRole[$rn] = (int)($row['total_count'] ?? 0);
             }
         }
     }
@@ -506,6 +541,11 @@ try {
     }
 
     $activeUsersNow = array_sum($activeByRole);
+    $totalSuccessfulLogins = array_sum($loginByRole);
+    $totalFailedLoginsByRole = array_sum($failedByRole);
+    $failedLoginRateLabel = ($totalSuccessfulLogins + $failedLoginsRange) > 0
+        ? round(($failedLoginsRange / ($totalSuccessfulLogins + $failedLoginsRange)) * 100, 1) . '%'
+        : '0.0%';
 
     $payload = [
         'success' => true,
@@ -546,6 +586,13 @@ try {
         'securityReports' => $securityReports,
         'databaseReports' => $dbReports,
         'userActivityReports' => $userActivity,
+        'userActivitySummary' => [
+            'totalLogins' => $totalSuccessfulLogins,
+            'totalFailedLogins' => $failedLoginsRange,
+            'failedLoginsByRoleTotal' => $totalFailedLoginsByRole,
+            'failedLoginRate' => $failedLoginRateLabel,
+            'activeUsersNow' => $activeUsersNow,
+        ],
         'auditTrail' => $auditTrail,
     ];
 

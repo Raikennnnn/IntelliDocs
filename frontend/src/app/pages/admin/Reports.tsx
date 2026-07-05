@@ -107,6 +107,12 @@ export function Reports() {
   const [securityRows, setSecurityRows] = useState<SecurityRow[]>([]);
   const [databaseRows, setDatabaseRows] = useState<DatabaseRow[]>([]);
   const [activityRows, setActivityRows] = useState<ActivityRow[]>([]);
+  const [activitySummary, setActivitySummary] = useState({
+    totalLogins: 0,
+    totalFailedLogins: 0,
+    failedLoginRate: '0.0%',
+    activeUsersNow: 0,
+  });
   const [auditRows, setAuditRows] = useState<AuditRow[]>([]);
 
   const loadReports = useCallback(async () => {
@@ -167,6 +173,13 @@ export function Reports() {
       setSecurityRows(Array.isArray(reportsJson.securityReports) ? reportsJson.securityReports as SecurityRow[] : []);
       setDatabaseRows(Array.isArray(reportsJson.databaseReports) ? reportsJson.databaseReports as DatabaseRow[] : []);
       setActivityRows(Array.isArray(reportsJson.userActivityReports) ? reportsJson.userActivityReports as ActivityRow[] : []);
+      const activity = (reportsJson.userActivitySummary ?? {}) as Record<string, unknown>;
+      setActivitySummary({
+        totalLogins: Number(activity.totalLogins ?? 0),
+        totalFailedLogins: Number(activity.totalFailedLogins ?? 0),
+        failedLoginRate: String(activity.failedLoginRate ?? '0.0%'),
+        activeUsersNow: Number(activity.activeUsersNow ?? 0),
+      });
       setAuditRows(Array.isArray(reportsJson.auditTrail) ? reportsJson.auditTrail as AuditRow[] : []);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Network error');
@@ -179,10 +192,9 @@ export function Reports() {
     void loadReports();
   }, [loadReports]);
 
-  const totalLogins = activityRows.reduce((sum, r) => sum + Number(r.logins ?? 0), 0);
-  const totalActiveUsers = activityRows.reduce((sum, r) => sum + Number(r.activeUsers ?? 0), 0);
-  const totalFailed = activityRows.reduce((sum, r) => sum + Number(r.failedLogins ?? 0), 0);
-  const failedRate = totalLogins > 0 ? ((totalFailed / totalLogins) * 100).toFixed(1) : '0.0';
+  const totalLogins = activitySummary.totalLogins;
+  const totalActiveUsers = activitySummary.activeUsersNow;
+  const failedRate = activitySummary.failedLoginRate.replace(/%$/, '');
 
   const exportSection = useMemo(() => {
     if (activeTab === 'audit') return 'audit';
