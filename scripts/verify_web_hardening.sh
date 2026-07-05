@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # Verify Gobuster-style web hardening on the droplet (run after nginx repair/deploy).
 #   bash /var/www/intellidocs/scripts/verify_web_hardening.sh
-set -euo pipefail
+set -uo pipefail
 
 BASE="${1:-http://127.0.0.1}"
 pass=0
 fail=0
+
+http_code() {
+  # Do not use curl -f: 404/403 are expected for blocked paths and must not trigger || fallbacks.
+  curl -sS -o /dev/null -w '%{http_code}' "${BASE}${1}" 2>/dev/null || echo '000'
+}
 
 check() {
   local name="$1"
   local path="$2"
   local expect="$3"
   local code
-  code="$(curl -fsS -o /dev/null -w '%{http_code}' "${BASE}${path}" 2>/dev/null || echo '000')"
+  code="$(http_code "$path")"
   if [ "$code" = "$expect" ]; then
     printf 'OK   %-28s %s -> %s\n' "$name" "$path" "$code"
     pass=$((pass + 1))
@@ -31,7 +36,7 @@ check "errors dir blocked" "/errors/" "404"
 check "uploads dir no listing" "/uploads/" "404"
 
 # Body must not expose stack traces on index.php
-body="$(curl -fsS "${BASE}/index.php" 2>/dev/null || true)"
+body="$(curl -sS "${BASE}/index.php" 2>/dev/null || true)"
 if echo "$body" | grep -qiE '(fatal error|stack trace|exception|/var/www|CodeIgniter\\\\Boot)'; then
   printf 'FAIL index.php body            leaks error details\n'
   fail=$((fail + 1))
