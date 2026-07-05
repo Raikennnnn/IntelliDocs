@@ -4,25 +4,21 @@ declare(strict_types=1);
 /**
  * Notifies the student that the registrar has rejected one of their
  * uploaded documents and that they need to resubmit it.
- *
- * The same template includes the registrar's remarks (so the student knows
- * exactly what to fix) and the number of upload attempts they have left
- * out of the per-document maximum, mirroring the messaging on the student
- * portal.
  */
 
 require_once __DIR__ . '/mailer.php';
+require_once __DIR__ . '/email_layout.php';
+require_once __DIR__ . '/welcome_email.php';
 require_once __DIR__ . '/in_person_verification_email.php';
 
 /**
- * Build the subject + body for the "document rejected" email.
- *
  * @param array{
  *   student_name?: string,
  *   requirement?: string,
  *   remarks?: string,
  *   attempts_used?: int,
  *   attempt_limit?: int,
+ *   app_host?: string,
  * } $opts
  * @return array{subject:string, body:string}
  */
@@ -42,65 +38,70 @@ function buildDocumentResubmissionEmail(array $opts): array
     $remaining = max(0, $attemptLimit - $attemptsUsed);
     $onLastChance = $remaining === 1;
 
+    $appHost = isset($opts['app_host']) && trim((string)$opts['app_host']) !== ''
+        ? trim((string)$opts['app_host'])
+        : welcomeEmailResolveAppHost();
+    $loginUrl = 'https://' . $appHost . '/login';
+
     $subject = 'Action required: please resubmit your ' . $requirement;
 
-    $body = "Hello {$name},\n\n"
-        . "The registrar has reviewed your uploaded document and is asking you to "
-        . "resubmit the following requirement:\n\n"
-        . "    • {$requirement}\n\n";
+    $content =
+        emailLayoutParagraph('Hello ' . $name . ',')
+        . emailLayoutParagraph('The registrar has reviewed your uploaded document and is asking you to resubmit the following requirement:')
+        . emailLayoutBulletList([$requirement]);
 
     if ($remarks !== '') {
-        $body .= "Registrar's note\n"
-            . "-----------------\n"
-            . $remarks . "\n\n";
+        $safeRemarks = str_replace("\n", '<br>', emailLayoutEscape($remarks));
+        $content .= emailLayoutSectionTitle('Registrar\'s note')
+            . emailLayoutCallout($safeRemarks);
     }
 
-    $body .= "What to do next\n"
-        . "----------------\n"
-        . "1. Log in to your student portal.\n"
-        . "2. Open Application Status (or the Enrollment page) and find the "
-        . "document marked \"Resubmission required\".\n"
-        . "3. Click \"Resubmit\" and upload a clearer, complete copy that "
-        . "addresses the registrar's note above.\n\n";
+    $content .= emailLayoutSectionTitle('What to do next')
+        . emailLayoutBulletList([
+            'Log in to your student portal.',
+            'Open Application Status (or the Enrollment page) and find the document marked "Resubmission required".',
+            'Click "Resubmit" and upload a clearer, complete copy that addresses the registrar\'s note.',
+        ]);
 
     if ($remaining <= 0) {
-        // Shouldn't really happen — the registrar can't reject a document
-        // whose upload cap has already been reached — but we handle it
-        // gracefully so the student isn't left without instructions.
-        $body .= "Important: You have already used all {$attemptLimit} of your upload attempts "
-            . "for this requirement, so the system can no longer accept another digital copy. "
-            . "Please bring the ORIGINAL document to the registrar's office for face-to-face "
-            . "verification.\n\n";
+        $content .= emailLayoutCallout(
+            '<strong style="color:#101828;">Important:</strong> You have already used all '
+            . emailLayoutEscape((string)$attemptLimit)
+            . ' upload attempts for this requirement. Please bring the <strong>original document</strong> to the registrar\'s office for face-to-face verification.'
+        );
     } elseif ($onLastChance) {
-        $body .= "Important: You have ALREADY USED {$attemptsUsed} of your {$attemptLimit} "
-            . "upload attempts for this requirement. This will be your LAST allowed upload. "
-            . "If this re-upload is also rejected, you will need to bring the original "
-            . "document to the registrar's office for face-to-face verification.\n\n";
+        $content .= emailLayoutCallout(
+            '<strong style="color:#101828;">Last upload attempt:</strong> You have used '
+            . emailLayoutEscape((string)$attemptsUsed) . ' of ' . emailLayoutEscape((string)$attemptLimit)
+            . ' attempts. If this re-upload is also rejected, you must bring the original document to the registrar.'
+        );
     } else {
-        $body .= "You have {$remaining} upload attempt" . ($remaining === 1 ? '' : 's')
-            . " remaining for this requirement (you've used {$attemptsUsed} of {$attemptLimit}). "
-            . "After all attempts are used, the document must be brought in person to the "
-            . "registrar.\n\n";
+        $content .= emailLayoutParagraph(
+            'You have ' . $remaining . ' upload attempt' . ($remaining === 1 ? '' : 's')
+            . ' remaining (used ' . $attemptsUsed . ' of ' . $attemptLimit . ').'
+        );
     }
 
-    $body .= "If you believe the rejection was made in error or you need help preparing the "
-        . "new file, please reply to this message or visit the registrar's office.\n\n"
-        . "— Nuestra Señora De Guia Academy Registrar's Office";
+    $content .= emailLayoutButton($loginUrl, 'Resubmit document in portal');
+
+    $body = renderBrandedEmailHtml(
+        'Document resubmission',
+        'Please resubmit a required document',
+        $content,
+        '— Nuestra Señora De Guia Academy Registrar\'s Office'
+    );
 
     return ['subject' => $subject, 'body' => $body];
 }
 
 /**
- * Queue and immediately try to deliver the resubmission email. Returns
- * true on successful dispatch, false on failure (the queued row remains
- * for the background worker to retry).
- *
  * @param array{
  *   student_name?: string,
  *   requirement?: string,
  *   remarks?: string,
  *   attempts_used?: int,
  *   attempt_limit?: int,
+ *   app_host?: string,
  * } $opts
  */
 function sendDocumentResubmissionEmail(PDO $pdo, string $recipientEmail, array $opts): bool

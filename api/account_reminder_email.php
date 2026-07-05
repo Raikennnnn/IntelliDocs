@@ -3,10 +3,10 @@ declare(strict_types=1);
 
 /**
  * Reminds a student of their school username when credentials were already issued.
- * Does not include the cleartext temporary password (only the hash is stored).
  */
 
 require_once __DIR__ . '/mailer.php';
+require_once __DIR__ . '/email_layout.php';
 require_once __DIR__ . '/welcome_email.php';
 
 /**
@@ -31,18 +31,25 @@ function buildAccountReminderEmail(array $opts): array
     $appHost = isset($opts['app_host']) && trim((string)$opts['app_host']) !== ''
         ? trim((string)$opts['app_host'])
         : welcomeEmailResolveAppHost();
+    $loginUrl = 'https://' . $appHost . '/login';
 
     $subject = 'Nuestra Señora De Guia Academy — your school account reminder';
 
-    $body = "Hi {$firstName},\n\n"
-        . "This is a reminder of your Nuestra Señora De Guia Academy student account.\n\n"
-        . "  School username:    {$schoolUsername}\n"
-        . "  Temporary password: your date of birth in mm-dd-yyyy format\n\n"
-        . "You can sign in at https://{$appHost}/login using either your personal\n"
-        . "email or your school username.\n\n"
-        . "If you have already changed your password, use your new password.\n"
-        . "If you've forgotten it, contact the registrar's office for a reset.\n\n"
-        . "— Nuestra Señora De Guia Academy\n";
+    $content =
+        emailLayoutParagraph('Hi ' . $firstName . ',')
+        . emailLayoutParagraph('This is a reminder of your Nuestra Señora De Guia Academy student account.')
+        . emailLayoutCredentialBox([
+            ['label' => 'School username', 'value' => $schoolUsername],
+            ['label' => 'Temporary password', 'value' => 'Your date of birth (mm-dd-yyyy)'],
+        ])
+        . emailLayoutParagraph('If you have already changed your password, use your new password. If you\'ve forgotten it, contact the registrar\'s office for a reset.')
+        . emailLayoutButton($loginUrl, 'Sign in to IntelliDocs');
+
+    $body = renderBrandedEmailHtml(
+        'Account reminder',
+        'Your school login details',
+        $content
+    );
 
     return ['subject' => $subject, 'body' => $body];
 }

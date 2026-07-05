@@ -6,6 +6,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/mailer.php';
+require_once __DIR__ . '/email_layout.php';
 require_once __DIR__ . '/welcome_email.php';
 
 /**
@@ -30,35 +31,44 @@ function buildApplicationRejectionEmail(array $opts): array
     $appHost = isset($opts['app_host']) && trim((string)$opts['app_host']) !== ''
         ? trim((string)$opts['app_host'])
         : welcomeEmailResolveAppHost();
+    $loginUrl = 'https://' . $appHost . '/login';
 
     $subject = 'Enrollment application update — Nuestra Señora De Guia Academy';
 
-    $body = "Hello {$name},\n\n"
-        . "Thank you for applying to Nuestra Señora De Guia Academy through IntelliDocs.\n\n"
-        . "After review, your enrollment application was not approved at this time.\n\n";
-
+    $metaRows = [];
     if ($appId !== '') {
-        $body .= "Application ID: {$appId}\n";
+        $metaRows[] = ['label' => 'Application ID', 'value' => $appId];
     }
     if ($schoolYear !== '') {
-        $body .= "School year: {$schoolYear}\n";
+        $metaRows[] = ['label' => 'School year', 'value' => $schoolYear];
     }
-    if ($appId !== '' || $schoolYear !== '') {
-        $body .= "\n";
-    }
+
+    $content =
+        emailLayoutParagraph('Hello ' . $name . ',')
+        . emailLayoutParagraph('Thank you for applying to Nuestra Señora De Guia Academy through IntelliDocs.')
+        . emailLayoutParagraph('After review, your enrollment application was not approved at this time.')
+        . emailLayoutCredentialBox($metaRows);
 
     if ($remarks !== '') {
-        $body .= "Registrar's note\n"
-            . "-----------------\n"
-            . $remarks . "\n\n";
+        $safeRemarks = str_replace("\n", '<br>', emailLayoutEscape($remarks));
+        $content .= emailLayoutSectionTitle('Registrar\'s note')
+            . emailLayoutCallout($safeRemarks);
     }
 
-    $body .= "What you can do\n"
-        . "----------------\n"
-        . "• Sign in at https://{$appHost}/login to view your application status.\n"
-        . "• If you have questions or believe this decision was made in error, "
-        . "please contact the registrar's office during business hours.\n\n"
-        . "— Nuestra Señora De Guia Academy Registrar's Office\n";
+    $content .=
+        emailLayoutSectionTitle('What you can do')
+        . emailLayoutBulletList([
+            'Sign in to your student portal to view your application status.',
+            'Contact the registrar\'s office if you have questions or believe this decision was made in error.',
+        ])
+        . emailLayoutButton($loginUrl, 'View application status');
+
+    $body = renderBrandedEmailHtml(
+        'Application update',
+        'Enrollment application not approved',
+        $content,
+        '— Nuestra Señora De Guia Academy Registrar\'s Office'
+    );
 
     return ['subject' => $subject, 'body' => $body];
 }
