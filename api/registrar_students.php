@@ -144,31 +144,25 @@ if ($method === 'POST') {
         exit;
     }
 
-    // Build a plain-text reminder. We do NOT have the temporary password (only the hash);
-    // this email tells the student the school username and the password format.
+    require_once __DIR__ . '/account_reminder_email.php';
+
     $firstName = trim((string)($user['first_name'] ?? '')) ?: trim((string)($user['full_name'] ?? '')) ?: 'there';
-    $appUrl = trim((string)(getenv('APP_PUBLIC_URL') ?: getenv('APP_BASE_URL') ?: 'http://localhost'));
-    $body = "Hi {$firstName},\n\n"
-        . "This is a reminder of your Nuestra Señora De Guia Academy student account.\n\n"
-        . "  School username: {$schoolUsername}\n"
-        . "  Temporary password: your date of birth in mm-dd-yyyy format\n\n"
-        . "You can sign in at {$appUrl} using either your personal email or your school username. "
-        . "If you have already changed your password, use the new one. "
-        . "If you've forgotten it, contact the registrar's office for a reset.\n\n"
-        . "— Nuestra Señora De Guia Academy\n";
 
     $sent = false;
     $deliveryError = null;
     if (file_exists(__DIR__ . '/mailer.php')) {
         require_once __DIR__ . '/mailer.php';
         try {
-            if (function_exists('queueEmail')) {
-                $queued = queueEmail($pdo, (string)$user['email'], 'Nuestra Señora De Guia Academy — your school account reminder', $body);
-                if ($queued && function_exists('processSingleQueuedEmail')) {
-                    $sent = (bool)processSingleQueuedEmail($pdo, (int)$queued);
-                } else {
-                    $sent = (bool)$queued;
+            if (function_exists('sendAccountReminderEmail')) {
+                $sent = sendAccountReminderEmail($pdo, (string)$user['email'], [
+                    'first_name' => $firstName,
+                    'school_username' => $schoolUsername,
+                ]);
+                if (!$sent) {
+                    $deliveryError = 'send_failed';
                 }
+            } else {
+                $deliveryError = 'mailer_unavailable';
             }
         } catch (Throwable $e) {
             $deliveryError = $e->getMessage();

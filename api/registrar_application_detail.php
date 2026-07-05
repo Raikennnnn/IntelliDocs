@@ -11,6 +11,7 @@ require_once __DIR__ . '/user_role.php';
 require_once __DIR__ . '/username_generator.php';
 require_once __DIR__ . '/welcome_email.php';
 require_once __DIR__ . '/mailer.php';
+require_once __DIR__ . '/application_rejection_email.php';
 require_once __DIR__ . '/section_assignment.php';
 require_once __DIR__ . '/enrollment_status_helpers.php';
 require_once __DIR__ . '/cohort_helpers.php';
@@ -817,16 +818,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 exit;
             }
 
-            // Reject path: unchanged single-statement update. (Issue-credentials
-            // path lives in its own action below — see action === 'issue_credentials'.)
+            // Reject path: update status and notify the student (best-effort).
+            $rejectOwnerStmt = $pdo->prepare(
+                'SELECT u.email, u.full_name, e.school_year, e.enrollment_steps' .
+                (columnExists($pdo, 'users', 'first_name') ? ', u.first_name' : ", '' AS first_name") .
+                ' FROM enrollments e
+                 INNER JOIN users u ON u.id = e.user_id
+                 WHERE e.id = :id LIMIT 1'
+            );
+            $rejectOwnerStmt->execute([':id' => $enrollmentId]);
+            $rejectOwner = $rejectOwnerStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
             $sql = $hasUpdatedAt
                 ? 'UPDATE enrollments SET status = :status, registrar_remarks = :remarks, updated_at = NOW() WHERE id = :id'
                 : 'UPDATE enrollments SET status = :status, registrar_remarks = :remarks WHERE id = :id';
             $stmt = $pdo->prepare($sql);
             $stmt->execute([':status' => $status, ':remarks' => $remarks, ':id' => $enrollmentId]);
             syncStudentCohortForEnrollment($pdo, $enrollmentId);
-            appLogEvent($pdo, 'registrar_decision', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, ['decision' => $status]);
-            echo json_encode(['success' => true, 'message' => 'Application rejected']);
+
+            $emailDelivery = 'skipped';
+            $rejectEmail = trim((string)($rejectOwner['email'] ?? ''));
+            if ($rejectEmail !== '') {
+                $rejectName = trim((string)($rejectOwner['first_name'] ?? ''));
+                if ($rejectName === '') {
+                    $rejectName = trim((string)($rejectOwner['full_name'] ?? ''));
+                }
+                $rejectSchoolYear = trim((string)($rejectOwner['school_year'] ?? ''));
+                $rejectSent = sendApplicationRejectionEmail($pdo, $rejectEmail, [
+                    'student_name' => $rejectName,
+                    'application_id' => 'APP-' . date('Y') . '-' . str_pad((string)$enrollmentId, 3, '0', STR_PAD_LEFT),
+                    'school_year' => $rejectSchoolYear,
+                    'remarks' => $remarks,
+                ]);
+                $emailDelivery = $rejectSent ? 'sent' : 'failed';
+                if (!$rejectSent) {
+                    appLogEvent($pdo, 'registrar_decision', 'registrar', 'failed', $actorId, 'enrollment', (string)$enrollmentId, [
+                        'decision' => $status,
+                        'reason' => 'rejection_email_send_failed',
+                    ]);
+                }
+            }
+
+            appLogEvent($pdo, 'registrar_decision', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, [
+                'decision' => $status,
+                'email_delivery' => $emailDelivery,
+            ]);
+            $rejectResponse = ['success' => true, 'message' => 'Application rejected', 'email_delivery' => $emailDelivery];
+            echo json_encode($rejectResponse);
             exit;
         }
         if ($action === 'issue_credentials') {

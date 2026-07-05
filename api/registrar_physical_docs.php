@@ -355,30 +355,30 @@ function sendPhysicalDocsReminderEmail(PDO $pdo, int $enrollmentId, ?array $enro
     }
 
     $firstName = trim((string)($user['first_name'] ?? '')) ?: trim((string)($user['full_name'] ?? '')) ?: 'there';
-    $bullets = '';
-    foreach ($missing as $label) {
-        $bullets .= '  - ' . $label . "\n";
-    }
-    $intro = $source === 'auto'
-        ? "This is an automated reminder from the Nuestra Senora De Guia Academy registrar's office. "
-        : "This is a reminder from the Nuestra Senora De Guia Academy registrar's office. ";
-    $body = "Hi {$firstName},\n\n"
-        . $intro
-        . "You are enrolled, but the following physical documents are still missing:\n\n"
-        . $bullets
-        . "\nPlease bring them to the registrar's office at your earliest convenience to complete your enrollment.\n\n"
-        . "If you have already submitted these documents, you may disregard this email.\n\n"
-        . "Thank you,\n"
-        . "Nuestra Senora De Guia Academy\n";
-    $subject = 'Reminder — Missing physical enrollment documents';
+
+    require_once __DIR__ . '/physical_docs_reminder_email.php';
 
     $sent = false;
     $deliveryError = null;
     if (file_exists(__DIR__ . '/mailer.php')) {
         require_once __DIR__ . '/mailer.php';
         try {
-            if (function_exists('queueEmail')) {
-                $queueId = queueEmail($pdo, (string)$user['email'], $subject, $body);
+            if (function_exists('sendPhysicalDocsReminderEmailMessage')) {
+                $sent = sendPhysicalDocsReminderEmailMessage($pdo, (string)$user['email'], [
+                    'first_name' => $firstName,
+                    'missing_labels' => $missing,
+                    'source' => $source,
+                ]);
+                if (!$sent) {
+                    $deliveryError = 'send_failed';
+                }
+            } elseif (function_exists('queueEmail')) {
+                $rendered = buildPhysicalDocsReminderEmail([
+                    'first_name' => $firstName,
+                    'missing_labels' => $missing,
+                    'source' => $source,
+                ]);
+                $queueId = queueEmail($pdo, (string)$user['email'], $rendered['subject'], $rendered['body']);
                 if ($queueId && function_exists('processSingleQueuedEmail')) {
                     $sent = (bool)processSingleQueuedEmail($pdo, (int)$queueId);
                 } else {
