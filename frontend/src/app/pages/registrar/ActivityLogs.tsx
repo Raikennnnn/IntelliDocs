@@ -20,12 +20,13 @@ import {
   Loader2,
   RefreshCw,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchActivityLogs,
   type ActivityLogEntry,
   type ActivityLogStats,
 } from "../../lib/activityLogsApi";
+import { filterActivityTimelineLogs } from "../../lib/activityLogSearch";
 
 const emptyStats: ActivityLogStats = {
   totalActions: 0,
@@ -48,7 +49,6 @@ export function ActivityLogs() {
     setError(null);
     try {
       const json = await fetchActivityLogs("registrar", {
-        search: searchTerm,
         range: "month",
         limit: 100,
       });
@@ -61,7 +61,12 @@ export function ActivityLogs() {
     } finally {
       setLoading(false);
     }
-  }, [searchTerm]);
+  }, []);
+
+  const filteredLogs = useMemo(
+    () => filterActivityTimelineLogs(activityLogs, searchTerm),
+    [activityLogs, searchTerm],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -201,12 +206,14 @@ export function ActivityLogs() {
                 <Loader2 className="w-5 h-5 animate-spin" />
                 Loading activity logs…
               </div>
-            ) : activityLogs.length === 0 ? (
+            ) : filteredLogs.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
-                No activity logs found
+                {searchTerm.trim()
+                  ? `No activity logs match "${searchTerm.trim()}".`
+                  : "No activity logs found"}
               </div>
             ) : (
-              activityLogs.map((log) => (
+              filteredLogs.map((log) => (
                 <div
                   key={log.id}
                   className="p-4 border rounded-lg hover:border-[#8B1538] transition-colors"

@@ -12,12 +12,17 @@ import { apiFetch } from '../../lib/api';
 import { toast } from 'sonner';
 import { useStudentLocale } from '../../context/StudentLocaleContext';
 import { EnrollmentGuide } from '../../components/student/EnrollmentGuide';
+import {
+  displayEnrollmentText,
+  displayStrandText,
+  formatGradeLevelDisplay,
+} from '../../lib/enrollmentDisplayFormat';
 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="space-y-1">
       <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</p>
-      <p className="text-sm font-medium text-gray-900">{value || '—'}</p>
+      <p className="text-sm font-medium text-gray-900">{displayEnrollmentText(value)}</p>
     </div>
   );
 }
@@ -92,7 +97,7 @@ function EditableContactField({
         </div>
       ) : (
         <div className="flex items-center gap-1.5 min-h-8">
-          <p className="text-sm font-medium text-gray-900 flex-1 min-w-0 break-words">{value || '—'}</p>
+          <p className="text-sm font-medium text-gray-900 flex-1 min-w-0 break-words">{displayEnrollmentText(value)}</p>
           <button
             type="button"
             onClick={() => onStartEdit(fieldKey)}
@@ -375,8 +380,8 @@ export function StudentDashboard() {
                   onSave={() => saveContactField('address')}
                   inputId="dash-address"
                 />
-                <Detail label="Strand" value={data.profile.strand} />
-                <Detail label="Grade level" value={data.profile.grade_level} />
+                <Detail label="Strand" value={displayStrandText(data.profile.strand)} />
+                <Detail label="Grade level" value={formatGradeLevelDisplay(data.profile.grade_level)} />
                 <Detail label="School year" value={data.profile.school_year} />
                 {enrollmentApproved && data.profile.school_username ? (
                   <Detail label="School username" value={data.profile.school_username} />

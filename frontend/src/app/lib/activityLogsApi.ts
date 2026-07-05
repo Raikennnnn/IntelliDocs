@@ -64,7 +64,16 @@ export async function fetchActivityLogs(
   qs.set("limit", String(params.limit ?? 100));
 
   const res = await apiFetch(`/api/${scope}/activity-logs?${qs.toString()}`);
-  const json = (await res.json()) as ActivityLogsResponse;
+  const text = await res.text();
+  if (!text.trim()) {
+    throw new Error("Empty response from server. Please refresh and try again.");
+  }
+  let json: ActivityLogsResponse;
+  try {
+    json = JSON.parse(text) as ActivityLogsResponse;
+  } catch {
+    throw new Error("Invalid response from server. Please refresh and try again.");
+  }
   if (!res.ok || !json.success) {
     throw new Error(json.error || 'Could not load activity logs. Please try again.');
   }

@@ -39,7 +39,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import { toast } from "sonner";
 import { apiFetch, formatApiError, parseApiJson } from "../../lib/api";
-import { formatStrandDisplay } from "../../lib/strands";
+import {
+  displayEnrollmentText as d,
+  displayStrandText as ds,
+  formatGradeLevelDisplay as dg,
+} from "../../lib/enrollmentDisplayFormat";
 import { guessDocKind } from "../../lib/documentPreview";
 import { SecureDocumentPreview } from "../../components/SecureDocumentPreview";
 import {
@@ -1342,45 +1346,55 @@ export function ReviewDocuments() {
         return;
       }
       if (data.already_enrolled) {
-        toast.message(data.message || "Student is already enrolled.");
+        toast.message(d(data.message || "Student is already enrolled."));
       } else {
-        toast.success(data.message || `Application approved — ${application.id} is now enrolled`);
-      }
+        const sa = (data as {
+          section_assignment?: {
+            assigned?: boolean;
+            section?: string | null;
+            shift?: string | null;
+            preferred_shift?: string | null;
+            shift_fallback?: boolean;
+            auto_created?: boolean;
+            warning?: string | null;
+          };
+        }).section_assignment;
 
-      // Show how the student was placed into a section so the registrar
-      // has immediate feedback (auto-filled vs. needs manual placement,
-      // and whether they got their preferred shift).
-      const sa = (data as {
-        section_assignment?: {
-          assigned?: boolean;
-          section?: string | null;
-          shift?: string | null;
-          preferred_shift?: string | null;
-          shift_fallback?: boolean;
-          auto_created?: boolean;
-          warning?: string | null;
-        };
-      }).section_assignment;
-      if (sa) {
-        const shiftLabel = sa.shift === 'afternoon' ? 'afternoon' : 'morning';
-        const preferredLabel = sa.preferred_shift === 'afternoon' ? 'afternoon' : 'morning';
-        if (sa.assigned && sa.section) {
+        let approvalMsg =
+          data.message || "Application approved — student is now enrolled";
+        if (sa?.assigned && sa.section) {
+          const shiftLabel = sa.shift === "afternoon" ? "afternoon" : "morning";
           if (sa.auto_created) {
-            toast.success(
-              `Auto-assigned to a newly created section "${sa.section}" (${shiftLabel} shift). The previous sections were full.`,
-            );
+            approvalMsg += ` Auto-assigned to a newly created section "${sa.section}" (${shiftLabel} shift). The previous sections were full.`;
           } else {
-            toast.success(`Auto-assigned to section "${sa.section}" (${shiftLabel} shift).`);
+            approvalMsg += ` Auto-assigned to section "${sa.section}" (${shiftLabel} shift).`;
           }
+        }
+        toast.success(d(approvalMsg));
+
+        if (sa) {
+          const shiftLabel = sa.shift === "afternoon" ? "afternoon" : "morning";
+          const preferredLabel =
+            sa.preferred_shift === "afternoon" ? "afternoon" : "morning";
           if (sa.shift_fallback) {
             toast.warning(
-              `Student preferred the ${preferredLabel} shift, but all ${preferredLabel} sections were full. Placed in the ${shiftLabel} shift instead — reassign on the Sections page if needed.`,
+              d(
+                `Student preferred the ${preferredLabel} shift, but all ${preferredLabel} sections were full. Placed in the ${shiftLabel} shift instead — reassign on the Sections page if needed.`,
+              ),
+            );
+          } else if (sa.warning === "eim_female_manual_placement") {
+            toast.warning(
+              d(
+                "Female applicant for Industrial Technologies (TECHPRO - IT) was not auto-placed. Please assign her section manually from the Sections page.",
+              ),
+            );
+          } else if (sa.warning) {
+            toast.warning(
+              d(
+                "Section auto-assignment was skipped. Please assign this student to a section manually.",
+              ),
             );
           }
-        } else if (sa.warning === 'eim_female_manual_placement') {
-          toast.warning('Female applicant for Industrial Technologies (TECHPRO - IT) was not auto-placed. Please assign her section manually from the Sections page.');
-        } else if (sa.warning) {
-          toast.warning('Section auto-assignment was skipped. Please assign this student to a section manually.');
         }
       }
 
@@ -1994,19 +2008,19 @@ export function ReviewDocuments() {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
             <div>
               <p className="text-gray-600">Student Type</p>
-              <p className="font-medium capitalize">{application.enrollmentStatus}</p>
+              <p className="font-medium">{d(application.enrollmentStatus)}</p>
             </div>
             <div>
               <p className="text-gray-600">Submitted Date</p>
-              <p className="font-medium">{application.submittedDate}</p>
+              <p className="font-medium">{d(application.submittedDate)}</p>
             </div>
             <div>
               <p className="text-gray-600">Grade Level</p>
-              <p className="font-medium">Grade {application.gradeLevel}</p>
+              <p className="font-medium">{dg(application.gradeLevel)}</p>
             </div>
             <div>
               <p className="text-gray-600">Strand</p>
-              <p className="font-medium">{formatStrandDisplay(application.strand)}</p>
+              <p className="font-medium">{ds(application.strand)}</p>
             </div>
           </div>
         </CardContent>
@@ -2067,27 +2081,27 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">First Name</p>
-                  <p className="font-medium">{application.givenName}</p>
+                  <p className="font-medium">{d(application.givenName)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Middle Name</p>
-                  <p className="font-medium">{application.middleName || "N/A"}</p>
+                  <p className="font-medium">{d(application.middleName || "N/A")}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Last Name</p>
-                  <p className="font-medium">{application.lastName}</p>
+                  <p className="font-medium">{d(application.lastName)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Extension Name</p>
-                  <p className="font-medium">{application.extensionName || "N/A"}</p>
+                  <p className="font-medium">{d(application.extensionName || "N/A")}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Gender</p>
-                  <p className="font-medium">{application.gender}</p>
+                  <p className="font-medium">{d(application.gender)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">LRN</p>
-                  <p className="font-medium">{application.lrn}</p>
+                  <p className="font-medium">{d(application.lrn)}</p>
                 </div>
               </div>
             </div>
@@ -2097,11 +2111,11 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">Contact Number</p>
-                  <p className="font-medium">{application.contactNumber}</p>
+                  <p className="font-medium">{d(application.contactNumber)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Email Address</p>
-                  <p className="font-medium">{application.email}</p>
+                  <p className="font-medium">{d(application.email)}</p>
                 </div>
               </div>
             </div>
@@ -2111,23 +2125,23 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">Block/Lot/House No.</p>
-                  <p className="font-medium">{application.blockLotHouseNo}</p>
+                  <p className="font-medium">{d(application.blockLotHouseNo)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Street</p>
-                  <p className="font-medium">{application.street}</p>
+                  <p className="font-medium">{d(application.street)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Compound/Subdivision/Village</p>
-                  <p className="font-medium">{application.compoundSubdivisionVillage}</p>
+                  <p className="font-medium">{d(application.compoundSubdivisionVillage)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Barangay</p>
-                  <p className="font-medium">{application.barangay}</p>
+                  <p className="font-medium">{d(application.barangay)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Municipality/City</p>
-                  <p className="font-medium">{application.municipality}</p>
+                  <p className="font-medium">{d(application.municipality)}</p>
                 </div>
               </div>
             </div>
@@ -2137,15 +2151,15 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">Date of Birth</p>
-                  <p className="font-medium">{application.birthDate}</p>
+                  <p className="font-medium">{d(application.birthDate)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Place of Birth</p>
-                  <p className="font-medium">{application.birthPlace}</p>
+                  <p className="font-medium">{d(application.birthPlace)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Religion</p>
-                  <p className="font-medium">{application.religion}</p>
+                  <p className="font-medium">{d(application.religion)}</p>
                 </div>
               </div>
             </div>
@@ -2158,23 +2172,23 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">Given Name</p>
-                  <p className="font-medium">{application.motherGivenName}</p>
+                  <p className="font-medium">{d(application.motherGivenName)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Maiden Middle Name</p>
-                  <p className="font-medium">{application.motherMaidenMiddleName}</p>
+                  <p className="font-medium">{d(application.motherMaidenMiddleName)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Maiden Last Name</p>
-                  <p className="font-medium">{application.motherMaidenLastName}</p>
+                  <p className="font-medium">{d(application.motherMaidenLastName)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Contact Number</p>
-                  <p className="font-medium">{application.motherContactNumber}</p>
+                  <p className="font-medium">{d(application.motherContactNumber)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Occupation</p>
-                  <p className="font-medium">{application.motherOccupation}</p>
+                  <p className="font-medium">{d(application.motherOccupation)}</p>
                 </div>
               </div>
             </div>
@@ -2184,23 +2198,23 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">Given Name</p>
-                  <p className="font-medium">{application.fatherGivenName}</p>
+                  <p className="font-medium">{d(application.fatherGivenName)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Middle Name</p>
-                  <p className="font-medium">{application.fatherMiddleName}</p>
+                  <p className="font-medium">{d(application.fatherMiddleName)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Last Name</p>
-                  <p className="font-medium">{application.fatherLastName}</p>
+                  <p className="font-medium">{d(application.fatherLastName)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Contact Number</p>
-                  <p className="font-medium">{application.fatherContactNumber}</p>
+                  <p className="font-medium">{d(application.fatherContactNumber)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Occupation</p>
-                  <p className="font-medium">{application.fatherOccupation}</p>
+                  <p className="font-medium">{d(application.fatherOccupation)}</p>
                 </div>
               </div>
             </div>
@@ -2211,23 +2225,23 @@ export function ReviewDocuments() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
                   <div>
                     <p className="text-gray-600">Given Name</p>
-                    <p className="font-medium">{application.guardianGivenName}</p>
+                    <p className="font-medium">{d(application.guardianGivenName)}</p>
                   </div>
                   <div>
                     <p className="text-gray-600">Middle Name</p>
-                    <p className="font-medium">{application.guardianMiddleName}</p>
+                    <p className="font-medium">{d(application.guardianMiddleName)}</p>
                   </div>
                   <div>
                     <p className="text-gray-600">Last Name</p>
-                    <p className="font-medium">{application.guardianLastName}</p>
+                    <p className="font-medium">{d(application.guardianLastName)}</p>
                   </div>
                   <div>
                     <p className="text-gray-600">Contact Number</p>
-                    <p className="font-medium">{application.guardianContactNumber}</p>
+                    <p className="font-medium">{d(application.guardianContactNumber)}</p>
                   </div>
                   <div>
                     <p className="text-gray-600">Relationship</p>
-                    <p className="font-medium">{application.relationshipToGuardian}</p>
+                    <p className="font-medium">{d(application.relationshipToGuardian)}</p>
                   </div>
                 </div>
               </div>
@@ -2237,7 +2251,7 @@ export function ReviewDocuments() {
               <h3 className="text-lg font-semibold mb-4">Emergency Contact</h3>
               <div className="text-sm">
                 <p className="text-gray-600">Primary Emergency Contact</p>
-                <p className="font-medium capitalize">{application.emergencyContact}</p>
+                <p className="font-medium">{d(application.emergencyContact)}</p>
               </div>
             </div>
           </TabsContent>
@@ -2249,15 +2263,15 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">Grade Level</p>
-                  <p className="font-medium">Grade {application.gradeLevel}</p>
+                  <p className="font-medium">{dg(application.gradeLevel)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Strand</p>
-                  <p className="font-medium">{formatStrandDisplay(application.strand)}</p>
+                  <p className="font-medium">{ds(application.strand)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Preferred Schedule</p>
-                  <p className="font-medium">{application.preferredSchedule}</p>
+                  <p className="font-medium">{d(application.preferredSchedule)}</p>
                 </div>
               </div>
             </div>
@@ -2267,23 +2281,23 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">Previous School Attended</p>
-                  <p className="font-medium">{application.previousSchoolAttended}</p>
+                  <p className="font-medium">{d(application.previousSchoolAttended)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">School Type</p>
-                  <p className="font-medium capitalize">{application.schoolType}</p>
+                  <p className="font-medium">{d(application.schoolType)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Grade Level at Previous School</p>
-                  <p className="font-medium">Grade {application.gradeLevelAtPreviousSchool}</p>
+                  <p className="font-medium">{dg(application.gradeLevelAtPreviousSchool)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Section at Previous School</p>
-                  <p className="font-medium">{application.sectionAtPreviousSchool}</p>
+                  <p className="font-medium">{d(application.sectionAtPreviousSchool)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Last School Year Attended (for document verification)</p>
-                  <p className="font-medium">{application.lastSchoolYearAttended || "—"}</p>
+                  <p className="font-medium">{d(application.lastSchoolYearAttended)}</p>
                   <p className="text-xs text-gray-500 mt-1">
                     From the student&apos;s enrollment form — not editable here. Must match the school year
                     printed on SF9 and Good Moral. If incorrect, ask the student to update enrollment history
@@ -2299,15 +2313,15 @@ export function ReviewDocuments() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                   <div>
                     <p className="text-gray-600">Referral Card Control Number</p>
-                    <p className="font-medium">{application.referralCardControlNumber}</p>
+                    <p className="font-medium">{d(application.referralCardControlNumber)}</p>
                   </div>
                   <div>
                     <p className="text-gray-600">Referrer Name</p>
-                    <p className="font-medium">{application.referrerName}</p>
+                    <p className="font-medium">{d(application.referrerName)}</p>
                   </div>
                   <div>
                     <p className="text-gray-600">Referrer Contact Number</p>
-                    <p className="font-medium">{application.referrerContactNumber}</p>
+                    <p className="font-medium">{d(application.referrerContactNumber)}</p>
                   </div>
                 </div>
               </div>
@@ -2318,12 +2332,12 @@ export function ReviewDocuments() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-gray-600">Mode of Payment</p>
-                  <p className="font-medium">{application.modeOfPayment}</p>
+                  <p className="font-medium">{d(application.modeOfPayment)}</p>
                 </div>
                 {application.voucherNo && (
                   <div>
                     <p className="text-gray-600">Voucher Number</p>
-                    <p className="font-medium">{application.voucherNo}</p>
+                    <p className="font-medium">{d(application.voucherNo)}</p>
                   </div>
                 )}
               </div>
@@ -3007,16 +3021,16 @@ export function ReviewDocuments() {
                     <div className="mb-3 grid grid-cols-1 gap-4 text-sm text-gray-600 sm:grid-cols-2 md:grid-cols-3">
                       <div>
                         <p className="text-xs text-gray-500">Student</p>
-                        <p className="font-medium">{selectedDocument.studentName}</p>
+                        <p className="font-medium">{d(selectedDocument.studentName)}</p>
                       </div>
                       <div>
                         <p className="text-xs text-gray-500">Application ID</p>
-                        <p className="font-medium">{selectedDocument.applicationId}</p>
+                        <p className="font-medium">{d(selectedDocument.applicationId)}</p>
                       </div>
                       <div>
                         <p className="text-xs text-gray-500">Strand / Grade</p>
                         <p className="font-medium">
-                          {formatStrandDisplay(selectedDocument.strand)} — Grade {selectedDocument.gradeLevel}
+                          {ds(selectedDocument.strand)} — {dg(selectedDocument.gradeLevel)}
                         </p>
                       </div>
                     </div>

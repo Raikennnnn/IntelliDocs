@@ -17,6 +17,7 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/api_auth.php';
 require_once __DIR__ . '/user_role.php';
+require_once __DIR__ . '/activity_log_search_helpers.php';
 
 header('Content-Type: application/json');
 
@@ -262,6 +263,8 @@ if (!activityLogsTableExists($pdo)) {
     exit;
 }
 
+ensureActivityLogColumns($pdo);
+
 $sinceSql = match ($range) {
     'today' => 'NOW() - INTERVAL 1 DAY',
     'week' => 'NOW() - INTERVAL 7 DAY',
@@ -275,32 +278,43 @@ if ($sinceSql !== null) {
     $where[] = "al.created_at >= ({$sinceSql})";
 }
 if ($search !== '') {
-    $where[] = '(al.action LIKE :search OR al.module LIKE :search OR u.full_name LIKE :search OR u.email LIKE :search OR CAST(al.target_id AS CHAR) LIKE :search OR al.ip_address LIKE :search)';
-    $params[':search'] = '%' . $search . '%';
+    $where[] = buildActivityLogSearchWhere($pdo, $search, $params);
 }
 $whereClause = $where === [] ? '1=1' : implode(' AND ', $where);
 
-$listStmt = $pdo->prepare("
-    SELECT
-        al.id,
-        al.created_at,
-        al.actor_user_id,
-        al.action,
-        al.module,
-        al.status,
-        al.target_type,
-        al.target_id,
-        al.ip_address,
-        al.details_json,
-        COALESCE(u.full_name, u.username, 'System') AS actor_name
-    FROM activity_logs al
-    LEFT JOIN users u ON u.id = al.actor_user_id
-    WHERE {$whereClause}
-    ORDER BY al.created_at DESC, al.id DESC
-    LIMIT 1000
-");
-$listStmt->execute($params);
-$rows = $listStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+$ipSelect = activityLogColumnExists($pdo, 'activity_logs', 'ip_address')
+    ? 'al.ip_address'
+    : "NULL AS ip_address";
+$actorSelect = buildActivityLogActorNameSelect($pdo, 'u');
+
+try {
+    $listStmt = $pdo->prepare("
+        SELECT
+            al.id,
+            al.created_at,
+            al.actor_user_id,
+            al.action,
+            al.module,
+            al.status,
+            al.target_type,
+            al.target_id,
+            {$ipSelect},
+            al.details_json,
+            {$actorSelect}
+        FROM activity_logs al
+        LEFT JOIN users u ON u.id = al.actor_user_id
+        WHERE {$whereClause}
+        ORDER BY al.created_at DESC, al.id DESC
+        LIMIT 1000
+    ");
+    $listStmt->execute($params);
+    $rows = $listStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (Throwable $e) {
+    error_log('activity_logs query failed: ' . $e->getMessage());
+    http_response_code(500);
+    echo json_encode(['success' => false, 'error' => 'Could not load activity logs. Please try again.']);
+    exit;
+}
 
 $logs = [];
 $stats = $emptyStats;
@@ -327,10 +341,7 @@ foreach ($rows as $r) {
 
     $actorId = $r['actor_user_id'] !== null ? (int)$r['actor_user_id'] : 0;
     $role = $actorId > 0 ? getUserRole($pdo, $actorId) : 'system';
-    $ip = trim((string)($r['ip_address'] ?? ''));
-    if ($ip === '' && isset($details['ip_address'])) {
-        $ip = trim((string)$details['ip_address']);
-    }
+    $ip = resolveActivityLogIpAddress(isset($r['ip_address']) ? (string)$r['ip_address'] : null, $details);
 
     $entry = [
         'id' => (string)($r['id'] ?? ''),

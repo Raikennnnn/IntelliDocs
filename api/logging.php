@@ -17,12 +17,78 @@ function loggingTableExists(PDO $pdo, string $tableName): bool
     return (bool)$stmt->fetchColumn();
 }
 
+function loggingColumnExists(PDO $pdo, string $table, string $column): bool
+{
+    $stmt = $pdo->prepare(
+        'SELECT 1 FROM information_schema.columns
+         WHERE table_schema = DATABASE() AND table_name = :table AND column_name = :column
+         LIMIT 1'
+    );
+    $stmt->execute([':table' => $table, ':column' => $column]);
+    return (bool)$stmt->fetchColumn();
+}
+
+function ensureActivityLogColumns(PDO $pdo): void
+{
+    if (!loggingTableExists($pdo, 'activity_logs')) {
+        return;
+    }
+    try {
+        if (!loggingColumnExists($pdo, 'activity_logs', 'ip_address')) {
+            $pdo->exec('ALTER TABLE activity_logs ADD COLUMN ip_address VARCHAR(64) NULL AFTER status');
+        }
+        if (!loggingColumnExists($pdo, 'activity_logs', 'user_agent')) {
+            $pdo->exec('ALTER TABLE activity_logs ADD COLUMN user_agent VARCHAR(255) NULL AFTER ip_address');
+        }
+    } catch (Throwable $e) {
+        // Tolerant: logging still works without optional columns.
+    }
+}
+
+function resolveClientIpAddress(): string
+{
+    $candidates = [];
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        foreach (explode(',', (string)$_SERVER['HTTP_X_FORWARDED_FOR']) as $part) {
+            $ip = trim($part);
+            if ($ip !== '') {
+                $candidates[] = $ip;
+            }
+        }
+    }
+    if (!empty($_SERVER['HTTP_X_REAL_IP'])) {
+        $candidates[] = trim((string)$_SERVER['HTTP_X_REAL_IP']);
+    }
+    if (!empty($_SERVER['REMOTE_ADDR'])) {
+        $candidates[] = trim((string)$_SERVER['REMOTE_ADDR']);
+    }
+    foreach ($candidates as $ip) {
+        if (filter_var($ip, FILTER_VALIDATE_IP)) {
+            return $ip;
+        }
+    }
+    return '';
+}
+
+function resolveActivityLogIpAddress(?string $columnValue, array $details): string
+{
+    $ip = trim((string)($columnValue ?? ''));
+    if ($ip === '' && isset($details['ip_address'])) {
+        $ip = trim((string)$details['ip_address']);
+    }
+    if ($ip === '' && isset($details['ip'])) {
+        $ip = trim((string)$details['ip']);
+    }
+    return $ip;
+}
+
 function ensureLoggingTables(PDO $pdo): void
 {
     // CREATE TABLE (even IF NOT EXISTS) implicitly commits an open transaction
     // in MySQL. Skip DDL when tables already exist so callers can log safely
     // inside beginTransaction() blocks.
     if (loggingTableExists($pdo, 'activity_logs') && loggingTableExists($pdo, 'login_attempts')) {
+        ensureActivityLogColumns($pdo);
         return;
     }
 
@@ -63,6 +129,8 @@ function ensureLoggingTables(PDO $pdo): void
             )
         ");
     }
+
+    ensureActivityLogColumns($pdo);
 }
 
 /**
@@ -93,7 +161,7 @@ function appLogEvent(
             ':target_type' => $targetType,
             ':target_id' => $targetId,
             ':status' => $status,
-            ':ip_address' => (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+            ':ip_address' => resolveClientIpAddress(),
             ':user_agent' => substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255),
             ':details_json' => json_encode($details, JSON_UNESCAPED_UNICODE),
         ]);
@@ -163,7 +231,7 @@ function appLogLoginAttempt(PDO $pdo, string $email, bool $success): void
         $stmt->execute([
             ':email' => $email,
             ':success' => $success ? 1 : 0,
-            ':ip_address' => (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+            ':ip_address' => resolveClientIpAddress(),
             ':user_agent' => substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255),
         ]);
     } catch (Throwable $e) {

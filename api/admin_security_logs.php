@@ -14,6 +14,7 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
 
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/api_auth.php';
+require_once __DIR__ . '/activity_log_search_helpers.php';
 
 if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'GET') {
     http_response_code(405);
@@ -59,6 +60,12 @@ if (!tableExistsLocal($pdo, 'activity_logs')) {
     exit;
 }
 
+ensureActivityLogColumns($pdo);
+$ipSelect = activityLogColumnExists($pdo, 'activity_logs', 'ip_address')
+    ? 'al.ip_address'
+    : 'NULL AS ip_address';
+$actorSelect = buildActivityLogActorNameSelect($pdo, 'u');
+
 $where = ["al.created_at >= ({$sinceSql})"];
 $params = [];
 
@@ -71,34 +78,41 @@ if ($statusFilter !== '' && $statusFilter !== 'all') {
     $params[':status'] = $statusFilter;
 }
 if ($search !== '') {
-    $where[] = '(CAST(al.actor_user_id AS CHAR) LIKE :search OR u.full_name LIKE :search OR al.action LIKE :search OR al.module LIKE :search)';
-    $params[':search'] = '%' . $search . '%';
+    $where[] = buildActivityLogSearchWhere($pdo, $search, $params);
 }
 
 $whereClause = implode(' AND ', $where);
 
-$countStmt = $pdo->prepare("SELECT COUNT(*) FROM activity_logs al LEFT JOIN users u ON u.id = al.actor_user_id WHERE {$whereClause}");
-$countStmt->execute($params);
-$total = (int)$countStmt->fetchColumn();
+try {
+    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM activity_logs al LEFT JOIN users u ON u.id = al.actor_user_id WHERE {$whereClause}");
+    $countStmt->execute($params);
+    $total = (int)$countStmt->fetchColumn();
 
-$listStmt = $pdo->prepare("
-    SELECT
-        al.id,
-        al.created_at,
-        al.actor_user_id,
-        COALESCE(u.full_name, u.username, 'System') AS actor_name,
-        al.action,
-        al.module,
-        al.status,
-        al.details_json
-    FROM activity_logs al
-    LEFT JOIN users u ON u.id = al.actor_user_id
-    WHERE {$whereClause}
-    ORDER BY al.created_at DESC, al.id DESC
-    LIMIT {$limit} OFFSET {$offset}
-");
-$listStmt->execute($params);
-$rows = $listStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $listStmt = $pdo->prepare("
+        SELECT
+            al.id,
+            al.created_at,
+            al.actor_user_id,
+            {$actorSelect},
+            al.action,
+            al.module,
+            al.status,
+            {$ipSelect},
+            al.details_json
+        FROM activity_logs al
+        LEFT JOIN users u ON u.id = al.actor_user_id
+        WHERE {$whereClause}
+        ORDER BY al.created_at DESC, al.id DESC
+        LIMIT {$limit} OFFSET {$offset}
+    ");
+    $listStmt->execute($params);
+    $rows = $listStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+} catch (Throwable $e) {
+    error_log('admin_security_logs search failed: ' . $e->getMessage());
+    http_response_code(500);
+    echo json_encode(['success' => false, 'error' => 'Could not search security logs. Please try again.']);
+    exit;
+}
 
 $logs = [];
 foreach ($rows as $r) {
@@ -117,7 +131,9 @@ foreach ($rows as $r) {
         'action' => (string)($r['action'] ?? ''),
         'module' => (string)($r['module'] ?? ''),
         'status' => ucfirst(strtolower((string)($r['status'] ?? 'success'))),
-        'ip_address' => isset($details['ip_address']) ? (string)$details['ip_address'] : '—',
+        'ip_address' => ($ip = resolveActivityLogIpAddress(isset($r['ip_address']) ? (string)$r['ip_address'] : null, $details)) !== ''
+            ? $ip
+            : '—',
         'details' => $details,
     ];
 }

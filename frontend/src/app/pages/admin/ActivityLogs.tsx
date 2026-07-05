@@ -22,12 +22,13 @@ import {
   Loader2,
   RefreshCw,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchActivityLogs,
   type ActivityLogEntry,
   type ActivityLogStats,
 } from "../../lib/activityLogsApi";
+import { filterActivityTimelineLogs } from "../../lib/activityLogSearch";
 
 const emptyStats: ActivityLogStats = {
   totalActions: 0,
@@ -51,7 +52,6 @@ export function ActivityLogs() {
     setError(null);
     try {
       const json = await fetchActivityLogs("admin", {
-        search: searchTerm,
         type: filterType === "All" ? "all" : filterType,
         range: "month",
         limit: 100,
@@ -65,13 +65,15 @@ export function ActivityLogs() {
     } finally {
       setLoading(false);
     }
-  }, [searchTerm, filterType]);
+  }, [filterType]);
+
+  const filteredLogs = useMemo(
+    () => filterActivityTimelineLogs(activityLogs, searchTerm),
+    [activityLogs, searchTerm],
+  );
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadLogs();
-    }, 250);
-    return () => window.clearTimeout(timer);
+    void loadLogs();
   }, [loadLogs]);
 
   const getActionIcon = (type: string) => {
@@ -228,7 +230,11 @@ export function ActivityLogs() {
         <CardHeader>
           <CardTitle>Activity Timeline</CardTitle>
           <CardDescription>
-            Live audit trail from the `activity_logs` database (last 30 days)
+            {loading
+              ? "Loading…"
+              : searchTerm.trim()
+                ? `${filteredLogs.length} of ${activityLogs.length} events match "${searchTerm.trim()}"`
+                : `${activityLogs.length} events in the last 30 days`}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -238,12 +244,18 @@ export function ActivityLogs() {
                 <Loader2 className="w-5 h-5 animate-spin" />
                 Loading activity logs…
               </div>
-            ) : activityLogs.length === 0 ? (
+            ) : error && activityLogs.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
-                No activity logs found for the selected filters
+                Could not load activity logs. Use Refresh or contact support if this continues.
+              </div>
+            ) : filteredLogs.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                {searchTerm.trim()
+                  ? `No activity logs match "${searchTerm.trim()}".`
+                  : "No activity logs found for the selected filters"}
               </div>
             ) : (
-              activityLogs.map((log) => (
+              filteredLogs.map((log) => (
                 <div
                   key={log.id}
                   className={`p-4 border rounded-lg hover:border-[#8B1538] transition-colors ${

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Input } from '../../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
@@ -7,6 +7,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Search, Download, RefreshCw } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { apiFetch } from '../../lib/api';
+import { filterSecurityLogs } from '../../lib/activityLogSearch';
+import { displayEnrollmentText } from '../../lib/enrollmentDisplayFormat';
 
 type SecurityLog = {
   id: number;
@@ -36,6 +38,7 @@ export function SecurityMonitoring() {
     suspicious_activity: 0,
   });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [actionFilter, setActionFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -43,34 +46,54 @@ export function SecurityMonitoring() {
 
   const loadLogs = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const params = new URLSearchParams();
-      if (search.trim()) params.set('search', search.trim());
       if (actionFilter !== 'all') params.set('action', actionFilter);
       if (statusFilter !== 'all') params.set('status', statusFilter);
       params.set('range', range);
       params.set('limit', '100');
 
       const response = await apiFetch(`/api/admin/security-logs?${params.toString()}`);
-      const data = await response.json();
-      if (data?.success) {
-        setLogs(Array.isArray(data.logs) ? data.logs : []);
-        setSummary(data.summary ?? summary);
+      const text = await response.text();
+      if (!text.trim()) {
+        throw new Error('Empty response from server. Please refresh and try again.');
       }
+      let data: { success?: boolean; logs?: SecurityLog[]; summary?: Summary; error?: string };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('Invalid response from server. Please refresh and try again.');
+      }
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || 'Could not load security logs.');
+      }
+      setLogs(Array.isArray(data.logs) ? data.logs : []);
+      setSummary(data.summary ?? summary);
     } catch (e) {
       console.error('Failed to load security logs', e);
+      setError(e instanceof Error ? e.message : 'Failed to load security logs.');
+      setLogs([]);
     } finally {
       setLoading(false);
     }
-  }, [search, actionFilter, statusFilter, range]);
+  }, [actionFilter, statusFilter, range]);
+
+  const filteredLogs = useMemo(
+    () => filterSecurityLogs(logs, search),
+    [logs, search],
+  );
 
   useEffect(() => {
-    void loadLogs();
+    const timer = window.setTimeout(() => {
+      void loadLogs();
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [loadLogs]);
 
   const exportCsv = () => {
     const header = ['Timestamp', 'User', 'User ID', 'Action', 'Module', 'Status', 'IP'];
-    const rows = logs.map((log) => [
+    const rows = filteredLogs.map((log) => [
       log.timestamp,
       log.user,
       log.user_id ?? '',
@@ -103,7 +126,7 @@ export function SecurityMonitoring() {
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
-          <Button variant="outline" onClick={exportCsv} disabled={logs.length === 0}>
+          <Button variant="outline" onClick={exportCsv} disabled={filteredLogs.length === 0}>
             <Download className="w-4 h-4 mr-2" />
             Export CSV
           </Button>
@@ -175,9 +198,20 @@ export function SecurityMonitoring() {
       <Card>
         <CardHeader>
           <CardTitle>Activity Logs</CardTitle>
-          <CardDescription>{loading ? 'Loading…' : `${logs.length} events shown`}</CardDescription>
+          <CardDescription>
+            {loading
+              ? 'Loading…'
+              : search.trim()
+                ? `${filteredLogs.length} of ${logs.length} events match "${search.trim()}"`
+                : `${logs.length} events shown`}
+          </CardDescription>
         </CardHeader>
         <CardContent className="min-w-0">
+          {error ? (
+            <p className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </p>
+          ) : null}
           <div className="w-full min-w-0 overflow-x-auto">
           <Table>
             <TableHeader>
@@ -191,28 +225,30 @@ export function SecurityMonitoring() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {logs.length === 0 && !loading && (
+              {filteredLogs.length === 0 && !loading && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center text-gray-500 py-8">
-                    No activity logs found for the selected filters.
+                    {search.trim()
+                      ? `No activity logs match "${search.trim()}".`
+                      : 'No activity logs found for the selected filters.'}
                   </TableCell>
                 </TableRow>
               )}
-              {logs.map((log) => (
+              {filteredLogs.map((log) => (
                 <TableRow key={log.id}>
                   <TableCell className="font-mono text-xs whitespace-nowrap">{log.timestamp}</TableCell>
                   <TableCell>
-                    <div className="text-sm">{log.user}</div>
+                    <div className="text-sm">{displayEnrollmentText(log.user)}</div>
                     {log.user_id != null && (
                       <div className="text-xs text-gray-500">ID {log.user_id}</div>
                     )}
                   </TableCell>
-                  <TableCell className="text-sm">{log.action}</TableCell>
-                  <TableCell className="text-sm text-gray-600">{log.module}</TableCell>
-                  <TableCell className="font-mono text-xs">{log.ip_address}</TableCell>
+                  <TableCell className="text-sm">{displayEnrollmentText(log.action)}</TableCell>
+                  <TableCell className="text-sm text-gray-600">{displayEnrollmentText(log.module)}</TableCell>
+                  <TableCell className="font-mono text-xs">{log.ip_address === '—' ? '—' : log.ip_address}</TableCell>
                   <TableCell>
                     <Badge variant={log.status.toLowerCase() === 'success' ? 'default' : 'destructive'}>
-                      {log.status}
+                      {displayEnrollmentText(log.status)}
                     </Badge>
                   </TableCell>
                 </TableRow>

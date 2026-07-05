@@ -84,6 +84,12 @@ import {
   translateEnrollmentDocumentName,
   translateEnrollmentStatus,
 } from "../../lib/studentLocale";
+import {
+  displayEnrollmentText,
+  displayFullName,
+  displayStrandText,
+  formatGradeLevelDisplay,
+} from "../../lib/enrollmentDisplayFormat";
 
 /**
  * `RequiredLabel` renders a form label and a consistently-styled red
@@ -1100,17 +1106,23 @@ export function StudentEnrollment() {
         localStorage.setItem('studentEnrollmentLocked', '1');
         localStorage.removeItem(GRADE12_ENROLLMENT_CONSENT_KEY);
         if (!json.already_submitted) {
-          toast.success(json.message || 'Enrollment submitted successfully');
+          toast.success(displayEnrollmentText(json.message || 'Enrollment submitted successfully'));
         }
         const sa = json.section_assignment;
         if (sa?.assigned && sa.section) {
           const shiftLabel = sa.shift === "afternoon" ? "afternoon" : "morning";
           if (sa.shift_changed) {
             toast.success(
-              `You were placed in section ${sa.section} (${shiftLabel} shift) based on available seats.`,
+              displayEnrollmentText(
+                `You were placed in section ${sa.section} (${shiftLabel} shift) based on available seats.`,
+              ),
             );
           } else if (sa.kept_section) {
-            toast.success(`You remain in section ${sa.section} (${shiftLabel} shift) for Grade 12.`);
+            toast.success(
+              displayEnrollmentText(
+                `You remain in section ${sa.section} (${shiftLabel} shift) for Grade 12.`,
+              ),
+            );
           }
         }
         setEnrollmentReloadKey((key) => key + 1);
@@ -3518,31 +3530,36 @@ export function StudentEnrollment() {
                   <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                     <div>
                       <p className="text-gray-600">{t('form.enrollmentStatus')}</p>
-                      <p className="font-medium">{translateEnrollmentStatus(formData.enrollmentStatus, t)}</p>
+                      <p className="font-medium">{displayEnrollmentText(translateEnrollmentStatus(formData.enrollmentStatus, t))}</p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.review.fullName')}</p>
                       <p className="font-medium">
-                        {formData.givenName} {formData.middleName} {formData.lastName} {formData.extensionName}
+                        {displayFullName(
+                          formData.givenName,
+                          formData.middleName,
+                          formData.lastName,
+                          formData.extensionName,
+                        )}
                       </p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.gender')}</p>
-                      <p className="font-medium">{formData.gender}</p>
+                      <p className="font-medium">{displayEnrollmentText(formData.gender)}</p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.review.birthDate')}</p>
                       <p className="font-medium">
-                        {formatBirthDateUsDisplay(formData.birthDate) || formData.birthDate || "—"}
+                        {displayEnrollmentText(formatBirthDateUsDisplay(formData.birthDate) || formData.birthDate)}
                       </p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.lrn')}</p>
-                      <p className="font-medium">{formData.lrn}</p>
+                      <p className="font-medium">{displayEnrollmentText(formData.lrn)}</p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.review.contact')}</p>
-                      <p className="font-medium">{formData.contactNumber}</p>
+                      <p className="font-medium">{displayEnrollmentText(formData.contactNumber)}</p>
                     </div>
                   </div>
                 </div>
@@ -3553,15 +3570,15 @@ export function StudentEnrollment() {
                   <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
                     <div>
                       <p className="text-gray-600">{t('form.gradeLevel')}</p>
-                      <p className="font-medium">{t('form.grade', { level: formData.gradeLevel })}</p>
+                      <p className="font-medium">{formatGradeLevelDisplay(formData.gradeLevel)}</p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.strand')}</p>
-                      <p className="font-medium">{formData.strand}</p>
+                      <p className="font-medium">{displayStrandText(formData.strand)}</p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.preferredSchedule')}</p>
-                      <p className="font-medium">{formData.preferredSchedule}</p>
+                      <p className="font-medium">{displayEnrollmentText(formData.preferredSchedule)}</p>
                     </div>
                   </div>
                 </div>
@@ -3573,13 +3590,21 @@ export function StudentEnrollment() {
                     <div>
                       <p className="text-gray-600">{t('form.review.motherName')}</p>
                       <p className="font-medium">
-                        {formData.motherGivenName} {formData.motherMaidenMiddleName} {formData.motherMaidenLastName}
+                        {displayFullName(
+                          formData.motherGivenName,
+                          formData.motherMaidenMiddleName,
+                          formData.motherMaidenLastName,
+                        )}
                       </p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.review.fatherName')}</p>
                       <p className="font-medium">
-                        {formData.fatherGivenName} {formData.fatherMiddleName} {formData.fatherLastName}
+                        {displayFullName(
+                          formData.fatherGivenName,
+                          formData.fatherMiddleName,
+                          formData.fatherLastName,
+                        )}
                       </p>
                     </div>
                   </div>
@@ -3591,14 +3616,16 @@ export function StudentEnrollment() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                     <div>
                       <p className="text-gray-600">{t('form.payment.mode')}</p>
-                      <p className="font-medium uppercase">{formData.modeOfPayment || '—'}</p>
+                      <p className="font-medium">{displayEnrollmentText(formData.modeOfPayment)}</p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.review.voucherNo')}</p>
                       <p className="font-medium text-gray-700">
-                        {formData.modeOfPayment === 'cash'
-                          ? t('form.review.voucherCash')
-                          : t('form.review.voucherLater')}
+                        {displayEnrollmentText(
+                          formData.modeOfPayment === 'cash'
+                            ? t('form.review.voucherCash')
+                            : t('form.review.voucherLater'),
+                        )}
                       </p>
                     </div>
                   </div>
