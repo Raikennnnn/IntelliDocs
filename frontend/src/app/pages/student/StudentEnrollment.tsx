@@ -1864,8 +1864,8 @@ export function StudentEnrollment() {
   };
 
   const validateStep4 = () => {
-    const requiredDocs = documents.filter((doc) =>
-      shouldShowDocumentRequirement(doc, formData.enrollmentStatus),
+    const requiredDocs = documents.filter(
+      (doc) => doc.required && shouldShowDocumentRequirement(doc, formData.enrollmentStatus),
     );
 
     const missingDocs = requiredDocs.filter(doc => doc.status !== 'uploaded');
