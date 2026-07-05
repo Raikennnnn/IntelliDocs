@@ -3,8 +3,8 @@ import { BookOpen, ChevronRight, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useStudentLocale } from '../../context/StudentLocaleContext';
 import {
-  ENROLLMENT_GUIDE_DISMISSED_KEY,
   ENROLLMENT_GUIDE_STEPS,
+  enrollmentGuideDismissedStorageKey,
 } from '../../lib/studentLocale';
 import { Button } from '../ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
@@ -12,24 +12,34 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 type EnrollmentGuideProps = {
   /** When true, show a compact “show guide” control if the student dismissed the card. */
   allowRestore?: boolean;
+  /** Scope dismiss state to this student (required on dashboard). */
+  userId?: string | number | null;
   className?: string;
 };
 
-export function EnrollmentGuide({ allowRestore = false, className }: EnrollmentGuideProps) {
+export function EnrollmentGuide({
+  allowRestore = true,
+  userId,
+  className,
+}: EnrollmentGuideProps) {
   const { t } = useStudentLocale();
-  const [dismissed, setDismissed] = useState(true);
+  const storageKey = enrollmentGuideDismissedStorageKey(userId);
+  const [dismissed, setDismissed] = useState(false);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     try {
-      setDismissed(localStorage.getItem(ENROLLMENT_GUIDE_DISMISSED_KEY) === '1');
+      setDismissed(localStorage.getItem(storageKey) === '1');
     } catch {
       setDismissed(false);
+    } finally {
+      setReady(true);
     }
-  }, []);
+  }, [storageKey]);
 
   const dismiss = () => {
     try {
-      localStorage.setItem(ENROLLMENT_GUIDE_DISMISSED_KEY, '1');
+      localStorage.setItem(storageKey, '1');
     } catch {
       // ignore
     }
@@ -38,12 +48,16 @@ export function EnrollmentGuide({ allowRestore = false, className }: EnrollmentG
 
   const restore = () => {
     try {
-      localStorage.removeItem(ENROLLMENT_GUIDE_DISMISSED_KEY);
+      localStorage.removeItem(storageKey);
     } catch {
       // ignore
     }
     setDismissed(false);
   };
+
+  if (!ready) {
+    return null;
+  }
 
   if (dismissed) {
     if (!allowRestore) return null;

@@ -157,13 +157,11 @@ const messages = {
     'form.history.previousSchool': 'Previous School Attended',
     'form.history.schoolType': 'School Type',
     'form.history.gradeLevel': 'Grade Level at Previous School Attended',
-    'form.history.section': 'Section at Previous School Attended',
-    'form.history.lastSchoolYear': 'Last School Year Attended',
+    'form.history.section': 'Section',
+    'form.history.lastSchoolYear': 'Last School Year',
     'form.ph.previousSchool': 'Enter previous school name',
-    'form.ph.section': 'e.g. A, 10-A',
-    'form.ph.lastSchoolYear': 'Pick or type e.g. 2019-2020',
-    'form.hint.lastSchoolYear':
-      'Pick from the list or type the school year printed on your SF9 and Good Moral certificates (they should match each other).',
+    'form.ph.section': '10-A',
+    'form.ph.lastSchoolYear': '2019-2020',
     'form.schoolType.public': 'Public',
     'form.schoolType.private': 'Private',
     'form.select.gradeLevel': 'Select Grade Level',
@@ -279,7 +277,12 @@ const messages = {
     'form.val.lrn': 'LRN must be exactly 12 digits (numbers only).',
     'form.val.municipality': 'Please enter your city / municipality.',
     'form.val.barangay': 'Please enter your barangay.',
-    'form.val.lastSchoolYear': 'Please enter the last school year you attended (as shown on your report card).',
+    'form.val.lastSchoolYear': 'Please enter the last school year you attended.',
+    'form.val.previousSchool': 'Please enter your previous school.',
+    'form.val.schoolType': 'Please select public or private school.',
+    'form.val.historyGradeLevel': 'Please select your grade level at your previous school.',
+    'form.val.section': 'Please enter your section at your previous school.',
+    'form.val.sectionInvalid': 'Section must include letters (e.g. A, 10-A).',
     'form.val.previousSchoolLetters': 'Previous school name must contain letters only (no numbers).',
     'form.val.lastSchoolYearInvalid': 'Last school year must be a valid year (e.g. 2023 or 2023-2024).',
   },
@@ -442,13 +445,11 @@ const messages = {
     'form.history.previousSchool': 'Nakaraang Paaralang Pinasukan',
     'form.history.schoolType': 'Uri ng Paaralan',
     'form.history.gradeLevel': 'Grade Level sa Nakaraang Paaralan',
-    'form.history.section': 'Section sa Nakaraang Paaralan',
-    'form.history.lastSchoolYear': 'Huling School Year na Pinasukan',
+    'form.history.section': 'Section',
+    'form.history.lastSchoolYear': 'Huling School Year',
     'form.ph.previousSchool': 'Ilagay ang pangalan ng nakaraang paaralan',
-    'form.ph.section': 'hal. A, 10-A',
-    'form.ph.lastSchoolYear': 'Pumili o i-type hal. 2019-2020',
-    'form.hint.lastSchoolYear':
-      'Pumili mula sa listahan o i-type ang school year na nakalagay sa SF9 at Good Moral (dapat magkatugma ang dalawa).',
+    'form.ph.section': '10-A',
+    'form.ph.lastSchoolYear': '2019-2020',
     'form.schoolType.public': 'Pampubliko',
     'form.schoolType.private': 'Pribado',
     'form.select.gradeLevel': 'Pumili ng Grade Level',
@@ -563,8 +564,12 @@ const messages = {
     'form.val.lrn': 'Ang LRN ay dapat eksaktong 12 digit (mga numero lamang).',
     'form.val.municipality': 'Ilagay ang iyong lungsod / munisipalidad.',
     'form.val.barangay': 'Ilagay ang iyong barangay.',
-    'form.val.lastSchoolYear':
-      'Ilagay ang huling school year na pinasukan (tulad ng nakasaad sa report card).',
+    'form.val.lastSchoolYear': 'Ilagay ang huling school year na pinasukan.',
+    'form.val.previousSchool': 'Ilagay ang nakaraang paaralan.',
+    'form.val.schoolType': 'Pumili ng pampubliko o pribadong paaralan.',
+    'form.val.historyGradeLevel': 'Pumili ng grade level sa nakaraang paaralan.',
+    'form.val.section': 'Ilagay ang section sa nakaraang paaralan.',
+    'form.val.sectionInvalid': 'Ang section ay dapat may mga letra (hal. A, 10-A).',
     'form.val.previousSchoolLetters':
       'Ang pangalan ng nakaraang paaralan ay dapat may mga letra lamang (walang numero).',
     'form.val.lastSchoolYearInvalid':
@@ -609,6 +614,12 @@ export const ENROLLMENT_GUIDE_STEPS: ReadonlyArray<{
 ];
 
 export const ENROLLMENT_GUIDE_DISMISSED_KEY = 'studentEnrollmentGuideDismissed';
+
+/** Per-student key so dismissing the guide on one account does not hide it for new accounts on the same browser. */
+export function enrollmentGuideDismissedStorageKey(userId?: string | number | null): string {
+  const id = userId != null && String(userId).trim() !== '' ? String(userId).trim() : 'guest';
+  return `${ENROLLMENT_GUIDE_DISMISSED_KEY}_${id}`;
+}
 
 /** Canonical English document names stored in enrollment state → locale key. */
 export const ENROLLMENT_DOCUMENT_NAME_KEYS: Record<string, StudentMessageKey> = {
