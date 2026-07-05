@@ -243,14 +243,14 @@ function processPendingEmailQueue(PDO $pdo, int $limit = 20): array
 function otpEmailSubject(string $purpose = 'registration'): string
 {
     return strtolower(trim($purpose)) === 'login'
-        ? 'NSDGA IntelliDocs - Sign-in verification code'
-        : 'NSDGA IntelliDocs - Email verification code';
+        ? 'NSDGA — Sign-in verification code'
+        : 'NSDGA — Email verification code';
 }
 
 function buildOtpEmailBody(string $otp, string $purpose = 'registration'): string
 {
     $intro = strtolower(trim($purpose)) === 'login'
-        ? 'Enter this code to sign in to NSDGA IntelliDocs.'
+        ? 'Enter this code to sign in to NSDGA.'
         : 'Enter this code to verify your email and finish creating your account.';
 
     return "{$intro}\n\nYour verification code is: {$otp}\n\n"

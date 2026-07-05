@@ -11,7 +11,7 @@ declare(strict_types=1);
  *
  *   POST /api/mail-health
  *        body: { recipient: "you@example.com" }
- *        Sends a one-off "IntelliDocs mail health check" message to the
+ *        Sends a one-off "NSDGA mail health check" message to the
  *        supplied recipient. Admin-only. Use this to confirm a real
  *        round-trip after the GET probe is green.
  *
@@ -83,8 +83,8 @@ if ($recipient === '' || !filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
     exit;
 }
 
-$subject = 'IntelliDocs mail health check';
-$body = "This is a delivery test from the IntelliDocs deployment.\n\n"
+$subject = 'NSDGA mail health check';
+$body = "This is a delivery test from the NSDGA enrollment portal.\n\n"
     . "If you can read this, the configured mail provider is working.\n"
     . "Issued by admin user id: " . $actorId . "\n"
     . "Server time: " . date('c') . "\n";

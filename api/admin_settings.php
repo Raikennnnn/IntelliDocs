@@ -90,13 +90,13 @@ try {
             exit;
         }
 
-        $body = "IntelliDocs test email\n\n"
+        $body = "NSDGA test email\n\n"
             . "If you received this message, the configured mail transport is working.\n"
             . 'Sent at ' . date('Y-m-d H:i:s') . ".\n";
         $queueId = queueEmail(
             $pdo,
             $recipient,
-            'IntelliDocs — Test Email',
+            'NSDGA — Test Email',
             $body
         );
         $sent = processSingleQueuedEmail($pdo, $queueId);

@@ -145,7 +145,7 @@ function mapLogToNotification(string $action, string $status, ?string $targetTyp
         ],
         'register' => [
             'type' => 'info',
-            'title' => 'Welcome to IntelliDocs',
+            'title' => 'Welcome to NSDGA',
             'message' => 'Your account was created. You can now begin your enrollment application.',
         ],
         'document_decision' => match ((string)($details['action'] ?? '')) {

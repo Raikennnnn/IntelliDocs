@@ -36,7 +36,7 @@ function buildEnrollmentSubmissionEmail(array $opts): array
         : welcomeEmailResolveAppHost();
     $loginUrl = 'https://' . $appHost . '/login';
 
-    $subject = 'Enrollment application received — IntelliDocs';
+    $subject = 'Enrollment application received — NSDGA';
 
     $metaRows = [];
     if ($appId !== '') {

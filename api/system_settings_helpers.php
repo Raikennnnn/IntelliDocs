@@ -246,9 +246,9 @@ function renderOtpEmailHtml(string $otp, int $minutes, string $purpose = 'regist
     $eyebrow = $isLogin ? 'Sign-in verification' : ($isPasswordReset ? 'Password reset' : 'Email verification');
     $headline = $isLogin ? 'Complete your sign-in' : ($isPasswordReset ? 'Reset your password' : 'Confirm your email address');
     $intro = $isLogin
-        ? 'Enter the code below to sign in to NSDGA IntelliDocs.'
+        ? 'Enter the code below to sign in to NSDGA.'
         : ($isPasswordReset
-            ? 'Enter the code below to reset your NSDGA IntelliDocs password.'
+            ? 'Enter the code below to reset your NSDGA password.'
             : 'Enter the code below to verify your email and finish creating your account.');
 
     $codeCells = '';
@@ -285,7 +285,7 @@ function renderOtpEmailHtml(string $otp, int $minutes, string $purpose = 'regist
 <tr>
 <td style="font-family:Arial,Helvetica,sans-serif;color:#ffffff;font-size:18px;font-weight:700;line-height:1.3;">
 Nuestra Señora De Guia Academy
-<div style="font-size:12px;font-weight:600;color:#f4dbe3;letter-spacing:0.06em;text-transform:uppercase;margin-top:4px;">IntelliDocs Enrollment Portal</div>
+<div style="font-size:12px;font-weight:600;color:#f4dbe3;letter-spacing:0.06em;text-transform:uppercase;margin-top:4px;">NSDGA Enrollment Portal</div>
 </td>
 </tr>
 </table>
@@ -321,7 +321,7 @@ Nuestra Señora De Guia Academy
 </tr>
 <tr>
 <td style="padding:24px 32px 32px 32px;font-family:Arial,Helvetica,sans-serif;border-top:1px solid #eef0f2;margin-top:12px;">
-<p style="margin:18px 0 0 0;font-size:12px;line-height:1.6;color:#8a94a3;">This is an automated message from the NSDGA IntelliDocs enrollment system. Please do not reply.</p>
+<p style="margin:18px 0 0 0;font-size:12px;line-height:1.6;color:#8a94a3;">This is an automated message from the NSDGA enrollment portal. Please do not reply.</p>
 <p style="margin:6px 0 0 0;font-size:12px;line-height:1.6;color:#8a94a3;">&copy; {$year} Nuestra Señora De Guia Academy of Marikina. All rights reserved.</p>
 </td>
 </tr>

@@ -43,7 +43,7 @@ function buildAccountReminderEmail(array $opts): array
             ['label' => 'Temporary password', 'value' => 'Your date of birth (mm-dd-yyyy)'],
         ])
         . emailLayoutParagraph('If you have already changed your password, use your new password. If you\'ve forgotten it, contact the registrar\'s office for a reset.')
-        . emailLayoutButton($loginUrl, 'Sign in to IntelliDocs');
+        . emailLayoutButton($loginUrl, 'Sign in to NSDGA');
 
     $body = renderBrandedEmailHtml(
         'Account reminder',

@@ -25,7 +25,7 @@ export const DEFAULT_REPORT_LETTERHEAD: ReportLetterhead = {
   preparedBy: {
     name: 'REGISTRAR OFFICE',
     title: 'Registrar',
-    role: 'IntelliDocs Report Coordinator',
+    role: 'NSDGA Report Coordinator',
   },
   notedBy: {
     name: 'SCHOOL HEAD',

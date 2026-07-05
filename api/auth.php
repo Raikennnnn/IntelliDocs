@@ -1333,7 +1333,7 @@ if ($action === 'forgot_password') {
         $otpMinutes = getOtpExpiryMinutes($pdo);
         $otpCode = generateOtpCode();
         storeOtpCode($pdo, $accountEmail, $otpCode, $otpMinutes, 'password_reset');
-        $subject = 'NSDGA IntelliDocs password reset code';
+        $subject = 'NSDGA password reset code';
         $body = buildOtpEmailBodyWithExpiry($pdo, $otpCode, 'password_reset');
         $queueId = queueEmail($pdo, $accountEmail, $subject, $body);
         $sent = processSingleQueuedEmail($pdo, $queueId);

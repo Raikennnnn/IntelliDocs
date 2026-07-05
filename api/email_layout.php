@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * Shared branded HTML layout for IntelliDocs transactional emails.
+ * Shared branded HTML layout for NSDGA transactional emails.
  * Matches the OTP verification email styling (maroon header, green accent).
  */
 
@@ -123,7 +123,7 @@ function renderBrandedEmailHtml(string $eyebrow, string $headline, string $conte
     $safeHeadline = emailLayoutEscape($headline);
     $footer = $footerNote !== null && trim($footerNote) !== ''
         ? emailLayoutParagraph(trim($footerNote))
-        : emailLayoutParagraph('This is an automated message from the NSDGA IntelliDocs enrollment system. Please do not reply.');
+        : emailLayoutParagraph('This is an automated message from the NSDGA enrollment portal. Please do not reply.');
 
     return <<<HTML
 <!DOCTYPE html>
@@ -148,7 +148,7 @@ function renderBrandedEmailHtml(string $eyebrow, string $headline, string $conte
 <tr>
 <td style="font-family:Arial,Helvetica,sans-serif;color:#ffffff;font-size:18px;font-weight:700;line-height:1.3;">
 Nuestra Señora De Guia Academy
-<div style="font-size:12px;font-weight:600;color:#f4dbe3;letter-spacing:0.06em;text-transform:uppercase;margin-top:4px;">IntelliDocs Enrollment Portal</div>
+<div style="font-size:12px;font-weight:600;color:#f4dbe3;letter-spacing:0.06em;text-transform:uppercase;margin-top:4px;">NSDGA Enrollment Portal</div>
 </td>
 </tr>
 </table>

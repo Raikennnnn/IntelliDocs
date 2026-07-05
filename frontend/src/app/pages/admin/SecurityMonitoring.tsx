@@ -86,7 +86,7 @@ export function SecurityMonitoring() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `intellidocs-security-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `nsdga-security-logs-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -96,7 +96,7 @@ export function SecurityMonitoring() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-semibold text-gray-900">Security Monitoring</h2>
-          <p className="text-gray-600">Live activity logs from the IntelliDocs audit trail</p>
+          <p className="text-gray-600">Live activity logs from the NSDGA enrollment audit trail</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => void loadLogs()} disabled={loading}>

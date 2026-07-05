@@ -45,7 +45,7 @@ function buildApplicationRejectionEmail(array $opts): array
 
     $content =
         emailLayoutParagraph('Hello ' . $name . ',')
-        . emailLayoutParagraph('Thank you for applying to Nuestra Señora De Guia Academy through IntelliDocs.')
+        . emailLayoutParagraph('Thank you for applying to Nuestra Señora De Guia Academy.')
         . emailLayoutParagraph('After review, your enrollment application was not approved at this time.')
         . emailLayoutCredentialBox($metaRows);
 

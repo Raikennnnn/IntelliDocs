@@ -33,7 +33,7 @@ if (!function_exists('renderWelcomeEmail')) {
                 ['label' => 'Temporary password', 'value' => $temporaryPassword],
             ])
             . emailLayoutParagraph('Sign in using either your personal email or your school username. You will be asked to set a new password the first time you sign in.')
-            . emailLayoutButton($loginUrl, 'Sign in to IntelliDocs')
+            . emailLayoutButton($loginUrl, 'Sign in to NSDGA')
             . emailLayoutCallout(
                 '<strong style="color:#101828;">Did not expect this?</strong> Contact the registrar\'s office immediately.'
             );
