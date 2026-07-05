@@ -585,7 +585,7 @@ export function Reports() {
                     <p className="text-sm text-gray-700 mt-1">
                       {backupInfo.backupCount > 0
                         ? `Latest backup: ${backupInfo.lastBackup}${backupInfo.latestFile ? ` (${backupInfo.latestFile})` : ''}.`
-                        : 'No SQL backups found. Run scripts/backup_db.ps1 to create one.'}
+                        : 'No SQL backups found in backups/mysql on the server. Create one with mysqldump or your hosting backup tool.'}
                     </p>
                     <p className="text-xs text-gray-600 mt-2">
                       {backupInfo.backupCount} backup file(s) in {backupInfo.backupPath}

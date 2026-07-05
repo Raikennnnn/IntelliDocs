@@ -49,6 +49,48 @@ function adminFormatBytes(int $bytes): string
     return $bytes . ' B';
 }
 
+/** Read information_schema row keys regardless of PDO/MySQL column casing. */
+function adminReportAssocValue(array $row, string $key, mixed $default = null): mixed
+{
+    if (array_key_exists($key, $row)) {
+        return $row[$key];
+    }
+    $target = strtolower($key);
+    foreach ($row as $column => $value) {
+        if (strtolower((string)$column) === $target) {
+            return $value;
+        }
+    }
+
+    return $default;
+}
+
+function adminReportTableRowCount(PDO $pdo, string $tableName): int
+{
+    if ($tableName === '' || !preg_match('/^[A-Za-z0-9_]+$/', $tableName)) {
+        return 0;
+    }
+    try {
+        $quoted = '`' . str_replace('`', '``', $tableName) . '`';
+        return (int)$pdo->query("SELECT COUNT(*) FROM {$quoted}")->fetchColumn();
+    } catch (Throwable $e) {
+        return 0;
+    }
+}
+
+function adminReportTableLabel(string $tableName, array $friendlyNames): string
+{
+    if ($tableName === '') {
+        return 'Unknown table';
+    }
+    $friendly = $friendlyNames[$tableName] ?? null;
+    if ($friendly !== null && $friendly !== $tableName) {
+        return "{$friendly} ({$tableName})";
+    }
+
+    return $tableName;
+}
+
 function adminParseIniBytes(string $value): int
 {
     $value = trim($value);
@@ -205,11 +247,15 @@ try {
         if ($shown >= $topLimit) {
             break;
         }
-        $name = (string)($r['table_name'] ?? '');
-        $bytes = (int)($r['table_bytes'] ?? 0);
-        $rows = (int)($r['table_rows'] ?? 0);
+        $name = (string)adminReportAssocValue($r, 'table_name', '');
+        $bytes = (int)adminReportAssocValue($r, 'table_bytes', 0);
+        $estimateRows = (int)adminReportAssocValue($r, 'table_rows', 0);
+        $rows = adminReportTableRowCount($pdo, $name);
+        if ($rows === 0 && $estimateRows > 0) {
+            $rows = $estimateRows;
+        }
         $dbReports[] = [
-            'database' => $friendlyTableNames[$name] ?? $name,
+            'database' => adminReportTableLabel($name, $friendlyTableNames),
             'size' => adminFormatBytes($bytes),
             'growth' => number_format($rows) . ' rows',
             'lastBackup' => '—',
