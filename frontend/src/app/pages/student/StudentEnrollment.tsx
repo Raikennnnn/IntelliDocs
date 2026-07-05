@@ -2274,6 +2274,9 @@ export function StudentEnrollment() {
 
   if (lockedView) {
     const showReEnrollCta = reEnrollmentEligible && schoolYearCurrent && !newSchoolYearReenrollment;
+    const enrolledGradeNumber =
+      parseInt(String(enrollmentGradeLevel).replace(/\D/g, ""), 10) || 0;
+    const showEnrolledPhysicalDocsNotice = isEnrolled && enrolledGradeNumber !== 12;
     const headerLine = isEnrolled
       ? `Enrolled — SY ${enrollmentSchoolYear || '—'}`
       : isRejected
@@ -2295,13 +2298,15 @@ export function StudentEnrollment() {
                 <p className="text-sm text-gray-600 leading-relaxed">
                   {`You are enrolled${enrollmentGradeLevel ? ` in Grade ${enrollmentGradeLevel.replace(/[^0-9]/g, '') || enrollmentGradeLevel}` : ''}${enrollmentStrand ? ` ${enrollmentStrand}` : ''} for school year ${enrollmentSchoolYear || ''}.`}
                 </p>
-                <p className="text-sm text-gray-700 mt-3 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-left">
-                  <span className="block text-xs font-semibold text-amber-900 mb-1">
-                    Physical documents
-                  </span>
-                  Hand-deliver the original copies of your required documents to the
-                  registrar's office. Check <strong>Application Status</strong> for your checklist.
-                </p>
+                {showEnrolledPhysicalDocsNotice ? (
+                  <p className="text-sm text-gray-700 mt-3 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-left">
+                    <span className="block text-xs font-semibold text-amber-900 mb-1">
+                      Physical documents
+                    </span>
+                    Hand-deliver the original copies of your required documents to the
+                    registrar's office. Check <strong>Application Status</strong> for your checklist.
+                  </p>
+                ) : null}
               </>
             )}
 
