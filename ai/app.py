@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 67
+AI_VERIFY_PAYLOAD_VERSION = 68
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -567,8 +567,12 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             }
 
         h, w = int(img.shape[0]), int(img.shape[1])
-        if w < 400 or h < 400:
-            issues.append("Image resolution is too low. Move closer or use a higher camera setting.")
+        if is_photo:
+            if w < 300 or h < 300:
+                issues.append("Image resolution is too low. Move closer or use a higher camera setting.")
+        else:
+            if w < 400 or h < 400:
+                issues.append("Image resolution is too low. Move closer or use a higher camera setting.")
         if w > h * 2.2 or h > w * 2.2:
             issues.append("Image looks heavily cropped. Include the full document in the frame.")
 
@@ -583,24 +587,28 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
         if is_photo:
             global_lap, subject_lap, lap_var = _photo_sharpness_variance(gray)
             min_lap = 80.0
+            # Upload gate for 2×2 photos: be permissive — registrar review is the backstop.
+            # Studio portraits often measure soft globally (~55) because of the white
+            # background; phone JPEG recompression can also shift scores on the server.
             blur_ok = lap_var >= min_lap
             if not blur_ok:
-                # Studio 2×2: huge white background drags global sharpness (~55) even when
-                # the subject (hair/uniform/face edges) is sharp (~120).
                 if subject_lap >= min_lap and global_lap < 75.0:
                     blur_ok = True
-                # Subject mask failed but global metrics match a studio white-bg portrait.
                 elif (
-                    w >= 400
-                    and h >= 400
-                    and contrast >= 25.0
-                    and 52.0 <= mean_brightness <= 220.0
-                    and 52.0 <= global_lap < 70.0
+                    w >= 300
+                    and h >= 300
+                    and contrast >= 20.0
+                    and 40.0 <= mean_brightness <= 235.0
+                    and lap_var >= 30.0
                 ):
                     blur_ok = True
             if not blur_ok:
                 issues.append(
                     "Photo is too blurry or out of focus. Retake in good lighting with the camera steady."
+                )
+            elif lap_var < 60.0:
+                warnings.append(
+                    "Slightly soft focus — you may retake for a sharper copy if the registrar requests it."
                 )
         else:
             lap_var = _opencv_laplacian_variance(gray)
@@ -615,13 +623,17 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
         elif mean_brightness > 235:
             issues.append("Image is overexposed (too bright). Reduce glare and retake.")
 
-        if is_photo and contrast < 28.0:
+        if is_photo and contrast < 22.0:
             issues.append("Image contrast is too low. Use stronger lighting and avoid washed-out photos.")
+        elif is_photo and contrast < 28.0:
+            warnings.append("Image contrast is a bit low — retake with stronger lighting if the registrar requests it.")
 
         if is_photo:
             ratio = w / max(1, h)
-            if ratio < 0.86 or ratio > 1.16:
+            if ratio < 0.75 or ratio > 1.33:
                 issues.append("Photo aspect ratio looks unusual for a standard 2x2 portrait. Use a square crop.")
+            elif ratio < 0.86 or ratio > 1.16:
+                warnings.append("Photo is not perfectly square — a 1:1 crop is recommended for 2x2 ID photos.")
 
             duplicate_info = _track_photo_duplicate(filepath, doc_type=doc_type)
             if duplicate_info and duplicate_info.get("duplicate"):
@@ -637,16 +649,15 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
                 "face_anomaly": face_metrics.get("face_anomaly") or {},
             }
             if face_metrics.get("face_detected"):
-                if face_metrics.get("face_width_ratio", 0.0) < 0.14 or face_metrics.get("face_width_ratio", 0.0) > 0.52:
-                    issues.append("The face appears too small or too large for a standard 2x2 photo.")
-                if float(face_metrics.get("face_center_offset") or 1.0) > 0.20:
-                    issues.append("The face is not centered well in the frame. Reposition the head so it is centered.")
+                if face_metrics.get("face_width_ratio", 0.0) < 0.10 or face_metrics.get("face_width_ratio", 0.0) > 0.58:
+                    warnings.append("The face appears small or large for a standard 2x2 photo — registrar may ask for a retake.")
+                if float(face_metrics.get("face_center_offset") or 1.0) > 0.28:
+                    warnings.append("The face may not be centered well in the frame.")
                 if face_metrics.get("background_clutter"):
-                    issues.append("The background is too busy or textured. Use a plain light background.")
+                    warnings.append("The background looks busy or textured — a plain light background is preferred.")
                 if face_metrics.get("face_occluded"):
-                    issues.append(
-                        "Part of the face appears covered, cropped, or digitally altered. "
-                        "Upload a clear, unedited 2×2 photo with the full face visible."
+                    warnings.append(
+                        "Part of the face may be covered or edited — registrar will review the portrait."
                     )
             else:
                 warnings.append("Face detection could not confirm a clear portrait. Retake with the face fully visible.")
@@ -10603,6 +10614,15 @@ def screen_quality():
 
     try:
         quality = _image_quality_check(filepath, doc_type)
+        if not quality.get("pass") and _is_photo_doc(doc_type):
+            print(
+                "[IntelliDocs AI] Photo upload rejected:"
+                f" doc_type={doc_type!r}"
+                f" blur={quality.get('blur_variance')}"
+                f" issues={quality.get('issues')}"
+                f" photo_checks={quality.get('photo_checks')}",
+                flush=True,
+            )
         quality_level = _level_pack(
             level=1,
             title="Image quality",
