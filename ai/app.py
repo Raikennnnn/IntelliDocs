@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 63
+AI_VERIFY_PAYLOAD_VERSION = 64
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -549,7 +549,10 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
 
         gray = _opencv_bgr_to_gray(img)
         lap_var = _opencv_laplacian_variance(gray)
-        min_lap = 120.0 if is_photo else 55.0
+        # Photos: measured on the subject only (see below), so a "sharp face" bar of ~85
+        # is appropriate — the old 120 global value rejected genuinely sharp studio photos
+        # because their large flat background dragged the whole-frame variance down.
+        min_lap = 85.0 if is_photo else 55.0
         if is_photo:
             # A proper 2×2 ID photo has a large flat (white/studio) background with zero
             # detail. Measuring blur over the WHOLE frame lets that background drag the
