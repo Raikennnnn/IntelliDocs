@@ -635,9 +635,7 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             elif ratio < 0.86 or ratio > 1.16:
                 warnings.append("Photo is not perfectly square — a 1:1 crop is recommended for 2x2 ID photos.")
 
-            duplicate_info = _track_photo_duplicate(filepath, doc_type=doc_type)
-            if duplicate_info and duplicate_info.get("duplicate"):
-                issues.append("This image appears to be a duplicate of a previously uploaded photo.")
+            # Duplicate-photo detection disabled for now (re-enable later via _track_photo_duplicate).
 
             photo_checks = {
                 "face_detected": bool(face_metrics.get("face_detected")),
