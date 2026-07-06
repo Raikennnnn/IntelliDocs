@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 66
+AI_VERIFY_PAYLOAD_VERSION = 67
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -372,6 +372,31 @@ def _opencv_laplacian_variance(gray) -> float:
     return float(cv2.Laplacian(gray, ddepth).var())
 
 
+def _photo_sharpness_variance(gray) -> tuple[float, float, float]:
+    """
+    Return (global_lap, subject_lap, effective_lap) for 2×2 ID photos.
+
+    Studio portraits have a large flat white background that drags whole-frame
+    Laplacian variance down even when the subject is sharp. Measure subject pixels
+    (darker than the backdrop) and take the max. ``effective_lap`` is what gates blur.
+    """
+    import cv2
+    import numpy as np
+
+    ddepth = getattr(cv2, "CV_64F", 6)
+    lap_full = cv2.Laplacian(gray, ddepth)
+    global_lap = float(lap_full.var())
+    subject_lap = 0.0
+    try:
+        for thr in (232, 240, 245, 250):
+            fg = gray < int(thr)
+            if int(np.count_nonzero(fg)) > int(gray.size * 0.04):
+                subject_lap = max(subject_lap, float(lap_full[fg].var()))
+    except Exception:
+        pass
+    return global_lap, subject_lap, max(global_lap, subject_lap)
+
+
 def _photo_face_anomaly_flags(img, gray, face_bbox: dict | None) -> dict:
     """
     Detect partial face cover, blank patches, and left/right inconsistencies
@@ -548,37 +573,48 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             issues.append("Image looks heavily cropped. Include the full document in the frame.")
 
         gray = _opencv_bgr_to_gray(img)
-        lap_var = _opencv_laplacian_variance(gray)
-        # Photos: measured on the subject only (see below), so a "sharp face" bar of ~85
-        # is appropriate — the old 120 global value rejected genuinely sharp studio photos
-        # because their large flat background dragged the whole-frame variance down.
-        min_lap = 85.0 if is_photo else 55.0
-        if is_photo:
-            # A proper 2×2 ID photo has a large flat (white/studio) background with zero
-            # detail. Measuring blur over the WHOLE frame lets that background drag the
-            # global Laplacian variance below threshold even when the face is perfectly
-            # sharp — rejecting authentic photos. Measure sharpness on the subject
-            # (non-background) pixels instead, and never let it be stricter than global.
-            try:
-                lap_full = cv2.Laplacian(gray, cv2.CV_64F)
-                fg = gray < 232  # subject = anything darker than the near-white backdrop
-                if int(np.count_nonzero(fg)) > int(gray.size * 0.04):
-                    subj_lap_var = float(lap_full[fg].var())
-                    lap_var = max(lap_var, subj_lap_var)
-            except Exception:
-                pass
-        if lap_var < min_lap:
-            issues.append(
-                "Photo is too blurry or out of focus. Retake in good lighting with the camera steady."
-            )
-
+        contrast = float(np.std(gray))
         mean_brightness = float(np.mean(gray))
+
+        face_metrics: dict = {}
+        if is_photo:
+            face_metrics = _analyze_id_photo_face_features(img, gray, w, h)
+
+        if is_photo:
+            global_lap, subject_lap, lap_var = _photo_sharpness_variance(gray)
+            min_lap = 80.0
+            blur_ok = lap_var >= min_lap
+            if not blur_ok:
+                # Studio 2×2: huge white background drags global sharpness (~55) even when
+                # the subject (hair/uniform/face edges) is sharp (~120).
+                if subject_lap >= min_lap and global_lap < 75.0:
+                    blur_ok = True
+                # Subject mask failed but global metrics match a studio white-bg portrait.
+                elif (
+                    w >= 400
+                    and h >= 400
+                    and contrast >= 25.0
+                    and 52.0 <= mean_brightness <= 220.0
+                    and 52.0 <= global_lap < 70.0
+                ):
+                    blur_ok = True
+            if not blur_ok:
+                issues.append(
+                    "Photo is too blurry or out of focus. Retake in good lighting with the camera steady."
+                )
+        else:
+            lap_var = _opencv_laplacian_variance(gray)
+            min_lap = 55.0
+            if lap_var < min_lap:
+                issues.append(
+                    "Photo is too blurry or out of focus. Retake in good lighting with the camera steady."
+                )
+
         if mean_brightness < 45:
             issues.append("Image is too dark. Use brighter lighting.")
         elif mean_brightness > 235:
             issues.append("Image is overexposed (too bright). Reduce glare and retake.")
 
-        contrast = float(np.std(gray))
         if is_photo and contrast < 28.0:
             issues.append("Image contrast is too low. Use stronger lighting and avoid washed-out photos.")
 
@@ -591,7 +627,6 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             if duplicate_info and duplicate_info.get("duplicate"):
                 issues.append("This image appears to be a duplicate of a previously uploaded photo.")
 
-            face_metrics = _analyze_id_photo_face_features(img, gray, w, h)
             photo_checks = {
                 "face_detected": bool(face_metrics.get("face_detected")),
                 "face_width_ratio": round(float(face_metrics.get("face_width_ratio") or 0.0), 3),
