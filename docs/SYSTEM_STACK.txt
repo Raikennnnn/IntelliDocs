@@ -1,0 +1,294 @@
+INTELLIDOCS V4 — SYSTEM STACK REFERENCE
+Production URL: https://nsdgam.com
+Repo root: /var/www/intellidocs (droplet) | c:\xampp\htdocs\IntelliDocs (local)
+Branch: IntelliDocs-V4
+
+================================================================================
+FRONTEND
+================================================================================
+
+- React 18.3
+- TypeScript
+- HTML5
+- Vite 6 (build tool / dev server)
+- Tailwind CSS 4
+- Radix UI (dialogs, tabs, select, etc.)
+- React Router 7 (SPA routing)
+- Lucide React (icons)
+- Sonner (toast notifications)
+- react-hook-form (forms)
+- MUI / Emotion (Material UI — partial use)
+- recharts (charts)
+- react-pdf (PDF preview)
+- xlsx / SheetJS (Excel export in reports)
+- date-fns, motion, input-otp, next-themes
+
+Key frontend paths:
+- App entry / routes: frontend/src/app/routes.tsx
+- API client (Bearer auth): frontend/src/app/lib/api.ts
+- Registrar AI review UI: frontend/src/app/pages/registrar/ReviewDocuments.tsx
+- Concern scoring (MM + T): frontend/src/app/lib/concernScore.ts
+- Vite config: frontend/vite.config.ts
+- Env template: frontend/.env.example
+- Built assets served from: public/ (index.html + /assets/*)
+
+================================================================================
+BACKEND (PHP)
+================================================================================
+
+- PHP 8.1+ (production: PHP 8.3-FPM)
+- MySQL / MariaDB via PDO (primary data layer)
+- CodeIgniter 4 (framework shell; most logic is custom PHP in /api)
+- JSON REST API under /api/*
+
+Key backend paths:
+- Web entry: public/index.php (routes /api/* -> public/api_index.php)
+- API router: public/api_index.php
+- DB config: config/database.php
+- Environment loader: api/env_loader.php -> reads root env file
+- Auth: api/auth.php
+- Session tokens (Bearer): api/session_token.php
+- Permissions: api/permission_guard.php, api/role_permissions.php
+- Document uploads: api/documents.php
+- AI proxy (PHP -> Python): api/ai_verify_document.php
+- AI HTTP client: api/ai_http.php
+- AI result persistence: api/ai_persist.php
+- AI refine pass: api/ai_verify_refine.php
+- Enrollment helpers: api/enrollment_status_helpers.php
+- Email queue: api/mailer.php
+- OTP limits: api/otp_guard.php
+- CORS (API): public/api_index.php (restricted to nsdgam.com + localhost)
+
+Env config template: env.example -> copy to root env (not committed)
+
+================================================================================
+AI DOCUMENT ASSISTANT (Python)
+================================================================================
+
+- Python 3.11–3.14
+- Flask 3 (HTTP service)
+- Gunicorn (production WSGI — systemd service)
+- OpenCV (image processing)
+- Pillow (image I/O)
+- NumPy (numeric / ELA tamper analysis)
+- pytesseract + Tesseract OCR (primary OCR)
+- EasyOCR (optional fallback — needs PyTorch)
+
+Main AI file (all verification logic):
+- ai/app.py
+
+AI dependencies:
+- ai/requirements.txt
+- ai/requirements-easyocr-cpu.txt (optional)
+
+AI reference assets (seal/logo templates):
+- ai/assets/seals/psa_logo.png
+- ai/assets/seals/deped_logo.png
+- ai/assets/seals/deped_ncr_logo.png
+
+AI temp uploads:
+- ai/uploads/ (staging only; randomized filenames)
+
+AI service endpoints (Flask):
+  GET  /health              — service health + OCR engine status
+  POST /verify              — full document AI verification
+  POST /screen-quality      — Level 1 blur/lighting gate (student upload)
+  POST /screen-readability  — Level 2 OCR readability gate
+
+Production AI URL: http://127.0.0.1:8080 (env: AI_BASE_URL)
+Local dev default: http://127.0.0.1:5000 (python ai/app.py)
+
+Systemd unit (created by deploy script):
+- /etc/systemd/system/intellidocs-ai.service
+
+AI payload version (must stay in sync):
+- ai/app.py -> AI_VERIFY_PAYLOAD_VERSION = 62
+- api/ai_persist.php -> AI_VERIFY_PAYLOAD_VERSION = 62
+- frontend/src/app/pages/registrar/ReviewDocuments.tsx -> AI_VERIFY_PAYLOAD_VERSION = 62
+
+AI env variables (root env file):
+- AI_BASE_URL — PHP -> Python service URL
+- AI_OCR_ENGINE — auto | tesseract | easyocr
+- TESSERACT_CMD — path to tesseract.exe (Windows)
+- DISABLE_OCR_FALLBACK, AI_OCR_FALLBACK_MIN_CONF, AI_OCR_FALLBACK_MIN_WORDS
+
+Document types handled by AI:
+- PSA birth certificate (birth_certificate)
+- Good moral certificate (good_moral)
+- Report card SF9 (sf9)
+- Form 137 / SF10 (form137)
+- 2x2 ID photo (photo_2x2)
+
+AI security model (UI shows MM + T average):
+- Level 1: Image quality (upload gate)
+- Level 2: Document & enrollment mismatch (MM)
+- Level 3: Tamper & integrity (T)
+
+================================================================================
+DATABASE
+================================================================================
+
+- MySQL / MariaDB
+- Database name: intellidocs_db (default, from env)
+- Charset: utf8mb4
+- Access: PDO
+
+Main tables (representative):
+- users — accounts (roles: admin, registrar, student)
+- sessions — Bearer session tokens (hashed)
+- documents — uploads + ai_status, ai_score, ai_security_json
+- enrollments — student enrollment data
+- otp_codes — email OTP codes (registration, login, password reset)
+- email_queue — outbound email queue
+- activity_logs / security logs
+
+================================================================================
+SECURITY & HASHING
+================================================================================
+
+User passwords ............... bcrypt (password_hash / password_verify)
+Session Bearer tokens ........ SHA-256 hash stored in sessions.token_hash
+OTP codes .................... stored in DB with expiry (otp_codes table)
+Login brute-force ............ AUTH_LOGIN_FAILURE_THRESHOLD
+OTP rate limits .............. api/otp_guard.php (attempts, lockout, hourly cap)
+Auth header .................. Authorization: Bearer <token>
+Session idle timeout ......... SESSION_IDLE_TIMEOUT_MINUTES (default 30)
+Session absolute lifetime .... SESSION_ABSOLUTE_LIFETIME_HOURS (default 12)
+Login MFA .................... OTP after password (AUTH_LOGIN_OTP_REQUIRED=1)
+
+================================================================================
+EMAIL
+================================================================================
+
+- PHP mail() via MAIL_PROVIDER=phpmail (local/XAMPP)
+- Brevo API via MAIL_PROVIDER=brevo + BREVO_API_KEY (production)
+- Queue table: email_queue
+- Mailer: api/mailer.php
+- Used for: registration OTP, login OTP, password reset, enrollment
+  confirmation, document resubmission, welcome email
+
+================================================================================
+INFRASTRUCTURE / DEPLOYMENT
+================================================================================
+
+Web server ................... nginx 1.24
+App runtime .................. PHP-FPM 8.3
+AI runtime ................... Gunicorn + systemd (intellidocs-ai)
+CDN / proxy .................. Cloudflare
+Hosting ...................... DigitalOcean droplet
+Local dev .................... XAMPP (Apache + MySQL on Windows)
+Frontend build ............... npm run build in frontend/ -> output to public/
+Security headers ............. scripts/nginx/intellidocs-security-headers.conf
+Nginx site repair ............ scripts/repair_nginx_droplet.sh
+Full deploy .................. scripts/deploy_droplet.sh
+UI-only deploy ............... scripts/deploy_ui_hotfix.sh
+AI deploy/restart ............ scripts/fix_ai_service.sh
+
+File storage:
+- Student document uploads: uploads/documents/{user_id}/
+- Public static assets: public/assets/, public/strands/, public/admission-samples/
+
+================================================================================
+REST API ROUTES (/api/*)
+================================================================================
+
+Auth & session:
+- POST /api/auth — login, register, OTP, password reset
+- GET  /api/session/ping — session keepalive
+- POST /api/session/touch — extend session
+
+Public:
+- GET /api/school-year — active enrollment school year
+- GET /api/mail-health — email test (admin)
+
+Student:
+- GET/POST /api/student/me
+- GET/POST /api/student/enrollment
+- GET/POST /api/student/physical-docs
+- GET /api/student/notifications
+- POST /api/documents — upload documents
+- POST /api/documents/screen-readability — deferred OCR readability check
+
+Registrar:
+- GET /api/registrar/overview
+- GET /api/registrar/applications
+- GET /api/registrar/application
+- GET/POST /api/registrar/document-review
+- POST /api/registrar/document-decision
+- GET /api/registrar/students
+- GET /api/registrar/cohorts
+- GET/POST /api/registrar/physical-docs
+- GET /api/registrar/reports
+- GET/POST /api/registrar/sections
+- GET/POST /api/registrar/student-section
+- GET/POST /api/registrar/announcements
+- GET /api/registrar/activity-logs
+
+Admin:
+- GET /api/admin/overview
+- GET/POST /api/admin/users
+- GET /api/admin/students
+- GET /api/admin/reports
+- GET/POST /api/admin/settings
+- GET /api/admin/security-logs
+
+AI (registrar/admin only):
+- GET /api/ai/verify-document?id={docId}&doc_type={type}
+  Runs Python /verify, caches result in DB
+
+Shared:
+- GET /api/role-permissions
+- GET /api/announcements
+- GET /api/document-file — serve uploaded file (auth)
+- GET /api/announcement-image — serve announcement image
+
+API router file: public/api_index.php
+Individual handlers: api/*.php
+
+================================================================================
+USER ROLES & PORTALS
+================================================================================
+
+student .... /student/*
+registrar .. /registrar/*
+admin ...... /admin/*
+
+Login pages: /login, /student-login, /registrar-login, /admin-login
+
+================================================================================
+ADMISSION DOCUMENT REQUIREMENTS
+================================================================================
+
+- PSA Birth Certificate
+- Good Moral Certificate
+- Report Card (SF9)
+- SF10 / Form 137
+- 2x2 ID Picture
+
+Sample files: public/admission-samples/
+
+================================================================================
+EXTERNAL / THIRD-PARTY SERVICES
+================================================================================
+
+- Cloudflare — CDN, SSL, caching, analytics beacon (in built index.html)
+- Brevo — transactional email API (optional)
+- Tesseract OCR — system install (Windows: C:\Program Files\Tesseract-OCR\)
+
+================================================================================
+QUICK PATH INDEX (AI + CONFIG)
+================================================================================
+
+AI main engine ............... ai/app.py
+AI requirements .............. ai/requirements.txt
+AI seal templates ............ ai/assets/seals/
+PHP -> AI HTTP client ........ api/ai_http.php
+AI verify endpoint (PHP) ..... api/ai_verify_document.php
+AI DB persistence ............ api/ai_persist.php
+AI payload version (PHP) ..... api/ai_persist.php (line 8)
+AI payload version (UI) ...... frontend/src/app/pages/registrar/ReviewDocuments.tsx
+Environment (all secrets) .... env (copy from env.example)
+Database connection .......... config/database.php
+API entry / CORS ............. public/api_index.php
+Nginx security headers ....... scripts/nginx/intellidocs-security-headers.conf
+Deploy (production) .......... scripts/deploy_droplet.sh

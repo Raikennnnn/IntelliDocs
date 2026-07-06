@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 60
+AI_VERIFY_PAYLOAD_VERSION = 62
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -4911,37 +4911,45 @@ def _ocr_read_document(
                 pass
 
 
-def _tamper_check(filepath: str) -> tuple[float, list[str]]:
+def _tamper_check(filepath: str, *, is_photo: bool = False) -> tuple[float, list[str]]:
     """
     Lightweight tamper signals.
     Returns (tamper_score_01, signals). 1.0 = looks clean, 0.0 = highly suspicious.
+
+    ``is_photo`` relaxes the metadata heuristic for 2×2 ID photos: legitimate studio
+    portraits are routinely resized/retouched in Photoshop/Lightroom, so the EXIF
+    "Software" tag alone is NOT evidence of tampering for a portrait. Real face edits
+    are still caught by ELA + face-anomaly + grid hotspot detectors elsewhere.
     """
     signals: list[str] = []
     score = 1.0
 
     # --- Metadata (EXIF Software) ---
-    try:
-        from PIL import Image, ExifTags
+    # Skip entirely for ID photos — studio 2×2 shots are almost always processed
+    # (background clean-up, crop, resize) which is expected, not suspicious.
+    if not is_photo:
+        try:
+            from PIL import Image, ExifTags
 
-        software_tag = None
-        for k, v in ExifTags.TAGS.items():
-            if v == "Software":
-                software_tag = k
-                break
+            software_tag = None
+            for k, v in ExifTags.TAGS.items():
+                if v == "Software":
+                    software_tag = k
+                    break
 
-        if software_tag is not None:
-            img = Image.open(filepath)
-            exif = getattr(img, "getexif", lambda: None)()
-            if exif:
-                sw = str(exif.get(software_tag, "")).strip().lower()
-                if sw:
-                    suspicious = ["photoshop", "canva", "picsart", "snapseed", "gimp", "lightroom"]
-                    if any(t in sw for t in suspicious):
-                        signals.append(f"Edited with software: {sw}")
-                        score -= 0.35
-    except Exception:
-        # metadata is optional; ignore failures
-        pass
+            if software_tag is not None:
+                img = Image.open(filepath)
+                exif = getattr(img, "getexif", lambda: None)()
+                if exif:
+                    sw = str(exif.get(software_tag, "")).strip().lower()
+                    if sw:
+                        suspicious = ["photoshop", "canva", "picsart", "snapseed", "gimp", "lightroom"]
+                        if any(t in sw for t in suspicious):
+                            signals.append(f"Edited with software: {sw}")
+                            score -= 0.35
+        except Exception:
+            # metadata is optional; ignore failures
+            pass
 
     # --- ELA (JPEG only) ---
     try:
@@ -5067,12 +5075,19 @@ def _merge_localized_tamper_score(
     return s2, []
 
 
-def _synthetic_check(filepath: str, *, ocr_confidence: float | None = None, word_count: int | None = None) -> tuple[float, list[str]]:
+def _synthetic_check(filepath: str, *, ocr_confidence: float | None = None, word_count: int | None = None, is_photo: bool = False) -> tuple[float, list[str]]:
     """
     Best-effort heuristic to flag documents that look digitally generated (including AI-generated),
     NOT a definitive detector.
 
     Returns (synthetic_score_01, signals). 1.0 = looks natural/realistic, 0.0 = highly suspicious.
+
+    ``is_photo`` relaxes the document-oriented heuristics for 2×2 ID photos. A legitimate
+    studio portrait naturally has a large uniform (white) background, a sharp in-focus face,
+    and low noise — the very traits this function treats as "synthetic/screenshot-like" for
+    text documents. Applying those penalties to portraits produces false rejections, so we
+    skip the clean-background / sharp-edge / straight-line heuristics for photos and rely on
+    face-anomaly + ELA tamper detection instead.
     """
     signals: list[str] = []
     score = 1.0
@@ -5080,27 +5095,29 @@ def _synthetic_check(filepath: str, *, ocr_confidence: float | None = None, word
     ext = os.path.splitext(filepath)[1].lower()
 
     # --- Metadata hint (EXIF Software) ---
-    try:
-        from PIL import Image, ExifTags
+    # Studio ID photos are routinely retouched/resized; don't penalize portraits for it.
+    if not is_photo:
+        try:
+            from PIL import Image, ExifTags
 
-        software_tag = None
-        for k, v in ExifTags.TAGS.items():
-            if v == "Software":
-                software_tag = k
-                break
-        if software_tag is not None:
-            img = Image.open(filepath)
-            exif = getattr(img, "getexif", lambda: None)()
-            if exif:
-                sw = str(exif.get(software_tag, "")).strip()
-                if sw:
-                    sw_l = sw.lower()
-                    suspicious = ["photoshop", "canva", "picsart", "snapseed", "gimp", "lightroom", "adobe"]
-                    if any(t in sw_l for t in suspicious):
-                        signals.append(f"Metadata: created/edited with software ({sw})")
-                        score -= 0.25
-    except Exception:
-        pass
+            software_tag = None
+            for k, v in ExifTags.TAGS.items():
+                if v == "Software":
+                    software_tag = k
+                    break
+            if software_tag is not None:
+                img = Image.open(filepath)
+                exif = getattr(img, "getexif", lambda: None)()
+                if exif:
+                    sw = str(exif.get(software_tag, "")).strip()
+                    if sw:
+                        sw_l = sw.lower()
+                        suspicious = ["photoshop", "canva", "picsart", "snapseed", "gimp", "lightroom", "adobe"]
+                        if any(t in sw_l for t in suspicious):
+                            signals.append(f"Metadata: created/edited with software ({sw})")
+                            score -= 0.25
+        except Exception:
+            pass
 
     # --- Pixel-level heuristics ---
     # Goal: find overly-clean images with sharp text + low noise, common in screenshots / synthetic renders.
@@ -5136,58 +5153,65 @@ def _synthetic_check(filepath: str, *, ocr_confidence: float | None = None, word
 
         # Heuristics (tunable): combine multiple weak signals
         # These thresholds are intentionally a bit sensitive to catch AI/synthetic document renders.
-        if sharp > 750.0 and resid_mean < 3.2 and resid_std < 5.5 and flat_ratio > 0.55:
-            signals.append("Image looks extremely clean with very sharp edges (screenshot/synthetic-like)")
-            score -= 0.45
-        elif sharp > 600.0 and resid_mean < 4.0 and flat_ratio > 0.60:
-            signals.append("Image looks very clean with sharp text and low scan noise")
-            score -= 0.25
+        # NOTE: they are document-oriented (clean background + sharp text = suspicious). A real
+        # 2×2 portrait legitimately has those traits, so skip them entirely for photos.
+        if not is_photo:
+            if sharp > 750.0 and resid_mean < 3.2 and resid_std < 5.5 and flat_ratio > 0.55:
+                signals.append("Image looks extremely clean with very sharp edges (screenshot/synthetic-like)")
+                score -= 0.45
+            elif sharp > 600.0 and resid_mean < 4.0 and flat_ratio > 0.60:
+                signals.append("Image looks very clean with sharp text and low scan noise")
+                score -= 0.25
 
-        if edge_ratio > 0.07 and resid_mean < 4.2:
-            signals.append("High edge density with low noise (digital render/screenshot indicator)")
-            score -= 0.18
+            if edge_ratio > 0.07 and resid_mean < 4.2:
+                signals.append("High edge density with low noise (digital render/screenshot indicator)")
+                score -= 0.18
 
-        # PNGs are often screenshots; if PNG + very low noise, increase penalty
-        if ext == ".png" and resid_mean < 3.6 and flat_ratio > 0.52:
-            signals.append("PNG with unusually low noise (often from screenshots or digital export)")
-            score -= 0.18
+            # PNGs are often screenshots; if PNG + very low noise, increase penalty
+            if ext == ".png" and resid_mean < 3.6 and flat_ratio > 0.52:
+                signals.append("PNG with unusually low noise (often from screenshots or digital export)")
+                score -= 0.18
 
         # Geometry: screenshot/rendered docs often have many perfectly horizontal/vertical lines.
+        # Portraits have no meaningful layout lines — skip for photos.
         try:
-            lines = cv2.HoughLinesP(edges, 1, np.pi / 180.0, threshold=120, minLineLength=max(40, int(min(w, h) * 0.12)), maxLineGap=6)
-            if lines is not None and len(lines) >= 12:
-                near_axis = 0
-                total = 0
-                for ln in lines[:300]:
-                    x1, y1, x2, y2 = ln[0]
-                    dx = float(x2 - x1)
-                    dy = float(y2 - y1)
-                    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-                        continue
-                    ang = abs(np.degrees(np.arctan2(dy, dx)))
-                    # normalize to 0..90
-                    if ang > 90:
-                        ang = 180 - ang
-                    total += 1
-                    if ang < 2.0 or abs(ang - 90.0) < 2.0:
-                        near_axis += 1
-                if total >= 10:
-                    ratio = near_axis / total
-                    if ratio >= 0.78 and edge_ratio > 0.05:
-                        signals.append("Many perfectly straight horizontal/vertical lines (digital layout indicator)")
-                        score -= 0.18
+            if not is_photo:
+                lines = cv2.HoughLinesP(edges, 1, np.pi / 180.0, threshold=120, minLineLength=max(40, int(min(w, h) * 0.12)), maxLineGap=6)
+                if lines is not None and len(lines) >= 12:
+                    near_axis = 0
+                    total = 0
+                    for ln in lines[:300]:
+                        x1, y1, x2, y2 = ln[0]
+                        dx = float(x2 - x1)
+                        dy = float(y2 - y1)
+                        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                            continue
+                        ang = abs(np.degrees(np.arctan2(dy, dx)))
+                        # normalize to 0..90
+                        if ang > 90:
+                            ang = 180 - ang
+                        total += 1
+                        if ang < 2.0 or abs(ang - 90.0) < 2.0:
+                            near_axis += 1
+                    if total >= 10:
+                        ratio = near_axis / total
+                        if ratio >= 0.78 and edge_ratio > 0.05:
+                            signals.append("Many perfectly straight horizontal/vertical lines (digital layout indicator)")
+                            score -= 0.18
         except Exception:
             pass
 
         # OCR synergy: synthetic renders often produce unusually high OCR confidence with low noise.
-        try:
-            oc = float(ocr_confidence) if ocr_confidence is not None else None
-            wc = int(word_count) if word_count is not None else None
-            if oc is not None and wc is not None and wc >= 15 and oc >= 0.78 and resid_mean < 4.0 and sharp > 550.0:
-                signals.append("Very high OCR readability + low noise (common in digitally generated text)")
-                score -= 0.12
-        except Exception:
-            pass
+        # Photos carry no meaningful OCR text, so skip.
+        if not is_photo:
+            try:
+                oc = float(ocr_confidence) if ocr_confidence is not None else None
+                wc = int(word_count) if word_count is not None else None
+                if oc is not None and wc is not None and wc >= 15 and oc >= 0.78 and resid_mean < 4.0 and sharp > 550.0:
+                    signals.append("Very high OCR readability + low noise (common in digitally generated text)")
+                    score -= 0.12
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -5537,6 +5561,131 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
             hit = _psa_sex_on_line(compact)
             if hit:
                 return hit
+    return None
+
+
+def _detect_psa_sex_mark_by_image(
+    filepath: str,
+    img_w: int | None = None,
+    img_h: int | None = None,
+) -> str | None:
+    """
+    PSA field 2 SEX — decide MALE vs FEMALE by the checkbox MARK, not the printed
+    words. On PSA Form 102 the mark sits to the LEFT of the chosen option label
+    (e.g. "__ 1 Male   _X_ 2 Female" selects Female). OCR of the row is unreliable
+    because both labels are always printed, so we locate the "Male"/"Female" words
+    and measure ink density in the small checkbox slot just left of each option.
+
+    Returns "MALE" | "FEMALE" | None. None = unclear, so the caller falls back to
+    the existing text-based detection (no behavior change when this can't decide).
+    """
+    if not filepath:
+        return None
+    try:
+        import cv2
+        import numpy as np  # noqa: F401  (kept for parity with other CV helpers)
+    except Exception:
+        return None
+
+    # Locate Male / Female (and the 1/2 option numbers) on the sex row.
+    try:
+        _txt, sex_boxes, _conf = _ocr_psa_sex_row_pass_on_image(filepath)
+    except Exception:
+        sex_boxes = []
+    if not sex_boxes:
+        return None
+
+    def _norm_box(b: dict) -> dict | None:
+        try:
+            t = str(b.get("text") or "").strip().upper()
+            x = int(float(b.get("x") or 0))
+            y = int(float(b.get("y") or 0))
+            w = int(float(b.get("w") or 0))
+            h = int(float(b.get("h") or 0))
+        except Exception:
+            return None
+        if w <= 0 or h <= 0 or not t:
+            return None
+        return {"t": t, "x": x, "y": y, "w": w, "h": h}
+
+    norm = [nb for nb in (_norm_box(b) for b in sex_boxes) if nb]
+    if not norm:
+        return None
+
+    male_box = next((b for b in norm if "MALE" in b["t"] and "FEMALE" not in b["t"]), None)
+    female_box = next((b for b in norm if "FEMALE" in b["t"]), None)
+    if not male_box or not female_box:
+        return None
+
+    def _num_left_of(label: dict, num: str) -> dict | None:
+        """Option number (1/2) printed just left of the label word, same row."""
+        cands = [
+            b
+            for b in norm
+            if b["t"] == num
+            and b["x"] < label["x"]
+            and abs((b["y"] + b["h"] / 2) - (label["y"] + label["h"] / 2)) <= label["h"]
+        ]
+        if not cands:
+            return None
+        return max(cands, key=lambda b: b["x"])  # nearest number to the label
+
+    try:
+        img = cv2.imread(filepath)
+        if img is None:
+            return None
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        thresh = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 10
+        )
+    except Exception:
+        return None
+    H, W = thresh.shape[:2]
+
+    def _slot_density(label: dict, num: str) -> float:
+        # Anchor to the left edge of the option number when present, else the word.
+        left_anchor = label["x"]
+        num_box = _num_left_of(label, num)
+        if num_box:
+            left_anchor = num_box["x"]
+        slot_w = int(max(label["h"] * 1.6, 14))
+        gap = int(max(label["h"] * 0.15, 2))
+        pad_y = int(max(label["h"] * 0.15, 2))
+        x2 = left_anchor - gap
+        x1 = x2 - slot_w
+        y1 = label["y"] - pad_y
+        y2 = label["y"] + label["h"] + pad_y
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(W, x2)
+        y2 = min(H, y2)
+        if x2 <= x1 or y2 <= y1:
+            return -1.0
+        region = thresh[y1:y2, x1:x2]
+        area = int(region.size)
+        if area <= 0:
+            return -1.0
+        try:
+            return float(cv2.countNonZero(region)) / float(area)
+        except Exception:
+            return -1.0
+
+    male_d = _slot_density(male_box, "1")
+    female_d = _slot_density(female_box, "2")
+    if male_d < 0 and female_d < 0:
+        return None
+    male_d = max(male_d, 0.0)
+    female_d = max(female_d, 0.0)
+
+    # A filled checkbox has clearly more ink than an empty one. Require a minimum
+    # fill and a margin so ambiguous scans return None (safe -> manual/text path).
+    MIN_FILL = 0.08
+    MARGIN = 0.05
+    if female_d >= MIN_FILL and female_d - male_d >= MARGIN:
+        return "FEMALE"
+    if male_d >= MIN_FILL and male_d - female_d >= MARGIN:
+        return "MALE"
     return None
 
 
@@ -6866,12 +7015,13 @@ def _photo_portrait_tamper(
         baseline = portrait_var or 1.0
     ratio = portrait_var / baseline
 
-    if ratio >= 1.42:
-        risk = "high"
-    elif ratio >= 1.22:
-        risk = "warning"
-    else:
-        risk = "info"
+    # IMPORTANT: a genuine 2×2 portrait ALWAYS has far more detail (face, hair, clothing)
+    # than its flat white/studio background, so portrait_var / baseline is naturally high.
+    # That is NOT a tamper signature — it describes every authentic ID photo. Escalating on
+    # this ratio rejects legitimate photos. Real manipulation (pasted patches, covered face)
+    # is caught by the face-anomaly flags (blank patch / asymmetry / occlusion) instead, so
+    # keep this box informational only.
+    risk = "info"
 
     return [
         {
@@ -9565,6 +9715,11 @@ def _evaluate(
                     return None, "", None
                 line_text = raw_text
                 if doc_type in ("birth_certificate", "birthcert"):
+                    # Primary: read the checkbox MARK position (X sits left of the
+                    # chosen option). More reliable than OCR of the static labels.
+                    mark_sex = _detect_psa_sex_mark_by_image(filepath, img_w, img_h)
+                    if mark_sex:
+                        return (mark_sex == exp), mark_sex, None
                     try:
                         lines = [ln for ln in (raw_text or "").splitlines() if (ln or "").strip()]
                         sex_lines = [
@@ -10648,13 +10803,13 @@ def verify_doc():
             payload["image_height"] = img_h
 
         is_photo_verify = effective_doc_type in PHOTO_DOC_TYPES
-        tamper_score, tamper_signals = _tamper_check(scan_path)
+        tamper_score, tamper_signals = _tamper_check(scan_path, is_photo=is_photo_verify)
         payload["tamper_applicable"] = True
         payload["tamper_score"] = tamper_score
         payload["tamper_signals"] = tamper_signals
 
         # Synthetic / AI-generated suspicion signals (heuristics; NOT definitive).
-        syn_score, syn_signals = _synthetic_check(scan_path, ocr_confidence=avg_conf, word_count=word_count)
+        syn_score, syn_signals = _synthetic_check(scan_path, ocr_confidence=avg_conf, word_count=word_count, is_photo=is_photo_verify)
         payload["synthetic_applicable"] = True
         payload["synthetic_score"] = syn_score
         payload["synthetic_signals"] = syn_signals
