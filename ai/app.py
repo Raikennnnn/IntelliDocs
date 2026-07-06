@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 69
+AI_VERIFY_PAYLOAD_VERSION = 70
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -5592,7 +5592,7 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
 
     def _psa_mark_selects_forward(u: str) -> str | None:
         """Read only forward from each X — mark applies to the next option, not the previous word."""
-        for mark in re.finditer(r"[X✓V]", u):
+        for mark in re.finditer(r"[X✓]", u):
             if _psa_mark_is_sex_label(u, mark.start()):
                 continue
             fwd = u[mark.end() : mark.end() + 40]
@@ -5632,12 +5632,12 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
             return forward_hit
 
         # OCR sometimes merges the row without a readable X — look for empty 1 / marked 2 pattern.
-        if re.search(r"\(\s*\)\s*1\s*MALE", u) and re.search(r"[X✓V]\s*\)?\s*2\b", u) and _psa_ocr_has_female(u):
+        if re.search(r"\(\s*\)\s*1\s*MALE", u) and re.search(r"[X✓]\s*\)?\s*2\b", u) and _psa_ocr_has_female(u):
             return "FEMALE"
-        if re.search(r"[X✓V]\s*\)?\s*1\b", u) and re.search(r"\b1\b\s*MALE", u) and _psa_ocr_has_female(u):
-            if not re.search(r"[X✓V][^2]{0,12}\b2\b", u):
+        if re.search(r"[X✓]\s*\)?\s*1\b", u) and re.search(r"\b1\b\s*MALE", u) and _psa_ocr_has_female(u):
+            if not re.search(r"[X✓][^2]{0,12}\b2\b", u):
                 return "MALE"
-        if re.search(r"[X✓V]\s*\)?\s*2\b", u) and _psa_ocr_has_female(u):
+        if re.search(r"[X✓]\s*\)?\s*2\b", u) and _psa_ocr_has_female(u):
             return "FEMALE"
 
         has_f = _psa_ocr_has_female(u)
@@ -9825,38 +9825,52 @@ def _evaluate(
                     return None, "", None
                 line_text = raw_text
                 if doc_type in ("birth_certificate", "birthcert"):
-                    # Primary: read the checkbox MARK position (X sits left of the
-                    # chosen option). More reliable than OCR of the static labels.
+                    # Child field 2 only — use the dedicated sex-row crop so parent
+                    # MALE/FEMALE rows and garbled full-page OCR cannot override the child.
                     mark_sex = _detect_psa_sex_mark_by_image(filepath, img_w, img_h)
-                    if mark_sex:
-                        return (mark_sex == exp), mark_sex, None
                     try:
-                        lines = [ln for ln in (raw_text or "").splitlines() if (ln or "").strip()]
-                        sex_lines = [
-                            ln
-                            for ln in lines
-                            if "SEX" in (ln or "").upper()
-                            or (
-                                re.search(r"\b[12]\b", (ln or "").upper())
-                                and (
-                                    _psa_ocr_has_male(ln)
-                                    or _psa_ocr_has_female(ln)
-                                )
-                            )
-                        ]
-                        chunks = []
-                        if sex_lines:
-                            chunks.append("\n".join(sex_lines[:10]))
-                        upper_n = max(10, int(len(lines) * 0.55))
-                        chunks.append("\n".join(lines[:upper_n]))
-                        if len(lines) > upper_n:
-                            chunks.append("\n".join(lines[-24:]))
+                        sex_row_txt, _, _ = _ocr_psa_sex_row_pass_on_image(filepath)
                     except Exception:
-                        chunks = [raw_text or ""]
-                    for chunk in chunks:
-                        psa_sex = _detect_psa_child_sex_from_text(chunk)
-                        if psa_sex:
-                            return (psa_sex == exp), psa_sex, None
+                        sex_row_txt = ""
+                    row_sex = (
+                        _detect_psa_child_sex_from_text(sex_row_txt) if (sex_row_txt or "").strip() else None
+                    )
+
+                    detected = None
+                    if mark_sex and row_sex:
+                        # Checkbox ink vs OCR sometimes disagree on scans — trust the
+                        # sex-row text parser (handles Famale OCR) when they conflict.
+                        detected = mark_sex if mark_sex == row_sex else row_sex
+                    elif row_sex:
+                        detected = row_sex
+                    elif mark_sex:
+                        detected = mark_sex
+                    else:
+                        try:
+                            lines = [ln for ln in (raw_text or "").splitlines() if (ln or "").strip()]
+                            sex_lines = [
+                                ln
+                                for ln in lines
+                                if "SEX" in (ln or "").upper()
+                                or (
+                                    re.search(r"\b[12]\b", (ln or "").upper())
+                                    and (
+                                        _psa_ocr_has_male(ln)
+                                        or _psa_ocr_has_female(ln)
+                                    )
+                                )
+                            ]
+                            chunks = ["\n".join(sex_lines[:10])] if sex_lines else []
+                        except Exception:
+                            chunks = []
+                        for chunk in chunks:
+                            psa_sex = _detect_psa_child_sex_from_text(chunk)
+                            if psa_sex:
+                                detected = psa_sex
+                                break
+
+                    if detected:
+                        return (detected == exp), detected, None
                     return None, "", None
                 line_detected = _detect_sex_from_lines(line_text)
                 detected, bbox = _detect_sex_from_boxes(ocr_boxes)
