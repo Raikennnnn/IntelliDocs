@@ -5,7 +5,7 @@ declare(strict_types=1);
  * Persist AI verification results on the documents row.
  */
 
-const AI_VERIFY_PAYLOAD_VERSION = 64;
+const AI_VERIFY_PAYLOAD_VERSION = 65;
 
 /**
  * Cached AI envelopes below the current version must be re-verified (signature/seal fixes, etc.).

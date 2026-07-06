@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 64
+AI_VERIFY_PAYLOAD_VERSION = 65
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -372,6 +372,34 @@ def _opencv_laplacian_variance(gray) -> float:
     return float(cv2.Laplacian(gray, ddepth).var())
 
 
+def _block_flat_ratio(region, block: int = 4, thr: float = 1.5) -> float:
+    """
+    Fraction (0..100) of ``block``×``block`` cells whose std is below ``thr``.
+
+    A sharp, detailed face has lots of local texture, so few flat cells. A blurry,
+    low-resolution/pixelated, dark, or mask/sunglasses-covered face is dominated by
+    flat cells. Measuring this INSIDE the face region (not the whole frame) makes it
+    independent of the large plain background a proper 2×2 photo naturally has.
+    """
+    try:
+        import numpy as np
+
+        arr = np.asarray(region)
+        if arr.ndim != 2:
+            return 0.0
+        h, w = arr.shape
+        h2 = (h // block) * block
+        w2 = (w // block) * block
+        if h2 < block or w2 < block:
+            return 0.0
+        a = arr[:h2, :w2].astype(np.float32)
+        a = a.reshape(h2 // block, block, w2 // block, block)
+        stds = a.std(axis=(1, 3))
+        return float((stds < thr).mean()) * 100.0
+    except Exception:
+        return 0.0
+
+
 def _photo_face_anomaly_flags(img, gray, face_bbox: dict | None) -> dict:
     """
     Detect partial face cover, blank patches, and left/right inconsistencies
@@ -613,8 +641,43 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
                         "Part of the face appears covered, cropped, or digitally altered. "
                         "Upload a clear, unedited 2×2 photo with the full face visible."
                     )
+
+                # Face-region quality: exposure + genuine detail. These run ON the face box, so
+                # the large plain background of a proper 2×2 photo does not skew them. They catch
+                # low-resolution/pixelated, over/under-exposed, and mask/sunglasses-covered faces
+                # that the whole-frame blur/brightness checks miss.
+                bb = face_metrics.get("face_bbox") or {}
+                try:
+                    fx = int(bb.get("x") or 0)
+                    fy = int(bb.get("y") or 0)
+                    fw = int(bb.get("w") or 0)
+                    fh = int(bb.get("h") or 0)
+                    face_gray = gray[fy:fy + fh, fx:fx + fw] if (fw > 8 and fh > 8) else None
+                except Exception:
+                    face_gray = None
+
+                if face_gray is not None and face_gray.size >= 64:
+                    face_mean = float(np.mean(face_gray))
+                    face_flat = _block_flat_ratio(face_gray, block=4, thr=1.5)
+                    if face_mean > 120.0:
+                        issues.append(
+                            "The face is overexposed or washed out. Reduce lighting/glare and retake."
+                        )
+                    elif face_mean < 60.0:
+                        issues.append(
+                            "The face is too dark. Use brighter, even lighting and retake."
+                        )
+                    if face_flat > 42.0:
+                        # Blurry, low-resolution/pixelated, or covered faces lack real texture.
+                        issues.append(
+                            "The face is not clear enough — it looks blurry, low-resolution, or partly covered. "
+                            "Upload a sharp, high-resolution 2×2 photo with the full face clearly visible."
+                        )
             else:
-                warnings.append("Face detection could not confirm a clear portrait. Retake with the face fully visible.")
+                issues.append(
+                    "No clear face was detected. Upload a front-facing, upright 2×2 photo with your full "
+                    "face visible (not rotated, tilted, or covered)."
+                )
         else:
             photo_checks = {}
 
