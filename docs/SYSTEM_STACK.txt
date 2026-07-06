@@ -102,9 +102,9 @@ Systemd unit (created by deploy script):
 - /etc/systemd/system/intellidocs-ai.service
 
 AI payload version (must stay in sync):
-- ai/app.py -> AI_VERIFY_PAYLOAD_VERSION = 65
-- api/ai_persist.php -> AI_VERIFY_PAYLOAD_VERSION = 65
-- frontend/src/app/pages/registrar/ReviewDocuments.tsx -> AI_VERIFY_PAYLOAD_VERSION = 65
+- ai/app.py -> AI_VERIFY_PAYLOAD_VERSION = 66
+- api/ai_persist.php -> AI_VERIFY_PAYLOAD_VERSION = 66
+- frontend/src/app/pages/registrar/ReviewDocuments.tsx -> AI_VERIFY_PAYLOAD_VERSION = 66
 
 AI env variables (root env file):
 - AI_BASE_URL — PHP -> Python service URL
