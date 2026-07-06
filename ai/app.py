@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 68
+AI_VERIFY_PAYLOAD_VERSION = 69
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -5508,15 +5508,56 @@ def _sex_flags_in_text(t: str) -> tuple[bool, bool]:
     Return (has_male, has_female) without treating the MALE substring inside FEMALE as male.
     """
     u = (t or "").upper()
-    has_f = bool(re.search(r"\bFEMALE\b", u))
-    has_m = bool(re.search(r"\bMALE\b", u)) and not has_f
+    has_f = _psa_ocr_has_female(u)
+    has_m = _psa_ocr_has_male(u)
     if not has_f and not has_m:
         compact = re.sub(r"[^A-Z]", "", u)
-        if compact in {"F", "FEMALE"}:
+        if compact in {"F", "FEMALE", "FAMALE"}:
             has_f = True
         elif compact in {"M", "MALE"}:
             has_m = True
     return has_m, has_f
+
+
+def _psa_ocr_has_female(u: str) -> bool:
+    """OCR often reads Female as Famale / Femal on PSA forms."""
+    import re
+
+    s = (u or "").upper()
+    if re.search(r"\b(?:FEMALE|FAMALE|FEMAL|FAMAL)\b", s):
+        return True
+    return "FAMALE" in s or "FEMAL" in s
+
+
+def _psa_ocr_has_male(u: str) -> bool:
+    import re
+
+    s = (u or "").upper()
+    if _psa_ocr_has_female(s):
+        return False
+    return bool(re.search(r"\bMALE\b", s))
+
+
+def _psa_box_is_female_label(t: str) -> bool:
+    import re
+
+    compact = re.sub(r"[^A-Z0-9]", "", (t or "").upper())
+    if not compact:
+        return False
+    if re.search(r"(?:FEMALE|FAMALE|FEMAL|FAMAL)", compact):
+        return True
+    return compact.startswith("2") and ("FAM" in compact or "FEM" in compact)
+
+
+def _psa_box_is_male_label(t: str) -> bool:
+    import re
+
+    if _psa_box_is_female_label(t):
+        return False
+    compact = re.sub(r"[^A-Z0-9]", "", (t or "").upper())
+    if "MALE" in compact and "FAM" not in compact and "FEM" not in compact.replace("MALE", ""):
+        return True
+    return bool(re.search(r"\bMALE\b", (t or "").upper())) and not _psa_box_is_female_label(t)
 
 
 def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
@@ -5540,7 +5581,7 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
         if re.search(r"\bSEX\b", (ln or "").upper())
         or (
             re.search(r"\b[12]\b", (ln or "").upper())
-            and ("MALE" in (ln or "").upper() or "FEMALE" in (ln or "").upper())
+            and (_psa_ocr_has_male(ln) or _psa_ocr_has_female(ln))
         )
     ]
     tail_pool = lines[max(0, len(lines) - 24) :]
@@ -5561,9 +5602,11 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
             m2 = re.search(r"\b2\b", fwd)
             mal_m = re.search(r"\bMALE\b", fwd)
             mal_i = mal_m.start() if mal_m else 10**9
-            fem_i = fwd.find("FEMALE")
-            if fem_i < 0:
-                fem_i = 10**9
+            fem_i = 10**9
+            for tok in ("FEMALE", "FAMALE", "FEMAL"):
+                i = fwd.find(tok)
+                if i >= 0:
+                    fem_i = min(fem_i, i)
             i1 = m1.start() if m1 else 10**9
             i2 = m2.start() if m2 else 10**9
             # First option number after the mark determines the selection.
@@ -5581,7 +5624,7 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
         u = (ln or "").upper()
         if "SEX" not in u and not re.search(r"\b[12]\b", u):
             return None
-        if "FEMALE" not in u and "MALE" not in u:
+        if not _psa_ocr_has_male(u) and not _psa_ocr_has_female(u):
             return None
 
         forward_hit = _psa_mark_selects_forward(u)
@@ -5589,20 +5632,22 @@ def _detect_psa_child_sex_from_text(raw_text: str) -> str | None:
             return forward_hit
 
         # OCR sometimes merges the row without a readable X — look for empty 1 / marked 2 pattern.
-        if re.search(r"\(\s*\)\s*1\s*MALE", u) and re.search(r"[X✓V]\s*\)?\s*2\b", u) and "FEMALE" in u:
+        if re.search(r"\(\s*\)\s*1\s*MALE", u) and re.search(r"[X✓V]\s*\)?\s*2\b", u) and _psa_ocr_has_female(u):
             return "FEMALE"
-        if re.search(r"[X✓V]\s*\)?\s*1\b", u) and re.search(r"\b1\b\s*MALE", u) and "FEMALE" in u:
+        if re.search(r"[X✓V]\s*\)?\s*1\b", u) and re.search(r"\b1\b\s*MALE", u) and _psa_ocr_has_female(u):
             if not re.search(r"[X✓V][^2]{0,12}\b2\b", u):
                 return "MALE"
-
-        fem = re.search(r"\bFEMALE\b", u)
-        mal = re.search(r"\bMALE\b", u)
-        if fem and mal:
-            # Do not use distance-to-word — X before Female must not credit Male.
-            return None
-        if fem and not mal and re.search(r"\b2\b", u) and "SEX" in u:
+        if re.search(r"[X✓V]\s*\)?\s*2\b", u) and _psa_ocr_has_female(u):
             return "FEMALE"
-        if mal and not fem and re.search(r"\b1\b", u) and "SEX" in u:
+
+        has_f = _psa_ocr_has_female(u)
+        has_m = _psa_ocr_has_male(u)
+        if has_f and has_m:
+            # Both labels always print — never pick Male just because Female OCR is "Famale".
+            return None
+        if has_f and re.search(r"\b2\b", u) and "SEX" in u:
+            return "FEMALE"
+        if has_m and re.search(r"\b1\b", u) and "SEX" in u:
             return "MALE"
         return None
 
@@ -5673,19 +5718,23 @@ def _detect_psa_sex_mark_by_image(
     if not norm:
         return None
 
-    male_box = next((b for b in norm if "MALE" in b["t"] and "FEMALE" not in b["t"]), None)
-    female_box = next((b for b in norm if "FEMALE" in b["t"]), None)
+    male_box = next((b for b in norm if _psa_box_is_male_label(b["t"])), None)
+    female_box = next((b for b in norm if _psa_box_is_female_label(b["t"])), None)
     if not male_box or not female_box:
         return None
 
     def _num_left_of(label: dict, num: str) -> dict | None:
         """Option number (1/2) printed just left of the label word, same row."""
+        import re
+
+        label_cy = label["y"] + label["h"] / 2
         cands = [
             b
             for b in norm
-            if b["t"] == num
-            and b["x"] < label["x"]
-            and abs((b["y"] + b["h"] / 2) - (label["y"] + label["h"] / 2)) <= label["h"]
+            if re.sub(r"[^0-9]", "", (b["t"] or "")) == num
+            and b["x"] < label["x"] + 4
+            and abs((b["y"] + b["h"] / 2) - label_cy) <= max(label["h"] * 1.5, 18)
+            and label["x"] - b["x"] <= max(label["w"] * 10, 140)
         ]
         if not cands:
             return None
@@ -5740,12 +5789,12 @@ def _detect_psa_sex_mark_by_image(
     female_d = max(female_d, 0.0)
 
     # A filled checkbox has clearly more ink than an empty one. Require a minimum
-    # fill and a margin so ambiguous scans return None (safe -> manual/text path).
+    # fill and a ratio margin so ambiguous scans return None (safe -> text path).
     MIN_FILL = 0.08
-    MARGIN = 0.05
-    if female_d >= MIN_FILL and female_d - male_d >= MARGIN:
+    WIN_RATIO = 1.35
+    if female_d >= MIN_FILL and female_d >= male_d * WIN_RATIO:
         return "FEMALE"
-    if male_d >= MIN_FILL and male_d - female_d >= MARGIN:
+    if male_d >= MIN_FILL and male_d >= female_d * WIN_RATIO:
         return "MALE"
     return None
 
@@ -9790,8 +9839,8 @@ def _evaluate(
                             or (
                                 re.search(r"\b[12]\b", (ln or "").upper())
                                 and (
-                                    "MALE" in (ln or "").upper()
-                                    or "FEMALE" in (ln or "").upper()
+                                    _psa_ocr_has_male(ln)
+                                    or _psa_ocr_has_female(ln)
                                 )
                             )
                         ]
