@@ -16,7 +16,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Keep in sync with api/ai_persist.php and ReviewDocuments.tsx AI_VERIFY_PAYLOAD_VERSION.
-AI_VERIFY_PAYLOAD_VERSION = 62
+AI_VERIFY_PAYLOAD_VERSION = 63
 
 
 _IMAGE_DUPLICATE_CACHE: OrderedDict[str, int] = OrderedDict()
@@ -550,6 +550,20 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
         gray = _opencv_bgr_to_gray(img)
         lap_var = _opencv_laplacian_variance(gray)
         min_lap = 120.0 if is_photo else 55.0
+        if is_photo:
+            # A proper 2×2 ID photo has a large flat (white/studio) background with zero
+            # detail. Measuring blur over the WHOLE frame lets that background drag the
+            # global Laplacian variance below threshold even when the face is perfectly
+            # sharp — rejecting authentic photos. Measure sharpness on the subject
+            # (non-background) pixels instead, and never let it be stricter than global.
+            try:
+                lap_full = cv2.Laplacian(gray, cv2.CV_64F)
+                fg = gray < 232  # subject = anything darker than the near-white backdrop
+                if int(np.count_nonzero(fg)) > int(gray.size * 0.04):
+                    subj_lap_var = float(lap_full[fg].var())
+                    lap_var = max(lap_var, subj_lap_var)
+            except Exception:
+                pass
         if lap_var < min_lap:
             issues.append(
                 "Photo is too blurry or out of focus. Retake in good lighting with the camera steady."
