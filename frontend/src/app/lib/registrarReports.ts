@@ -145,7 +145,12 @@ export async function printRegistrarReport(
   printHtmlInFrame(buildPrintHtml(data));
 }
 
-/** Print report data already loaded in the on-screen preview (no pop-up). */
+/** Print report using the same formal document layout as the direct Print / PDF action. */
+export function printRegistrarReportFromData(data: RegistrarReportJson): void {
+  printHtmlInFrame(buildPrintHtml(data));
+}
+
+/** @deprecated Prefer printRegistrarReportFromData for WYSIWYG with preview. */
 export function printRegistrarReportPreview(): void {
   window.print();
 }

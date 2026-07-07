@@ -24,7 +24,7 @@ import {
   downloadRegistrarReportExcel,
   fetchRegistrarReport,
   printRegistrarReport,
-  printRegistrarReportPreview,
+  printRegistrarReportFromData,
   type RegistrarReportJson,
   type RegistrarReportType,
 } from '../../lib/registrarReports';
@@ -209,7 +209,11 @@ export function Reports() {
 
   const printPreview = () => {
     if (!previewData) return;
-    printRegistrarReportPreview();
+    try {
+      printRegistrarReportFromData(previewData);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not open print view');
+    }
   };
 
   const runExport = async (

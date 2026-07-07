@@ -148,14 +148,18 @@ export function formalReportDocumentStyles(): string {
     table.report-table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 11px;
+      font-size: 10px;
+      line-height: 1.35;
+      table-layout: fixed;
     }
     table.report-table th,
     table.report-table td {
       border: 1px solid #111;
-      padding: 5px 7px;
-      vertical-align: middle;
+      padding: 4px 5px;
+      vertical-align: top;
       text-align: center;
+      word-wrap: break-word;
+      overflow-wrap: anywhere;
     }
     table.report-table th {
       font-weight: 700;

@@ -19,8 +19,8 @@ export function ReportResponsiveTable({ columns, rows, className }: ReportRespon
 
   return (
     <div className={className}>
-      {/* Phone / small tablet: one card per row */}
-      <div className="space-y-3 md:hidden">
+      {/* Phone / small tablet: one card per row (hidden when printing) */}
+      <div className="space-y-3 md:hidden print:hidden">
         {rows.length === 0 ? (
           <p className="py-8 text-center text-sm text-gray-500">No rows to display.</p>
         ) : (
@@ -45,17 +45,17 @@ export function ReportResponsiveTable({ columns, rows, className }: ReportRespon
         )}
       </div>
 
-      {/* Tablet / desktop: horizontal table with scroll on narrow widths */}
-      <div className="-mx-1 hidden overflow-x-auto px-1 md:block">
-        <table className="w-full min-w-[640px] border-collapse text-[11px]">
+      {/* Tablet / desktop + print: table fits container width (no horizontal scroll) */}
+      <div className="hidden w-full md:block print:block">
+        <table className="w-full table-fixed border-collapse text-[10px] leading-snug sm:text-[11px]">
           <thead>
             <tr>
               {columns.map((col, i) => (
                 <th
                   key={col}
                   className={cn(
-                    'whitespace-nowrap border border-black bg-white px-2 py-1.5 font-bold',
-                    i === 0 ? 'sticky left-0 z-[1] text-left' : 'text-center',
+                    'break-words border border-black bg-white px-1.5 py-1.5 font-bold sm:px-2',
+                    i === 0 ? 'text-left' : 'text-center',
                   )}
                 >
                   {col}
@@ -70,8 +70,8 @@ export function ReportResponsiveTable({ columns, rows, className }: ReportRespon
                   <td
                     key={col}
                     className={cn(
-                      'whitespace-nowrap border border-black px-2 py-1.5 align-middle',
-                      i === 0 ? 'sticky left-0 z-[1] bg-white text-left font-medium' : 'text-center',
+                      'break-words border border-black px-1.5 py-1.5 align-top sm:px-2',
+                      i === 0 ? 'text-left font-medium' : 'text-center',
                     )}
                   >
                     {row[col] ?? ''}

@@ -39,15 +39,15 @@ export function ReportGroupedSections({
             ) : null}
           </div>
           {group.columns.length > 0 && group.rows.length > 0 ? (
-            <div className="-mx-1 overflow-x-auto px-1">
-              <table className="w-full min-w-[480px] border-collapse text-[11px]">
+            <div className="w-full">
+              <table className="w-full table-fixed border-collapse text-[10px] leading-snug sm:text-[11px]">
               <thead>
                 <tr>
                   {group.columns.map((col, i) => (
                     <th
                       key={col}
                       className={cn(
-                        'border border-black bg-white px-2 py-1.5 font-bold',
+                        'break-words border border-black bg-white px-1.5 py-1.5 font-bold sm:px-2',
                         i === 0 ? 'text-left' : 'text-center',
                         col === notesColumn ? 'text-left' : '',
                       )}
@@ -64,9 +64,9 @@ export function ReportGroupedSections({
                       <td
                         key={col}
                         className={cn(
-                          'border border-black px-2 py-1.5 align-top',
+                          'break-words border border-black px-1.5 py-1.5 align-top sm:px-2',
                           i === 0 ? 'text-left font-medium' : 'text-center',
-                          col === notesColumn ? 'max-w-[240px] text-left text-[10px] leading-snug' : '',
+                          col === notesColumn ? 'text-left text-[10px] leading-snug' : '',
                         )}
                       >
                         {row[col] ?? ''}
