@@ -126,18 +126,6 @@ function aiRefineFieldChecksForTemplate(array $fieldChecks, float $ocrConfidence
         $ok = $check['ok'] ?? null;
         $row = $check;
 
-        if ($field !== '' && $fieldKey !== 'signature' && $expected !== '' && $detected !== '') {
-            $overlap = aiRefineEnrollmentTokenOverlap($expected, $detected);
-            if ($overlap >= 0.5) {
-                $row['ok'] = true;
-                $row['match_ratio'] = max((float)($row['match_ratio'] ?? 0.0), $overlap);
-                $row['refined_reason'] = 'enrollment_token_rematch';
-                unset($row['note'], $row['concern_pct']);
-                $refined[] = $row;
-                continue;
-            }
-        }
-
         if ($field !== '' && $fieldKey !== 'signature' && $ok === false) {
             $overlap = ($expected !== '' && $detected !== '')
                 ? aiRefineEnrollmentTokenOverlap($expected, $detected)
@@ -145,7 +133,7 @@ function aiRefineFieldChecksForTemplate(array $fieldChecks, float $ocrConfidence
             $garbage = aiRefineTextLooksLikeOcrGarbage($detected);
             $lowRead = $ocrConfidence > 0.0 && $ocrConfidence < 0.68;
 
-            if (($garbage && $overlap < 0.35) || ($overlap < 0.2 && $lowRead)) {
+            if ($garbage || ($overlap < 0.2 && $lowRead)) {
                 $row['ok'] = null;
                 $row['detected'] = $detected !== '' ? $detected : 'Unreadable on this layout';
                 $row['note'] = match ($fieldKey) {
