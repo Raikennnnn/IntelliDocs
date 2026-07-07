@@ -5,6 +5,8 @@ import { cn } from "./ui/utils";
 import type { SecurityLevels } from "./SecurityLevelsPanel";
 
 import {
+  MAX_VERIFICATION_WITHOUT_OPTIONAL_PCT,
+  MAX_VERIFICATION_WITH_ALL_PCT,
   verificationCategoryLabel,
   type WeightedCategoryRow,
 } from "../lib/documentVerificationWeights";
@@ -17,6 +19,9 @@ import {
   concernScoreBadgeClasses,
   concernScoreSurfaceClasses,
   concernScoreTextClass,
+  verificationScoreBadgeClasses,
+  verificationScoreSurfaceClasses,
+  verificationScoreTextClass,
 } from "../lib/verificationScoreColors";
 
 type AiResultForExplainer = {
@@ -44,6 +49,11 @@ export type DocScoreRow = {
 
 export type OverallScoreBreakdown = {
   aggregateScore: number;
+  aggregateVerificationScore: number;
+  activeWeightPct: number;
+  scoringCategories: number;
+  uploadedCategories: number;
+  maxVerificationPct: number;
   rows: DocScoreRow[];
   categoryRows: WeightedCategoryRow[];
   aiRunning: boolean;
@@ -108,6 +118,11 @@ export function buildOverallScoreBreakdown(
   aiResultsByDocId: Record<string, AiResultForExplainer>,
   aiRunning: boolean,
   aggregateScore: number,
+  aggregateVerificationScore: number,
+  activeWeightPct: number,
+  scoringCategories: number,
+  uploadedCategories: number,
+  maxVerificationPct: number,
   categoryRows: WeightedCategoryRow[],
 ): OverallScoreBreakdown | null {
   const arr = Array.isArray(documents) ? documents : [];
@@ -145,6 +160,11 @@ export function buildOverallScoreBreakdown(
 
   return {
     aggregateScore,
+    aggregateVerificationScore,
+    activeWeightPct,
+    scoringCategories,
+    uploadedCategories,
+    maxVerificationPct,
     rows: [...rows].sort((a, b) => b.pct - a.pct),
     categoryRows,
     aiRunning,
@@ -175,18 +195,41 @@ function ScorePctBadge({ pct, scored = true }: { pct: number; scored?: boolean }
 }
 
 export function AiReviewScoreExplainer({ breakdown, className }: AiReviewScoreExplainerProps) {
-  const { aggregateScore, rows, categoryRows, aiRunning, totalDocuments, scoredDocuments } =
-    breakdown;
+  const {
+    aggregateScore,
+    aggregateVerificationScore,
+    activeWeightPct,
+    scoringCategories,
+    uploadedCategories,
+    maxVerificationPct,
+    rows,
+    categoryRows,
+    aiRunning,
+    totalDocuments,
+    scoredDocuments,
+  } = breakdown;
   const n = rows.length;
   const highestConcern = rows[0];
   const lowestConcern = rows[rows.length - 1];
+  const sf10Included = categoryRows.some((c) => c.category === "form137" && c.uploaded);
+  const sf10Omitted = categoryRows.some((c) => c.category === "form137" && c.excludedFromOverall);
 
   return (
     <div className={cn("text-sm text-gray-700", className)}>
       <p className="leading-snug text-gray-600">
-        Based on{" "}
+        Scoring uses{" "}
         <span className="font-medium text-gray-800">
-          {scoredDocuments} of {totalDocuments} document{totalDocuments === 1 ? "" : "s"}
+          {scoringCategories} uploaded type{scoringCategories === 1 ? "" : "s"}
+        </span>{" "}
+        ({maxVerificationPct}% max coverage
+        {sf10Omitted
+          ? ` without optional SF10 · ${MAX_VERIFICATION_WITHOUT_OPTIONAL_PCT}% cap`
+          : sf10Included
+            ? ` with SF10 · ${MAX_VERIFICATION_WITH_ALL_PCT}% cap`
+            : ""}
+        ). AI scored{" "}
+        <span className="font-medium text-gray-800">
+          {scoredDocuments} of {totalDocuments} file{totalDocuments === 1 ? "" : "s"}
         </span>
         {highestConcern && lowestConcern && n > 1 ? (
           <>
@@ -224,40 +267,56 @@ export function AiReviewScoreExplainer({ breakdown, className }: AiReviewScoreEx
         <div className="space-y-4 border-t border-gray-100 px-3 py-3">
           <section>
             <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-              Step 1 — Weighted overall concern
+              Step 1 — Overall concern (review bands)
             </h4>
             <p className="mt-1 leading-relaxed">
-              Each document score is the <strong>average of mismatch (MM) and tamper (T)</strong>{" "}
-              concern (0% = clean, 100% = serious problem). The overall score is the weighted sum
-              of those averages. Missing types count as 0 until AI finishes.
+              Each required file gets an average <strong>concern</strong> from mismatch (MM) and tamper
+              (T) — 0% = clean. The headline score and colored review band use this weighted concern.
+              Bands: <strong>0–{CONCERN_MANUAL_THRESHOLD}%</strong> routine,{" "}
+              <strong>
+                {CONCERN_MANUAL_THRESHOLD + 1}–{CONCERN_STRICT_THRESHOLD}%
+              </strong>{" "}
+              manual, <strong>&gt;{CONCERN_STRICT_THRESHOLD}%</strong> strict. SF10 is optional —
+              included in the weighted total when uploaded (max {MAX_VERIFICATION_WITH_ALL_PCT}%),
+              otherwise omitted (max {MAX_VERIFICATION_WITHOUT_OPTIONAL_PCT}%).
             </p>
-            <ul className="mt-2 list-inside list-disc text-xs leading-relaxed text-gray-600">
-              <li>SF10 / Form 137 — 25%</li>
-              <li>SF9 / Report card — 25%</li>
-              <li>PSA birth certificate — 25%</li>
-              <li>Good moral — 20%</li>
-              <li>2×2 ID photo — 5%</li>
-            </ul>
             <p className="mt-2 rounded-md bg-gray-50 px-2 py-1.5 font-mono text-xs tabular-nums text-gray-800">
-              {categoryRows.map((c, i) => (
-                <span key={c.category}>
-                  {i > 0 ? " + " : ""}
-                  {(c.weightPct / 100).toFixed(2)}×
-                  <span
-                    className={cn(
-                      "font-semibold",
-                      c.scored ? concernScoreTextClass(c.pct) : "text-gray-400",
-                    )}
-                  >
-                    {c.scored ? c.pct : 0}
+              {categoryRows
+                .filter((c) => !c.excludedFromOverall)
+                .map((c, i) => (
+                  <span key={c.category}>
+                    {i > 0 ? " + " : ""}
+                    {(c.weightPct / 100).toFixed(2)}×
+                    <span
+                      className={cn(
+                        "font-semibold",
+                        c.scored ? concernScoreTextClass(c.pct) : "text-gray-400",
+                      )}
+                    >
+                      {c.scored ? c.pct : "…"}
+                    </span>
                   </span>
-                </span>
-              ))}{" "}
+                ))}{" "}
               ≈{" "}
-              <span className={concernScoreTextClass(aggregateScore)}>
-                {aggregateScore}
-              </span>{" "}
-              → <ScorePctBadge pct={aggregateScore} />
+              <span className={concernScoreTextClass(aggregateScore)}>{aggregateScore}</span>% →{" "}
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums",
+                  concernScoreBadgeClasses(aggregateScore),
+                )}
+              >
+                {aggregateScore}%
+              </span>
+            </p>
+            <p className="mt-2 text-xs text-gray-600">
+              <strong>Verification coverage</strong> (pass % on required uploads, not the review band):{" "}
+              <span className={cn("font-semibold tabular-nums", verificationScoreTextClass(aggregateVerificationScore))}>
+                {aggregateVerificationScore}%
+              </span>
+              <span className="text-gray-500">
+                {" "}
+                — maximum {maxVerificationPct}% for this application.
+              </span>
             </p>
           </section>
 
@@ -271,29 +330,48 @@ export function AiReviewScoreExplainer({ breakdown, className }: AiReviewScoreEx
                   key={c.category}
                   className={cn(
                     "rounded-md border px-2.5 py-2",
-                    c.scored
-                      ? concernScoreSurfaceClasses(c.pct)
-                      : "border-gray-100 bg-gray-50/80",
+                    c.excludedFromOverall
+                      ? "border-dashed border-gray-200 bg-gray-50/50"
+                      : c.scored
+                        ? concernScoreSurfaceClasses(c.pct)
+                        : "border-gray-100 bg-gray-50/80",
                   )}
                 >
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <span className="font-medium text-gray-900">
                       {verificationCategoryLabel(c.category)}
                       <span className="ml-1 text-xs font-normal text-gray-500">
-                        ({c.weightPct}% weight)
+                        ({c.weightPct}% weight
+                        {c.optional
+                          ? c.excludedFromOverall
+                            ? ", optional — not uploaded"
+                            : ", optional — included"
+                          : ""}
+                        )
                       </span>
                     </span>
-                    <ScorePctBadge pct={c.pct} scored={c.scored} />
+                    {c.excludedFromOverall ? (
+                      <span className="text-xs font-medium text-gray-400">Not uploaded</span>
+                    ) : (
+                      <ScorePctBadge pct={c.pct} scored={c.scored} />
+                    )}
                   </div>
                   <p className="mt-0.5 text-xs text-gray-600">
-                    {c.scored ? (
+                    {c.excludedFromOverall ? (
+                      "Optional — not submitted; excluded from overall scoring."
+                    ) : c.scored ? (
                       <>
-                        Contributes <strong>{Math.round(c.contribution * 10) / 10}</strong> to
+                        Pass{" "}
+                        <strong className={verificationScoreTextClass(100 - c.pct)}>
+                          {100 - c.pct}%
+                        </strong>{" "}
+                        · contributes{" "}
+                        <strong>{Math.round(c.verificationContribution * 10) / 10}</strong> to
                         overall
                         {c.label ? ` · ${c.label}` : ""}
                       </>
                     ) : (
-                      "Not scored yet — counts as 0 until AI finishes."
+                      "Uploaded — waiting for AI to finish checking."
                     )}
                   </p>
                 </li>

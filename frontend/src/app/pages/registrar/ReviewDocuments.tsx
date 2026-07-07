@@ -59,7 +59,7 @@ import {
   AiReviewScoreExplainer,
   buildOverallScoreBreakdown,
 } from "../../components/AiReviewScoreExplainer";
-import { computeWeightedVerificationScore } from "../../lib/documentVerificationWeights";
+import { computeWeightedVerificationScore, MAX_VERIFICATION_WITHOUT_OPTIONAL_PCT, MAX_VERIFICATION_WITH_ALL_PCT } from "../../lib/documentVerificationWeights";
 import {
   verificationScoreTextClass,
   concernScoreBadgeClasses,
@@ -1618,6 +1618,8 @@ export function ReviewDocuments() {
       ? weightedVerificationFromAi(documentsForAi, aiResultsByDocId, aiDocStateById)
       : null;
   const aggregateConcern = weightedVerification?.aggregateScore ?? null;
+  const aggregateVerification = weightedVerification?.aggregateVerificationScore ?? null;
+  const maxVerificationPct = weightedVerification?.maxVerificationPct ?? null;
   const aiTier = aggregateConcern !== null ? getAiReviewTier(aggregateConcern) : null;
   const activeConcernPolicy =
     aggregateConcern !== null ? concernPolicyTier(aggregateConcern) : null;
@@ -1628,6 +1630,11 @@ export function ReviewDocuments() {
           aiResultsByDocId,
           aiRunning,
           weightedVerification.aggregateScore,
+          weightedVerification.aggregateVerificationScore,
+          weightedVerification.activeWeightPct,
+          weightedVerification.scoringCategories,
+          weightedVerification.uploadedCategories,
+          weightedVerification.maxVerificationPct,
           weightedVerification.categoryRows,
         )
       : null;
@@ -2584,8 +2591,10 @@ export function ReviewDocuments() {
                     <div>
                       <h3 className="text-lg font-semibold text-gray-900">AI review summary</h3>
                       <p className="mt-0.5 text-sm text-gray-600">
-                        Per file: average of <strong className="font-medium">MM</strong> +{" "}
-                        <strong className="font-medium">T</strong>. Overall = weighted mean (0% = clean).
+                        Review bands use <strong className="font-medium">overall concern</strong> (0% =
+                        clean). Verification coverage includes uploaded types — SF10 is optional (max{" "}
+                        {MAX_VERIFICATION_WITHOUT_OPTIONAL_PCT}% without it, {MAX_VERIFICATION_WITH_ALL_PCT}%
+                        when included).
                       </p>
                     </div>
                   </div>
@@ -2602,22 +2611,61 @@ export function ReviewDocuments() {
                       >
                         {aggregateConcern}%
                       </p>
+                      {activeConcernPolicy ? (
+                        <p
+                          className={cn(
+                            "mt-1 text-xs font-medium",
+                            activeConcernPolicy === "routine"
+                              ? "text-emerald-700"
+                              : activeConcernPolicy === "manual"
+                                ? "text-amber-800"
+                                : "text-red-700",
+                          )}
+                        >
+                          {activeConcernPolicy === "routine"
+                            ? "Routine review"
+                            : activeConcernPolicy === "manual"
+                              ? "Manual registrar review"
+                              : "Strict verification"}
+                        </p>
+                      ) : null}
+                      {aggregateVerification !== null ? (
+                        <p className="mt-1 text-xs text-gray-600">
+                          Verification coverage{" "}
+                          <span className="font-semibold tabular-nums text-gray-800">
+                            {aggregateVerification}%
+                          </span>
+                          {maxVerificationPct !== null ? (
+                            <span className="text-gray-500">
+                              {" "}
+                              · max {maxVerificationPct}% for this application
+                            </span>
+                          ) : null}
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
                 <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] text-gray-600">
                   {[
-                    ["SF10", "25%"],
-                    ["SF9", "25%"],
-                    ["PSA", "25%"],
-                    ["Good moral", "20%"],
-                    ["2×2 photo", "5%"],
-                  ].map(([label, weight]) => (
+                    ["SF10", "25%", true],
+                    ["SF9", "25%", false],
+                    ["PSA", "25%", false],
+                    ["Good moral", "20%", false],
+                    ["2×2 photo", "5%", false],
+                  ].map(([label, weight, optional]) => (
                     <span
-                      key={label}
-                      className="rounded-full border border-gray-200 bg-white/80 px-2 py-0.5"
+                      key={String(label)}
+                      className={cn(
+                        "rounded-full border bg-white/80 px-2 py-0.5",
+                        optional ? "border-dashed border-gray-300" : "border-gray-200",
+                      )}
                     >
-                      {label} <span className="font-semibold text-gray-800">{weight}</span>
+                      {label}{" "}
+                      {optional ? (
+                        <span className="text-gray-500">(optional)</span>
+                      ) : null}{" "}
+                      <span className="font-semibold text-gray-800">{weight}</span>
                     </span>
                   ))}
                 </div>

@@ -19,6 +19,26 @@ export const VERIFICATION_DOC_WEIGHTS: Record<
   photo_2x2: 0.05,
 };
 
+/** Optional at enrollment — omitted from weighted totals only when not uploaded. */
+export const OPTIONAL_VERIFICATION_CATEGORIES: ReadonlyArray<
+  Exclude<VerificationDocCategory, "other">
+> = ["form137"];
+
+/** Max verification coverage when optional SF10 is not uploaded. */
+export const MAX_VERIFICATION_WITHOUT_OPTIONAL_PCT = Math.round(
+  (Object.entries(VERIFICATION_DOC_WEIGHTS) as Array<
+    [Exclude<VerificationDocCategory, "other">, number]
+  >)
+    .filter(([cat]) => !OPTIONAL_VERIFICATION_CATEGORIES.includes(cat))
+    .reduce((sum, [, w]) => sum + w, 0) * 100,
+);
+
+export const MAX_VERIFICATION_WITH_ALL_PCT = 100;
+
+const WEIGHTED_CATEGORIES = Object.keys(VERIFICATION_DOC_WEIGHTS) as Array<
+  Exclude<VerificationDocCategory, "other">
+>;
+
 const CATEGORY_LABELS: Record<Exclude<VerificationDocCategory, "other">, string> = {
   form137: "SF10 / Form 137",
   sf9: "SF9 / Report card",
@@ -39,9 +59,20 @@ export function resolveVerificationDocCategory(doc: {
   name?: string;
   fileName?: string;
 }): VerificationDocCategory {
-  const label = String(
-    doc?.requirementLabel ?? doc?.type ?? doc?.name ?? doc?.fileName ?? "",
-  ).toLowerCase();
+  const slotLabel = String(doc?.requirementLabel ?? doc?.type ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (slotLabel) return resolveVerificationDocCategoryFromLabel(slotLabel);
+
+  const fallback = String(doc?.name ?? doc?.fileName ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return fallback ? resolveVerificationDocCategoryFromLabel(fallback) : "other";
+}
+
+function resolveVerificationDocCategoryFromLabel(label: string): VerificationDocCategory {
   if (label.includes("2x2") || (label.includes("picture") && label.includes("white"))) {
     return "photo_2x2";
   }
@@ -63,6 +94,12 @@ export function resolveVerificationDocCategory(doc: {
   return "other";
 }
 
+export function isOptionalVerificationCategory(
+  category: Exclude<VerificationDocCategory, "other">,
+): boolean {
+  return OPTIONAL_VERIFICATION_CATEGORIES.includes(category);
+}
+
 export type WeightedCategoryRow = {
   category: Exclude<VerificationDocCategory, "other">;
   label: string;
@@ -71,19 +108,60 @@ export type WeightedCategoryRow = {
   weightPct: number;
   /** weight × document average concern (before rounding total). */
   contribution: number;
+  /** weight × pass % (100 − concern) for scored uploads. */
+  verificationContribution: number;
   docIds: string[];
   scored: boolean;
+  /** At least one file was uploaded for this category. */
+  uploaded: boolean;
+  /** Optional category not uploaded — excluded from overall weighted score. */
+  excludedFromOverall: boolean;
+  /** Optional category (SF10) — may be omitted at enrollment. */
+  optional: boolean;
 };
+
+/** Categories with at least one uploaded file in the application. */
+export function uploadedVerificationCategories(
+  documents: unknown,
+): Set<Exclude<VerificationDocCategory, "other">> {
+  const arr = Array.isArray(documents) ? documents : [];
+  const uploaded = new Set<Exclude<VerificationDocCategory, "other">>();
+  for (const d of arr) {
+    const cat = resolveVerificationDocCategory(
+      d as {
+        requirementLabel?: string;
+        type?: string;
+        name?: string;
+        fileName?: string;
+      },
+    );
+    if (cat !== "other") uploaded.add(cat);
+  }
+  return uploaded;
+}
+
+export function countUploadedVerificationDocuments(documents: unknown): number {
+  return uploadedVerificationCategories(documents).size;
+}
 
 export function computeWeightedVerificationScore(
   documents: unknown,
   getPctForDoc: (doc: { id?: unknown }) => number | null,
 ): {
+  /** Weighted concern (0 = clean, higher = worse). */
   aggregateScore: number;
+  /** Weighted verification pass % (higher = better; max 75% without SF10, 100% with SF10). */
+  aggregateVerificationScore: number;
   categoryRows: WeightedCategoryRow[];
   scoredCategories: number;
+  /** Uploaded categories that count toward the overall weighted score. */
+  scoringCategories: number;
+  uploadedCategories: number;
+  activeWeightPct: number;
+  maxVerificationPct: number;
 } | null {
   const arr = Array.isArray(documents) ? documents : [];
+  const uploaded = uploadedVerificationCategories(documents);
   const byCategory = new Map<
     Exclude<VerificationDocCategory, "other">,
     { pcts: number[]; labels: string[]; ids: string[] }
@@ -113,36 +191,63 @@ export function computeWeightedVerificationScore(
     byCategory.set(cat, bucket);
   }
 
-  if (byCategory.size === 0) return null;
+  if (uploaded.size === 0) return null;
 
-  let aggregate = 0;
+  let aggregateConcern = 0;
+  let aggregateVerification = 0;
+  let activeWeight = 0;
+  let scoringCategories = 0;
   const categoryRows: WeightedCategoryRow[] = [];
 
-  for (const category of Object.keys(VERIFICATION_DOC_WEIGHTS) as Array<
-    Exclude<VerificationDocCategory, "other">
-  >) {
+  for (const category of WEIGHTED_CATEGORIES) {
     const weight = VERIFICATION_DOC_WEIGHTS[category];
+    const hasUpload = uploaded.has(category);
+    const optional = isOptionalVerificationCategory(category);
+    const excludedFromOverall = optional && !hasUpload;
     const bucket = byCategory.get(category);
     const scored = Boolean(bucket?.pcts.length);
     const pct = scored
       ? Math.round(bucket!.pcts.reduce((a, b) => a + b, 0) / bucket!.pcts.length)
       : 0;
-    const contribution = weight * pct;
-    aggregate += contribution;
+    const appliesToScore = hasUpload;
+    const contribution = appliesToScore && scored ? weight * pct : 0;
+    const passPct = scored ? Math.max(0, 100 - pct) : 0;
+    const verificationContribution = appliesToScore && scored ? weight * passPct : 0;
+
+    if (appliesToScore) {
+      activeWeight += weight;
+      scoringCategories += 1;
+    }
+    aggregateConcern += contribution;
+    aggregateVerification += verificationContribution;
+
     categoryRows.push({
       category,
       label: scored ? bucket!.labels[0] : verificationCategoryLabel(category),
       pct,
       weightPct: Math.round(weight * 100),
       contribution,
+      verificationContribution,
       docIds: scored ? bucket!.ids : [],
       scored,
+      uploaded: hasUpload,
+      excludedFromOverall,
+      optional,
     });
   }
 
+  if (byCategory.size === 0) return null;
+
+  const maxVerificationPct = Math.round(activeWeight * 100);
+
   return {
-    aggregateScore: Math.round(aggregate),
+    aggregateScore: Math.round(aggregateConcern),
+    aggregateVerificationScore: Math.round(aggregateVerification),
     categoryRows,
     scoredCategories: byCategory.size,
+    scoringCategories,
+    uploadedCategories: uploaded.size,
+    activeWeightPct: maxVerificationPct,
+    maxVerificationPct,
   };
 }
