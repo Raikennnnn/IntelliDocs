@@ -24,12 +24,40 @@ type AnnouncementItem = {
   updatedAt?: string;
 };
 
-const TARGETS = ['Whole School', 'Students', 'Teachers'] as const;
+const TARGETS = ['General', 'Grade 11', 'Grade 12'] as const;
 const BADGES = ['Announcement', 'Event', 'Reminder'] as const;
+
+function normalizeAnnouncementTarget(target: string): string {
+  const t = target.trim();
+  if (t === 'Whole School' || t === 'Students') return 'General';
+  return t || 'General';
+}
+
+function gradeNumberFromLevel(gradeLevel: string): 11 | 12 | null {
+  const raw = gradeLevel.trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === '11' || raw.includes('grade 11')) return 11;
+  if (raw === '12' || raw.includes('grade 12')) return 12;
+  return null;
+}
+
+function studentCanSeeAnnouncement(target: string, isEnrolled: boolean, gradeLevel: string): boolean {
+  const normalized = normalizeAnnouncementTarget(target);
+  if (normalized === 'General') return true;
+  if (!isEnrolled) return false;
+  const grade = gradeNumberFromLevel(gradeLevel);
+  if (grade === null) return false;
+  if (normalized === 'Grade 11') return grade === 11;
+  if (normalized === 'Grade 12') return grade === 12;
+  return false;
+}
 
 export function Announcements() {
   const { user } = useAuth();
   const canManage = user?.role === 'registrar' || user?.role === 'admin';
+
+  const [studentGradeLevel, setStudentGradeLevel] = useState('');
+  const [studentIsEnrolled, setStudentIsEnrolled] = useState(false);
 
   const [items, setItems] = useState<AnnouncementItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,7 +72,7 @@ export function Announcements() {
     title: '',
     body: '',
     badge: 'Announcement',
-    target: 'Whole School',
+    target: 'General',
     showOnLanding: true,
     eventDate: '',
     isActive: true,
@@ -74,17 +102,50 @@ export function Announcements() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canManage]);
 
+  useEffect(() => {
+    if (user?.role !== 'student') {
+      setStudentGradeLevel('');
+      setStudentIsEnrolled(false);
+      return;
+    }
+    void (async () => {
+      try {
+        const res = await apiFetch('/api/student/me');
+        const data = await res.json();
+        if (!data?.success) return;
+        const statusCode = String(data.application?.status_code ?? '').toLowerCase();
+        setStudentIsEnrolled(statusCode === 'enrolled');
+        setStudentGradeLevel(String(data.profile?.grade_level ?? ''));
+      } catch {
+        setStudentGradeLevel('');
+        setStudentIsEnrolled(false);
+      }
+    })();
+  }, [user?.role, user?.id]);
+
   const announcements = useMemo(() => {
     const list = items || [];
+    if (canManage) {
+      return list;
+    }
     if (!user) return list;
+
+    const isEnrolled = user.role === 'student' && studentIsEnrolled;
+    const gradeLevel = user.role === 'student' ? studentGradeLevel : '';
+
     return list.filter((a) => {
       if (a.isActive === false) return false;
-      if (a.target === 'Whole School') return true;
-      if (user.role === 'student' && a.target === 'Students') return true;
-      if ((user.role === 'registrar' || user.role === 'admin') && a.target === 'Teachers') return true;
-      return false;
+      if (user.role === 'student') {
+        return studentCanSeeAnnouncement(a.target, isEnrolled, gradeLevel);
+      }
+      return studentCanSeeAnnouncement(a.target, false, '');
     });
-  }, [items, user]);
+  }, [items, user, canManage, studentIsEnrolled, studentGradeLevel]);
+
+  const carouselItems = useMemo(
+    () => announcements.filter((a) => a.isActive !== false),
+    [announcements],
+  );
 
   function resetImageState(existingUrl?: string | null) {
     setImageFile(null);
@@ -99,7 +160,7 @@ export function Announcements() {
       title: '',
       body: '',
       badge: 'Announcement',
-      target: 'Whole School',
+      target: 'General',
       showOnLanding: true,
       eventDate: '',
       isActive: true,
@@ -114,7 +175,7 @@ export function Announcements() {
       title: a.title || '',
       body: a.body || '',
       badge: a.badge || 'Announcement',
-      target: a.target || 'Whole School',
+      target: a.target || 'General',
       showOnLanding: Boolean(a.showOnLanding ?? true),
       eventDate: (a.eventDate || a.date || '').slice(0, 10),
       isActive: Boolean(a.isActive ?? true),
@@ -342,8 +403,8 @@ export function Announcements() {
       )}
 
 
-      {!loading && announcements.length > 0 && (
-        <AnnouncementCarousel items={announcements} />
+      {!loading && carouselItems.length > 0 && (
+        <AnnouncementCarousel items={carouselItems} />
       )}
 
       {/* Announcements List */}

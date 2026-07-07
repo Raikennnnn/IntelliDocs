@@ -153,7 +153,17 @@ if ($method === 'POST') {
 
             $badge = trim((string)($payload['badge'] ?? 'Announcement')) ?: 'Announcement';
 
-            $target = trim((string)($payload['target'] ?? 'Whole School')) ?: 'Whole School';
+            $target = normalizeAnnouncementTarget(trim((string)($payload['target'] ?? 'General')) ?: 'General');
+
+            if (!isValidAnnouncementTarget($target)) {
+
+                http_response_code(422);
+
+                echo json_encode(['success' => false, 'error' => 'Invalid announcement target']);
+
+                exit;
+
+            }
 
             $showOnLanding = (int)($payload['showOnLanding'] ?? 1) ? 1 : 0;
 
@@ -233,7 +243,17 @@ if ($method === 'POST') {
 
             $badge = trim((string)($payload['badge'] ?? 'Announcement')) ?: 'Announcement';
 
-            $target = trim((string)($payload['target'] ?? 'Whole School')) ?: 'Whole School';
+            $target = normalizeAnnouncementTarget(trim((string)($payload['target'] ?? 'General')) ?: 'General');
+
+            if (!isValidAnnouncementTarget($target)) {
+
+                http_response_code(422);
+
+                echo json_encode(['success' => false, 'error' => 'Invalid announcement target']);
+
+                exit;
+
+            }
 
             $showOnLanding = (int)($payload['showOnLanding'] ?? 1) ? 1 : 0;
 

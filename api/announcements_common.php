@@ -5,6 +5,66 @@ declare(strict_types=1);
  * Shared helpers for announcements (schema, images).
  */
 
+/** @return list<string> */
+function announcementTargetOptions(): array
+{
+    return ['General', 'Grade 11', 'Grade 12'];
+}
+
+function normalizeAnnouncementTarget(string $target): string
+{
+    $t = trim($target);
+    return match ($t) {
+        'Whole School', 'Students' => 'General',
+        default => $t !== '' ? $t : 'General',
+    };
+}
+
+function isValidAnnouncementTarget(string $target): bool
+{
+    return in_array(normalizeAnnouncementTarget($target), announcementTargetOptions(), true);
+}
+
+function announcementGradeNumber(?string $gradeLevel): ?int
+{
+    $raw = strtolower(trim((string)$gradeLevel));
+    if ($raw === '') {
+        return null;
+    }
+    if (preg_match('/\b(11|12)\b/', $raw, $m)) {
+        return (int)$m[1];
+    }
+    return null;
+}
+
+/**
+ * Whether a student account should see an announcement in the portal.
+ *
+ * Unenrolled students (status not yet `enrolled`) only see General.
+ * Enrolled students see General plus announcements for their grade level.
+ */
+function studentSeesAnnouncement(string $target, bool $isRegistrarEnrolled, ?string $gradeLevel): bool
+{
+    $normalized = normalizeAnnouncementTarget($target);
+    if ($normalized === 'General') {
+        return true;
+    }
+    if (!$isRegistrarEnrolled) {
+        return false;
+    }
+    $grade = announcementGradeNumber($gradeLevel);
+    if ($grade === null) {
+        return false;
+    }
+    if ($normalized === 'Grade 11') {
+        return $grade === 11;
+    }
+    if ($normalized === 'Grade 12') {
+        return $grade === 12;
+    }
+    return false;
+}
+
 function ensureAnnouncementsSchema(PDO $pdo): void
 {
     $pdo->exec("
@@ -14,7 +74,7 @@ function ensureAnnouncementsSchema(PDO $pdo): void
             body TEXT NOT NULL,
             image_path VARCHAR(255) NULL,
             badge VARCHAR(40) NOT NULL DEFAULT 'Announcement',
-            target VARCHAR(40) NOT NULL DEFAULT 'Whole School',
+            target VARCHAR(40) NOT NULL DEFAULT 'General',
             show_on_landing TINYINT(1) NOT NULL DEFAULT 1,
             event_date DATE NULL,
             is_active TINYINT(1) NOT NULL DEFAULT 1,
@@ -176,7 +236,7 @@ function mapAnnouncementRow(array $r, bool $includeAdminFields = false): array
         'title' => (string)($r['title'] ?? ''),
         'body' => (string)($r['body'] ?? ''),
         'badge' => (string)($r['badge'] ?? 'Announcement'),
-        'target' => (string)($r['target'] ?? 'Whole School'),
+        'target' => normalizeAnnouncementTarget((string)($r['target'] ?? 'General')),
         'date' => $date,
         'showOnLanding' => (bool)($r['show_on_landing'] ?? 1),
         'imageUrl' => announcementImageUrl($id, $imagePath),

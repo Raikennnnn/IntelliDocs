@@ -36,6 +36,10 @@ require_once __DIR__ . '/announcements_common.php';
 
 require_once __DIR__ . '/public_privacy.php';
 
+require_once __DIR__ . '/session_token.php';
+
+require_once __DIR__ . '/enrollment_status_helpers.php';
+
 
 
 if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
@@ -101,6 +105,60 @@ try {
     foreach ($rows as $r) {
 
         $items[] = mapAnnouncementRow($r, false);
+
+    }
+
+    $actor = tryResolveActorFromRequest($pdo, 'announcements');
+
+    if ($landingOnly) {
+
+        $items = array_values(array_filter(
+
+            $items,
+
+            static fn(array $item): bool => studentSeesAnnouncement((string)($item['target'] ?? ''), false, null)
+
+        ));
+
+    } elseif ($actor !== null && ($actor['role'] ?? '') === 'student') {
+
+        $userId = (int)($actor['id'] ?? 0);
+
+        $enrollment = $userId > 0 ? pickPrimaryEnrollmentRow($pdo, $userId) : null;
+
+        $status = strtolower(trim((string)($enrollment['status'] ?? '')));
+
+        $isEnrolled = $status === 'enrolled';
+
+        $gradeLevel = is_array($enrollment) ? (string)($enrollment['grade_level'] ?? '') : '';
+
+        $items = array_values(array_filter(
+
+            $items,
+
+            static fn(array $item): bool => studentSeesAnnouncement(
+
+                (string)($item['target'] ?? ''),
+
+                $isEnrolled,
+
+                $gradeLevel
+
+            )
+
+        ));
+
+    } else {
+
+        // Portal without a student session: General announcements only.
+
+        $items = array_values(array_filter(
+
+            $items,
+
+            static fn(array $item): bool => studentSeesAnnouncement((string)($item['target'] ?? ''), false, null)
+
+        ));
 
     }
 
