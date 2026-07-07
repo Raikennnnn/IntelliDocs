@@ -24,6 +24,7 @@ import {
   Trash2,
   Archive
 } from 'lucide-react';
+import { UsDateInput, formatYmdAsUs } from '../../components/UsDateInput';
 
 /** Fixed action column widths so enrollment controls align across every school year row. */
 const SCHOOL_YEAR_ACTION_SLOTS =
@@ -182,9 +183,26 @@ export function SchoolYearManagement() {
   };
 
   const handleCreateSchoolYear = () => {
-    // Validation
     if (!newSchoolYear.year || !newSchoolYear.startDate || !newSchoolYear.endDate) {
-      alert('Please fill in all required fields');
+      toast.error('Please fill in all required fields');
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newSchoolYear.startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(newSchoolYear.endDate)) {
+      toast.error('Enter start and end dates as MM/DD/YYYY');
+      return;
+    }
+    if (parsedNewYear) {
+      if (newSchoolYear.startDate < parsedNewYear.minDate || newSchoolYear.startDate > parsedNewYear.maxDate) {
+        toast.error('Start date must fall within the selected school year');
+        return;
+      }
+      if (newSchoolYear.endDate < parsedNewYear.minDate || newSchoolYear.endDate > parsedNewYear.maxDate) {
+        toast.error('End date must fall within the selected school year');
+        return;
+      }
+    }
+    if (newSchoolYear.endDate < newSchoolYear.startDate) {
+      toast.error('End date must be on or after the start date');
       return;
     }
     void (async () => {
@@ -532,7 +550,7 @@ export function SchoolYearManagement() {
             <p className="text-sm text-green-700 mt-1">
               Current period:{' '}
               {activeSchoolYear.startDate && activeSchoolYear.endDate
-                ? `${new Date(activeSchoolYear.startDate).toLocaleDateString()} - ${new Date(activeSchoolYear.endDate).toLocaleDateString()}`
+                ? `${formatYmdAsUs(activeSchoolYear.startDate)} - ${formatYmdAsUs(activeSchoolYear.endDate)}`
                 : '—'}
             </p>
             <p className="text-sm text-green-700">
@@ -775,13 +793,13 @@ export function SchoolYearManagement() {
                     <TableCell className="text-sm text-gray-600">
                       <div className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {sy.startDate ? new Date(sy.startDate).toLocaleDateString() : '—'}
+                        {formatYmdAsUs(sy.startDate)}
                       </div>
                     </TableCell>
                     <TableCell className="text-sm text-gray-600">
                       <div className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {sy.endDate ? new Date(sy.endDate).toLocaleDateString() : '—'}
+                        {formatYmdAsUs(sy.endDate)}
                       </div>
                     </TableCell>
                     <TableCell className="text-center">
@@ -948,29 +966,30 @@ export function SchoolYearManagement() {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Start Date <span className="text-red-600">*</span>
                 </label>
-                <input
-                  type="date"
+                <UsDateInput
+                  id="school-year-start-date"
                   value={newSchoolYear.startDate}
                   min={parsedNewYear?.minDate}
                   max={parsedNewYear?.maxDate}
-                  onChange={(e) => setNewSchoolYear({ ...newSchoolYear, startDate: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B1538]"
+                  onChange={(startDate) => setNewSchoolYear({ ...newSchoolYear, startDate })}
+                  onBlurInvalid={() => toast.error('Enter start date as MM/DD/YYYY')}
                 />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   End Date <span className="text-red-600">*</span>
                 </label>
-                <input
-                  type="date"
+                <UsDateInput
+                  id="school-year-end-date"
                   value={newSchoolYear.endDate}
                   min={parsedNewYear?.minDate}
                   max={parsedNewYear?.maxDate}
-                  onChange={(e) => setNewSchoolYear({ ...newSchoolYear, endDate: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#8B1538]"
+                  onChange={(endDate) => setNewSchoolYear({ ...newSchoolYear, endDate })}
+                  onBlurInvalid={() => toast.error('Enter end date as MM/DD/YYYY')}
                 />
               </div>
             </div>
+            <p className="text-xs text-gray-500">MM/DD/YYYY</p>
 
             {/* Info Notice */}
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start gap-3">

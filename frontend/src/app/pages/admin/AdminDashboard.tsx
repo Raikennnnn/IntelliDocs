@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { Alert, AlertDescription } from '../../components/ui/alert';
+import { formatYmdAsUs } from '../../components/UsDateInput';
 import { Input } from '../../components/ui/input';
 import { Button } from '../../components/ui/button';
 import { Users, Activity, Shield, AlertTriangle } from 'lucide-react';
@@ -129,7 +130,7 @@ export function AdminDashboard() {
             </div>
             <p className="text-xs text-muted-foreground">
               {summary.ongoingSchoolYear.startDate && summary.ongoingSchoolYear.endDate
-                ? `${new Date(summary.ongoingSchoolYear.startDate).toLocaleDateString()} - ${new Date(summary.ongoingSchoolYear.endDate).toLocaleDateString()}`
+                ? `${formatYmdAsUs(summary.ongoingSchoolYear.startDate)} - ${formatYmdAsUs(summary.ongoingSchoolYear.endDate)}`
                 : 'Set this in School Year Management'}
             </p>
           </CardContent>
