@@ -457,7 +457,7 @@ function singleFieldCheckConcernPct(fc: FieldCheckRow): number {
 
 function fieldCheckStatusLabel(c: EnrollmentCrossRow): string {
   if (c.ok === null) {
-    return "unreadable on this layout";
+    return "unclear on scan — compare manually";
   }
   if (String(c.field).toLowerCase() === "signature") {
     return c.ok ? "detected on scan" : "not detected on scan";
@@ -756,6 +756,92 @@ function schoolYearsEnrollmentMatch(expected: string, detected: string): boolean
   return null;
 }
 
+function enrollmentCrossCheckTokens(value: string): string[] {
+  return String(value)
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s,.'-]/g, " ")
+    .split(/[\s,]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+}
+
+function enrollmentCrossCheckTokenOverlap(expected: string, detected: string): number {
+  const exp = enrollmentCrossCheckTokens(expected);
+  const det = enrollmentCrossCheckTokens(detected);
+  if (!exp.length || !det.length) return 0;
+  let hit = 0;
+  for (const token of exp) {
+    if (det.some((d) => d === token || d.includes(token) || token.includes(d))) {
+      hit += 1;
+    }
+  }
+  return hit / exp.length;
+}
+
+function normalizeEnrollmentPersonName(value: string): string {
+  return String(value)
+    .toUpperCase()
+    .replace(/[^A-Z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function enrollmentFieldLikelyMatches(
+  field: string,
+  expected: string,
+  detected: string,
+): boolean | null {
+  const e = expected.trim();
+  const d = detected.trim();
+  if (!e || !d) return null;
+  const key = field.trim().toLowerCase();
+
+  if (key === "school year") return schoolYearsEnrollmentMatch(e, d);
+
+  if (key === "sex") {
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, "");
+    const es = norm(e);
+    const ds = norm(d);
+    if (!es || !ds) return null;
+    if (es === ds) return true;
+    if (es.startsWith("m") && ds.startsWith("m")) return true;
+    if (es.startsWith("f") && ds.startsWith("f")) return true;
+    return false;
+  }
+
+  if (key === "lrn") {
+    const ed = e.replace(/\D/g, "");
+    const dd = d.replace(/\D/g, "");
+    if (ed.length >= 10 && dd.length >= 10) return ed === dd;
+    return null;
+  }
+
+  if (key === "date of birth") {
+    const digits = (s: string) => s.replace(/\D/g, "");
+    const ed = digits(e);
+    const dd = digits(d);
+    if (ed.length >= 6 && dd.length >= 6) return ed === dd || ed.endsWith(dd) || dd.endsWith(ed);
+    return e.toLowerCase() === d.toLowerCase() ? true : null;
+  }
+
+  if (key === "name") {
+    const cleaned = formatCrossCheckDetected("name", d);
+    const en = normalizeEnrollmentPersonName(e);
+    const dn = normalizeEnrollmentPersonName(cleaned);
+    if (!en || !dn) return null;
+    if (en === dn) return true;
+    const et = en.split(" ").filter(Boolean);
+    const dt = dn.split(" ").filter(Boolean);
+    if (et.length >= 2 && dt.length >= 2 && et[0] === dt[0] && et[et.length - 1] === dt[dt.length - 1]) {
+      return true;
+    }
+    return enrollmentCrossCheckTokenOverlap(en, dn) >= 0.55;
+  }
+
+  if (e.toLowerCase() === d.toLowerCase()) return true;
+  return enrollmentCrossCheckTokenOverlap(e, d) >= 0.55 ? true : null;
+}
+
 function applyEnrollmentCrossChecks(
   plan: EnrollmentCrossRow[],
   aiChecks: Array<{ field?: string; expected?: string; detected?: string; ok?: boolean; match_ratio?: number; concern_pct?: number }>,
@@ -768,6 +854,14 @@ function applyEnrollmentCrossChecks(
     const expected = String(row.expected).trim();
     const detected = hit.detected ? String(hit.detected).trim() : "";
     let ok: boolean | null = hit.ok === undefined || hit.ok === null ? null : Boolean(hit.ok);
+    if (expected && detected) {
+      const rematch = enrollmentFieldLikelyMatches(
+        row.field,
+        expected,
+        formatCrossCheckDetected(row.field, detected),
+      );
+      if (rematch === true) ok = true;
+    }
     if (row.field.toLowerCase() === "school year" && expected && detected) {
       const rematch = schoolYearsEnrollmentMatch(expected, detected);
       if (rematch !== null) ok = rematch;
@@ -3485,7 +3579,7 @@ export function ReviewDocuments() {
                                   key={idx}
                                   title={
                                     c.ok === null
-                                      ? `${c.field}: awaiting AI check`
+                                      ? `${c.field}: unclear on scan`
                                       : `${c.field}: ${c.ok ? "match" : "mismatch"}`
                                   }
                                   className={`inline-block h-4 w-4 shrink-0 rounded-full ${
@@ -3508,7 +3602,8 @@ export function ReviewDocuments() {
                               {cross.pendingCount > 0 ? (
                                 <>
                                   <span className="text-gray-400"> · </span>
-                                  <span className="font-medium text-gray-600">{cross.pendingCount}</span> pending AI
+                                  <span className="font-medium text-gray-600">{cross.pendingCount}</span>{" "}
+                                  unclear on scan
                                 </>
                               ) : null}
                               {cross.badBits.length > 0 ? (
