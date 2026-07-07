@@ -113,10 +113,7 @@ function RequiredLabel({
   );
 }
 
-/**
- * Latest birth year for SHS enrollment. Learners born in later years are aged 15 and below
- * (e.g. in 2026, birth year 2012+ → too young). Entire calendar year 2011 remains selectable.
- */
+/** Youngest birth year allowed (current calendar year minus 15). */
 function getShsLatestBirthYear(asOf: Date = new Date()): number {
   return asOf.getFullYear() - 15;
 }
@@ -125,20 +122,20 @@ function birthDateBoundsForShs(asOf: Date = new Date()) {
   const latestBirthYear = getShsLatestBirthYear(asOf);
   return {
     max: `${latestBirthYear}-12-31`,
-    latestBirthYear,
   };
 }
 
-function birthDateValidationError(ymd: string, asOf: Date = new Date()): string | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return "Invalid birth date.";
-  const [y, m, d] = ymd.split("-").map(Number);
+type BirthDateValidationIssue = 'invalid' | 'ineligible';
+
+function getBirthDateValidationIssue(ymd: string, asOf: Date = new Date()): BirthDateValidationIssue | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return 'invalid';
+  const [y, m, d] = ymd.split('-').map(Number);
   const birth = new Date(y, m - 1, d);
   if (birth.getFullYear() !== y || birth.getMonth() !== m - 1 || birth.getDate() !== d) {
-    return "Invalid birth date.";
+    return 'invalid';
   }
-  const latestBirthYear = getShsLatestBirthYear(asOf);
-  if (y > latestBirthYear) {
-    return `Birth year must be ${latestBirthYear} or earlier. Learners aged 15 and below are not eligible for Senior High.`;
+  if (y > getShsLatestBirthYear(asOf)) {
+    return 'ineligible';
   }
   return null;
 }
@@ -1660,9 +1657,13 @@ export function StudentEnrollment() {
       toast.error(t('form.val.requiredFields'));
       return false;
     }
-    const birthDateErr = birthDateValidationError(birthYmd);
-    if (birthDateErr) {
-      toast.error(birthDateErr);
+    const birthDateIssue = getBirthDateValidationIssue(birthYmd);
+    if (birthDateIssue === 'invalid') {
+      toast.error(t('form.val.birthDateFormat'));
+      return false;
+    }
+    if (birthDateIssue === 'ineligible') {
+      toast.error(t('form.val.birthDateIneligible'));
       return false;
     }
     if (!hasValidPersonName(formData.givenName)) {
@@ -2648,10 +2649,7 @@ export function StudentEnrollment() {
                       }
                       onBlurInvalid={() => toast.error(t('form.val.birthDateFormat'))}
                     />
-                    <p className="text-xs text-gray-500">
-                      {t('form.hint.birthDate')}{' '}
-                      {t('form.hint.birthDateLatestYear', { year: birthDateBounds.latestBirthYear })}
-                    </p>
+                    <p className="text-xs text-gray-500">{t('form.hint.birthDate')}</p>
                   </div>
                   <div className="space-y-2">
                     <RequiredLabel htmlFor="birthPlace">{t('form.birthPlace')}</RequiredLabel>

@@ -359,7 +359,7 @@ function validateShsBirthDateNonEmpty(string $ymd): ?string
     $latestBirthYear = (int)$today->format('Y') - 15;
     $birthYear = (int)$d->format('Y');
     if ($birthYear > $latestBirthYear) {
-        return 'Birth year must be ' . $latestBirthYear . ' or earlier. Learners aged 15 and below are not eligible for Senior High.';
+        return 'Invalid birth date for enrollment.';
     }
 
     return null;
