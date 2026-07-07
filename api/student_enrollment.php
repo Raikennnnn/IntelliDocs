@@ -356,17 +356,10 @@ function validateShsBirthDateNonEmpty(string $ymd): ?string
         return 'Invalid birth date.';
     }
     $today = new DateTimeImmutable('today');
-    $minAgeYears = 15;
-    $maxAgeYears = 25;
-    $age = (int)$today->format('Y') - (int)$d->format('Y');
-    if ($today->format('md') < $d->format('md')) {
-        $age--;
-    }
-    if ($age < $minAgeYears) {
-        return 'Birth date must show the learner is at least 15 years old (Senior High eligibility).';
-    }
-    if ($age > $maxAgeYears) {
-        return 'Birth date must show the learner is at most 25 years old (Senior High eligibility).';
+    $latestBirthYear = (int)$today->format('Y') - 15;
+    $birthYear = (int)$d->format('Y');
+    if ($birthYear > $latestBirthYear) {
+        return 'Birth year must be ' . $latestBirthYear . ' or earlier. Learners aged 15 and below are not eligible for Senior High.';
     }
 
     return null;
