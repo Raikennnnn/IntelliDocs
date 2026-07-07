@@ -103,7 +103,8 @@ const messages = {
     'form.ph.barangayFirst': 'Enter city / municipality first',
     'form.ph.birthDate': 'MM/DD/YYYY',
     'form.ph.birthPlaceOther': 'If not in NCR, type your birth place',
-    'form.hint.birthDate': 'Format: MM/DD/YYYY (example: 03/15/2010)',
+    'form.hint.birthDate': 'Format: MM/DD/YYYY. Learners aged 15 and below cannot enroll in Senior High.',
+    'form.hint.birthDateLatestYear': 'You may select any date through December 31, {year}.',
     'form.hint.grade12Section':
       'You stay in section {section} for Grade 12 unless you change your class time below. If you switch to morning or afternoon, the system places you in the section with the most available seats for your chosen shift.',
     'form.select.gender': 'Select Gender',
@@ -391,7 +392,8 @@ const messages = {
     'form.ph.barangayFirst': 'Ilagay muna ang lungsod / munisipalidad',
     'form.ph.birthDate': 'MM/DD/YYYY',
     'form.ph.birthPlaceOther': 'Kung wala sa NCR, i-type ang lugar ng kapanganakan',
-    'form.hint.birthDate': 'Format: MM/DD/YYYY (halimbawa: 03/15/2010)',
+    'form.hint.birthDate': 'Format: MM/DD/YYYY. Hindi maaaring mag-enroll ang edad 15 pababa sa Senior High.',
+    'form.hint.birthDateLatestYear': 'Maaaring pumili ng anumang petsa hanggang Disyembre 31, {year}.',
     'form.hint.grade12Section':
       'Mananatili ka sa section {section} para sa Grade 12 maliban kung papalitan mo ang oras ng klase sa ibaba. Kung lilipat sa umaga o hapon, ilalagay ka ng sistema sa section na may pinakamaraming bakanteng upuan para sa napiling shift.',
     'form.select.gender': 'Pumili ng kasarian',

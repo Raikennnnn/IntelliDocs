@@ -113,58 +113,34 @@ function RequiredLabel({
   );
 }
 
-/** YYYY-MM-DD in local calendar (avoids UTC shifting the day on `<input type="date">`). */
-function formatLocalDateYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+/**
+ * Latest birth year for SHS enrollment. Learners born in later years are aged 15 and below
+ * (e.g. in 2026, birth year 2012+ → too young). Entire calendar year 2011 remains selectable.
+ */
+function getShsLatestBirthYear(asOf: Date = new Date()): number {
+  return asOf.getFullYear() - 15;
 }
 
-/** Senior High: typical DepEd K–12 learner age range for Grades 11–12. */
-const SHS_MIN_AGE_YEARS = 15;
-const SHS_MAX_AGE_YEARS = 25;
+function birthDateBoundsForShs(asOf: Date = new Date()) {
+  const latestBirthYear = getShsLatestBirthYear(asOf);
+  return {
+    max: `${latestBirthYear}-12-31`,
+    latestBirthYear,
+  };
+}
 
-/** Calendar age in whole years on a given date (local timezone). */
-function calendarAgeYears(ymd: string, asOf: Date = new Date()): number | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+function birthDateValidationError(ymd: string, asOf: Date = new Date()): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return "Invalid birth date.";
   const [y, m, d] = ymd.split("-").map(Number);
   const birth = new Date(y, m - 1, d);
   if (birth.getFullYear() !== y || birth.getMonth() !== m - 1 || birth.getDate() !== d) {
-    return null;
+    return "Invalid birth date.";
   }
-  let age = asOf.getFullYear() - y;
-  const asOfMonth = asOf.getMonth() + 1;
-  const asOfDay = asOf.getDate();
-  if (asOfMonth < m || (asOfMonth === m && asOfDay < d)) {
-    age -= 1;
-  }
-  return age;
-}
-
-function birthDateBoundsForShs(minAgeYears: number, maxAgeYears: number) {
-  const now = new Date();
-  const maxDob = new Date(now.getFullYear() - minAgeYears, now.getMonth(), now.getDate());
-  // Oldest allowed DOB: still maxAge today, not yet (maxAge + 1).
-  const minDob = new Date(now.getFullYear() - maxAgeYears - 1, now.getMonth(), now.getDate());
-  minDob.setDate(minDob.getDate() + 1);
-  return { min: formatLocalDateYmd(minDob), max: formatLocalDateYmd(maxDob) };
-}
-
-function birthDateValidationError(ymd: string, minAgeYears: number, maxAgeYears: number): string | null {
-  const age = calendarAgeYears(ymd);
-  if (age === null) return "Invalid birth date.";
-  if (age < minAgeYears) {
-    return `Birth date must show the learner is at least ${minAgeYears} years old (Senior High eligibility).`;
-  }
-  if (age > maxAgeYears) {
-    return `Birth date must show the learner is at most ${maxAgeYears} years old (Senior High eligibility).`;
+  const latestBirthYear = getShsLatestBirthYear(asOf);
+  if (y > latestBirthYear) {
+    return `Birth year must be ${latestBirthYear} or earlier. Learners aged 15 and below are not eligible for Senior High.`;
   }
   return null;
-}
-
-function isBirthDateValidForShs(ymd: string, minAgeYears: number, maxAgeYears: number): boolean {
-  return birthDateValidationError(ymd, minAgeYears, maxAgeYears) === null;
 }
 
 interface DocumentUpload {
@@ -706,10 +682,7 @@ export function StudentEnrollment() {
   const [missingParentDialogOpen, setMissingParentDialogOpen] = useState(false);
   const [missingParentParts, setMissingParentParts] = useState<string[]>([]);
   const [formData, setFormData] = useState<EnrollmentFormData>(INITIAL_ENROLLMENT_FORM_DATA);
-  const birthDateBounds = useMemo(
-    () => birthDateBoundsForShs(SHS_MIN_AGE_YEARS, SHS_MAX_AGE_YEARS),
-    [],
-  );
+  const birthDateBounds = useMemo(() => birthDateBoundsForShs(), []);
   const submitInFlightRef = useRef(false);
   const readabilityInFlightRef = useRef(new Set<number>());
   const readabilityRetryRef = useRef(new Map<number, number>());
@@ -1687,11 +1660,7 @@ export function StudentEnrollment() {
       toast.error(t('form.val.requiredFields'));
       return false;
     }
-    const birthDateErr = birthDateValidationError(
-      birthYmd,
-      SHS_MIN_AGE_YEARS,
-      SHS_MAX_AGE_YEARS,
-    );
+    const birthDateErr = birthDateValidationError(birthYmd);
     if (birthDateErr) {
       toast.error(birthDateErr);
       return false;
@@ -2668,7 +2637,6 @@ export function StudentEnrollment() {
                     <UsDateInput
                       id="birthDate"
                       value={formData.birthDate}
-                      min={birthDateBounds.min}
                       max={birthDateBounds.max}
                       placeholder={t('form.ph.birthDate')}
                       disabled={isPermanentlyLockedField}
@@ -2680,7 +2648,10 @@ export function StudentEnrollment() {
                       }
                       onBlurInvalid={() => toast.error(t('form.val.birthDateFormat'))}
                     />
-                    <p className="text-xs text-gray-500">{t('form.hint.birthDate')}</p>
+                    <p className="text-xs text-gray-500">
+                      {t('form.hint.birthDate')}{' '}
+                      {t('form.hint.birthDateLatestYear', { year: birthDateBounds.latestBirthYear })}
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <RequiredLabel htmlFor="birthPlace">{t('form.birthPlace')}</RequiredLabel>
