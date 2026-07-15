@@ -125,7 +125,7 @@ function fetchReadKeys(PDO $pdo, int $userId): array
 
 /**
  * @param array<string, mixed> $details
- * @return array{type: string, title: string, message: string}|null
+ * @return array{type: string, title: string, message: string, href: string}|null
  */
 function mapLogToNotification(string $action, string $status, ?string $targetType, array $details): ?array
 {
@@ -137,22 +137,26 @@ function mapLogToNotification(string $action, string $status, ?string $targetTyp
             'type' => 'success',
             'title' => 'Application submitted',
             'message' => 'Your enrollment application was submitted and is awaiting review.',
+            'href' => '/student/application-status',
         ],
         'student_enrollment_cancel' => [
             'type' => 'info',
             'title' => 'Application cancelled',
             'message' => 'You cancelled your enrollment application. You may start a new application when ready.',
+            'href' => '/student/enrollment',
         ],
         'register' => [
             'type' => 'info',
             'title' => 'Welcome to NSDGA',
             'message' => 'Your account was created. You can now begin your enrollment application.',
+            'href' => '/student/enrollment',
         ],
         'document_decision' => match ((string)($details['action'] ?? '')) {
             'clear' => [
                 'type' => 'update',
                 'title' => 'Document resubmission cleared',
                 'message' => 'A registrar has cleared a resubmission requirement on one of your documents.',
+                'href' => '/student/application-status',
             ],
             'reject' => [
                 'type' => 'warning',
@@ -160,6 +164,7 @@ function mapLogToNotification(string $action, string $status, ?string $targetTyp
                 'message' => trim((string)($details['remarks'] ?? '')) !== ''
                     ? trim((string)$details['remarks'])
                     : 'Please resubmit a document marked for resubmission in Application Status.',
+                'href' => '/student/enrollment?resubmit=1&step=4',
             ],
             default => null,
         },
@@ -168,6 +173,7 @@ function mapLogToNotification(string $action, string $status, ?string $targetTyp
                 'type' => 'success',
                 'title' => 'Enrollment approved',
                 'message' => 'Your enrollment was approved. Check your email for school account credentials.',
+                'href' => '/student/application-status',
             ]
             : null,
         'registrar_decision' => match (strtolower(trim((string)($details['decision'] ?? '')))) {
@@ -177,11 +183,13 @@ function mapLogToNotification(string $action, string $status, ?string $targetTyp
                 'message' => trim((string)($details['remarks'] ?? '')) !== ''
                     ? trim((string)$details['remarks'])
                     : 'Your enrollment application was rejected. Contact the registrar for details.',
+                'href' => '/student/application-status',
             ],
             'approved', 'enrolled' => [
                 'type' => 'success',
                 'title' => 'Enrollment approved',
                 'message' => 'Your enrollment application was approved.',
+                'href' => '/student/application-status',
             ],
             default => null,
         },
@@ -190,6 +198,7 @@ function mapLogToNotification(string $action, string $status, ?string $targetTyp
                 'type' => 'warning',
                 'title' => 'Security notice',
                 'message' => 'Unusual account activity was detected on your profile.',
+                'href' => '/student/profile',
             ]
             : null,
     };
@@ -284,6 +293,7 @@ function buildStudentNotifications(PDO $pdo, int $userId): array
                 'type' => $mapped['type'],
                 'title' => $mapped['title'],
                 'message' => $mapped['message'],
+                'href' => (string)($mapped['href'] ?? '/student/dashboard'),
                 'date' => $created,
                 'read' => isset($readKeys[$key]),
             ];
@@ -309,6 +319,7 @@ function buildStudentNotifications(PDO $pdo, int $userId): array
                     'type' => 'update',
                     'title' => 'Application under review',
                     'message' => 'The registrar is reviewing your submitted documents.',
+                    'href' => '/student/application-status',
                     'date' => (string)($row['updated_at'] ?? ''),
                     'read' => isset($readKeys[$key]),
                 ];

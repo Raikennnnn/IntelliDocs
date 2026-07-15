@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router";
 import {
   Bell,
   CheckCircle,
@@ -13,6 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { useStudentLocale } from "../../context/StudentLocaleContext";
 import {
   formatStudentNotificationDate,
+  studentNotificationHref,
   useStudentNotifications,
   type StudentNotification,
 } from "../../lib/studentNotifications";
@@ -34,6 +36,7 @@ function NotificationIcon({ type }: { type: StudentNotification["type"] }) {
 
 export function StudentNotificationBell() {
   const { t } = useStudentLocale();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const {
     notifications,
@@ -53,12 +56,16 @@ export function StudentNotificationBell() {
     }
   };
 
-  const handleMarkOne = async (id: string) => {
-    try {
-      await markAsRead(id);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : t("notifications.markReadError"));
+  const handleNotificationClick = async (notification: StudentNotification) => {
+    if (!notification.read) {
+      try {
+        await markAsRead(notification.id);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : t("notifications.markReadError"));
+      }
     }
+    setOpen(false);
+    navigate(studentNotificationHref(notification));
   };
 
   return (
@@ -123,12 +130,10 @@ export function StudentNotificationBell() {
                 <li key={notification.id}>
                   <button
                     type="button"
-                    className={`w-full px-4 py-3 text-left transition-colors hover:bg-gray-50 ${
+                    className={`w-full cursor-pointer px-4 py-3 text-left transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B1538]/30 ${
                       !notification.read ? "bg-red-50/40" : ""
                     }`}
-                    onClick={() => {
-                      if (!notification.read) void handleMarkOne(notification.id);
-                    }}
+                    onClick={() => void handleNotificationClick(notification)}
                   >
                     <div className="flex items-start gap-2">
                       <NotificationIcon type={notification.type} />

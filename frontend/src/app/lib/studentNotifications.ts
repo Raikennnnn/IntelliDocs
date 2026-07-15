@@ -8,7 +8,25 @@ export type StudentNotification = {
   message: string;
   date: string;
   read: boolean;
+  href?: string;
 };
+
+export function studentNotificationHref(notification: Pick<StudentNotification, "href" | "title">): string {
+  if (notification.href?.trim()) {
+    return notification.href.trim();
+  }
+  const title = notification.title.toLowerCase();
+  if (title.includes("resubmission required") || title.includes("document resubmission")) {
+    return "/student/enrollment?resubmit=1&step=4";
+  }
+  if (title.includes("cancelled") || title.includes("welcome")) {
+    return "/student/enrollment";
+  }
+  if (title.includes("security")) {
+    return "/student/profile";
+  }
+  return "/student/application-status";
+}
 
 export function formatStudentNotificationDate(raw: string): string {
   if (!raw) return "";
