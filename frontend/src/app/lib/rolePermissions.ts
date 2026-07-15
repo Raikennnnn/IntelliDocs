@@ -4,7 +4,6 @@ export type RolePermissionMap = Record<string, boolean>;
 export const NAV_PATH_PERMISSIONS: Record<string, string> = {
   '/student/enrollment': 'uploadDocuments',
   '/student/application-status': 'viewApplicationStatus',
-  '/student/notifications': 'viewNotifications',
   '/student/profile': 'editProfile',
   '/registrar/applications': 'viewApplications',
   '/registrar/students': 'viewApplications',
@@ -12,6 +11,7 @@ export const NAV_PATH_PERMISSIONS: Record<string, string> = {
   '/registrar/review-documents': 'viewApplications',
   '/registrar/ai-verification': 'viewAIResults',
   '/registrar/reports': 'generateReports',
+  '/registrar/referral-ledger': 'viewApplications',
   '/registrar/activity-logs': 'viewApplications',
   '/admin/user-management': 'manageUsers',
   '/admin/students': 'manageUsers',

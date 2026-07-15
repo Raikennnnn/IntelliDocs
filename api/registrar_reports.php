@@ -105,6 +105,18 @@ function reportSchoolYearOptions(PDO $pdo): array
     return schoolYearFilterOptions($pdo);
 }
 
+function reportPaymentArrangementLabel(array $row): string
+{
+    $form = enrollmentStepsFormData((string)($row['enrollment_steps'] ?? ''));
+    $raw = strtolower(trim((string)($form['paymentArrangement'] ?? '')));
+
+    return match ($raw) {
+        'full_payment' => 'Full Payment',
+        'installment' => 'Installment',
+        default => '',
+    };
+}
+
 function reportStudentDisplayName(array $row): string
 {
     $form = enrollmentStepsFormData((string)($row['enrollment_steps'] ?? ''));
@@ -518,7 +530,7 @@ function reportMonitoringSummary(PDO $pdo, string $syFilter, string $syLabel): a
  */
 function reportApplicants(PDO $pdo, string $syFilter, string $syLabel): array
 {
-    $columns = ['Application ID', 'Student Name', 'Email', 'Strand', 'Grade Level', 'Status', 'School Year', 'Submitted'];
+    $columns = ['Application ID', 'Student Name', 'Email', 'Strand', 'Grade Level', 'Payment Arrangement', 'Status', 'School Year', 'Submitted'];
     $rows = [];
     if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
         return ['title' => 'Applicant List', 'columns' => $columns, 'rows' => $rows];
@@ -549,6 +561,7 @@ function reportApplicants(PDO $pdo, string $syFilter, string $syLabel): array
             'Email' => (string)($row['email'] ?? ''),
             'Strand' => (string)($row['strand'] ?? ''),
             'Grade Level' => (string)($row['grade_level'] ?? ''),
+            'Payment Arrangement' => reportPaymentArrangementLabel($row) ?: '—',
             'Status' => reportStatusLabel((string)($row['status'] ?? '')),
             'School Year' => (string)($row['school_year'] ?? ''),
             'Submitted' => (string)($row['applied_at'] ?? ''),
@@ -660,7 +673,7 @@ function reportDocumentVerification(PDO $pdo, string $syFilter, string $syLabel)
  */
 function reportApprovalRecords(PDO $pdo, string $syFilter, string $syLabel): array
 {
-    $columns = ['Application ID', 'Student Name', 'Email', 'Strand', 'Grade Level', 'Status', 'School Year', 'Approved Date', 'Remarks'];
+    $columns = ['Application ID', 'Student Name', 'Email', 'Strand', 'Grade Level', 'Payment Arrangement', 'Status', 'School Year', 'Approved Date', 'Remarks'];
     $rows = [];
     if (!tableExists($pdo, 'enrollments') || !tableExists($pdo, 'users')) {
         return ['title' => 'Approval Records — ' . $syLabel, 'columns' => $columns, 'rows' => $rows];
@@ -694,6 +707,7 @@ function reportApprovalRecords(PDO $pdo, string $syFilter, string $syLabel): arr
             'Email' => (string)($row['email'] ?? ''),
             'Strand' => (string)($row['strand'] ?? ''),
             'Grade Level' => (string)($row['grade_level'] ?? ''),
+            'Payment Arrangement' => reportPaymentArrangementLabel($row) ?: '—',
             'Status' => reportStatusLabel((string)($row['status'] ?? '')),
             'School Year' => (string)($row['school_year'] ?? ''),
             'Approved Date' => (string)($row['updated_at'] ?? ''),

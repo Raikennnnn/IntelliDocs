@@ -121,10 +121,15 @@ function resolveEnrollmentId(PDO $pdo, int $userId, ?int $providedId): int
     require_once __DIR__ . '/school_year_helpers.php';
     $syCurrent = getEnrollmentSchoolYear($pdo);
     if ($syCurrent !== null) {
+        // Include blank status rows — legacy drafts sometimes have status='' and
+        // would otherwise be invisible to both upload resolution and the registrar.
         $openStmt = $pdo->prepare(
             "SELECT id FROM enrollments
              WHERE user_id = :uid AND school_year = :sy
-               AND LOWER(TRIM(status)) IN ('draft', 'pending', 'under_review', 'under review', 'review')
+               AND (
+                    TRIM(COALESCE(status, '')) = ''
+                    OR LOWER(TRIM(status)) IN ('draft', 'pending', 'under_review', 'under review', 'review')
+               )
              ORDER BY id DESC
              LIMIT 1"
         );
@@ -140,6 +145,54 @@ function resolveEnrollmentId(PDO $pdo, int $userId, ?int $providedId): int
     $row = $stmt->fetch();
 
     return (int)($row['id'] ?? 0);
+}
+
+/**
+ * Ensure an in-progress enrollment has a status the registrar queue can see.
+ * Blank / null status rows were accepting uploads but never appearing in Applications
+ * (invalid ENUM values like missing `draft` were stored as '').
+ */
+function ensureEnrollmentVisibleStatus(PDO $pdo, int $enrollmentId): void
+{
+    if ($enrollmentId <= 0 || !tableExists($pdo, 'enrollments')) {
+        return;
+    }
+    try {
+        $stmt = $pdo->prepare('SELECT status FROM enrollments WHERE id = :id LIMIT 1');
+        $stmt->execute([':id' => $enrollmentId]);
+        $status = strtolower(trim((string)($stmt->fetchColumn() ?: '')));
+        if ($status !== '') {
+            return;
+        }
+
+        // Prefer draft when the column allows it; fall back to pending.
+        $target = 'pending';
+        try {
+            $typeStmt = $pdo->query("SHOW COLUMNS FROM enrollments LIKE 'status'");
+            $typeRow = $typeStmt ? $typeStmt->fetch(PDO::FETCH_ASSOC) : false;
+            $colType = strtolower((string)($typeRow['Type'] ?? ''));
+            if (!str_starts_with($colType, 'enum(') || str_contains($colType, "'draft'")) {
+                $target = 'draft';
+            }
+            if (str_starts_with($colType, 'enum(') && !str_contains($colType, "'draft'")) {
+                $pdo->exec(
+                    "ALTER TABLE enrollments
+                     MODIFY COLUMN status ENUM('draft','pending','under_review','approved','enrolled','rejected')
+                     NOT NULL DEFAULT 'pending'"
+                );
+                $target = 'draft';
+            }
+        } catch (Throwable $ignore) {
+            $target = 'pending';
+        }
+
+        $upd = $pdo->prepare(
+            "UPDATE enrollments SET status = :st WHERE id = :id AND TRIM(COALESCE(status, '')) = ''"
+        );
+        $upd->execute([':st' => $target, ':id' => $enrollmentId]);
+    } catch (Throwable $e) {
+        // Non-fatal — upload can still proceed.
+    }
 }
 
 $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
@@ -194,7 +247,17 @@ if ($method === 'GET') {
                 ORDER BY id DESC'
             );
             $stmt->execute([':enrollment_id' => $enrollmentId]);
-            $rows = $stmt->fetchAll() ?: [];
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            // Explicit resubmit flag so the student UI cannot miss a rejection
+            // just because AI status is still "verified".
+            foreach ($rows as &$docRow) {
+                if (!is_array($docRow)) {
+                    continue;
+                }
+                $decision = strtolower(trim((string)($docRow['registrar_doc_decision'] ?? '')));
+                $docRow['needs_resubmit'] = ($decision === 'rejected' || $decision === 'reject') ? 1 : 0;
+            }
+            unset($docRow);
         } else {
             // Fallback path if enrollment_id is unavailable on this schema.
             $rows = [];
@@ -233,6 +296,9 @@ if ($method === 'POST') {
     $documentType = trim((string)($_POST['document_type'] ?? 'Document'));
     $providedEnrollmentId = isset($_POST['enrollment_id']) ? (int)$_POST['enrollment_id'] : null;
     $enrollmentId = resolveEnrollmentId($pdo, $userId, $providedEnrollmentId);
+    if ($enrollmentId > 0) {
+        ensureEnrollmentVisibleStatus($pdo, $enrollmentId);
+    }
 
     if ($enrollmentId > 0) {
         require_once __DIR__ . '/enrollment_status_helpers.php';
@@ -309,21 +375,20 @@ if ($method === 'POST') {
     }
 
     // Level 1 — image quality only (readability runs after upload via /documents/screen-readability).
+    $qualityDeferred = false;
     if (in_array($ext, ['jpg', 'jpeg', 'png'], true)) {
         require_once __DIR__ . '/ai_http.php';
         $docTypeKey = mapDocumentTypeForAi($documentType);
         $screen = aiScreenUploadQuality($absolutePath, $originalName, $mimeType, $docTypeKey);
         if (!$screen['ok']) {
-            @unlink($absolutePath);
-            http_response_code(503);
-            echo json_encode([
-                'success' => false,
-                'error' => $screen['message'],
-                'level' => (int)($screen['level'] ?? 1),
+            // AI unavailable — accept upload for manual registrar review.
+            $qualityDeferred = true;
+            appLogEvent($pdo, 'ai_quality_deferred', 'student', 'success', $userId, 'document', null, [
+                'document_type' => $documentType,
+                'enrollment_id' => $enrollmentId,
+                'reason' => 'ai_service_unreachable',
             ]);
-            exit;
-        }
-        if (!$screen['pass']) {
+        } elseif (!$screen['pass']) {
             @unlink($absolutePath);
             http_response_code(422);
             echo json_encode([
@@ -499,7 +564,7 @@ if ($method === 'POST') {
             ':mime_type' => $mimeType,
             ':file_size' => $size,
             ':file_path' => $relativeFilePath,
-            ':ai_status' => 'screening',
+            ':ai_status' => $qualityDeferred ? 'pending' : 'screening',
         ];
         if ($hasUploadCountCol) {
             $params[':upload_count'] = $newUploadCount;
@@ -524,8 +589,9 @@ if ($method === 'POST') {
                 'filename' => $finalName,
                 'file_path' => $relativeFilePath,
                 'uploaded_at' => date('Y-m-d H:i:s'),
-                'ai_status' => 'screening',
-                'readability_pending' => true,
+                'ai_status' => $qualityDeferred ? 'pending' : 'screening',
+                'readability_pending' => !$qualityDeferred,
+                'ai_check_deferred' => $qualityDeferred,
                 'upload_count' => $newUploadCount,
                 'attempt_limit' => $UPLOAD_LIMIT,
                 'resubmit_attempt' => $inResubmitPhase,

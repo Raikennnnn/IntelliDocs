@@ -36,36 +36,69 @@ function aiServiceHealthProbe(string $base): ?array
 }
 
 /**
- * Resolve AI service URL: env first, then probe 8080 (droplet) and 5000 (local dev).
+ * Candidate AI base URLs: env first, then local 5000, then droplet 8080.
+ *
+ * @return list<string>
  */
-function aiServiceBaseUrl(): string
+function aiServiceCandidateUrls(): array
 {
-    static $resolved = null;
-    if ($resolved !== null) {
-        return $resolved;
-    }
-
     $candidates = [];
     $fromEnv = getenv('AI_BASE_URL');
     if (is_string($fromEnv) && trim($fromEnv) !== '') {
         $candidates[] = rtrim(trim($fromEnv), '/');
     }
-    foreach (['http://127.0.0.1:8080', 'http://127.0.0.1:5000'] as $fallback) {
+    // Prefer local Flask (5000) before the droplet nginx AI port (8080).
+    // Caching a dead 8080 when AI was briefly down caused every upload to
+    // skip quality checks for the rest of the PHP worker lifetime.
+    foreach (['http://127.0.0.1:5000', 'http://127.0.0.1:8080'] as $fallback) {
         if (!in_array($fallback, $candidates, true)) {
             $candidates[] = $fallback;
         }
     }
+    return $candidates;
+}
 
+/**
+ * Resolve AI service URL: env first, then probe healthy candidates.
+ * Only caches a URL that passed /health (with a short TTL so a restart recovers).
+ */
+function aiServiceBaseUrl(): string
+{
+    static $resolved = null;
+    static $resolvedAt = 0;
+
+    $now = time();
+    // Re-probe every 30s so a previously dead port can recover.
+    if (is_string($resolved) && $resolved !== '' && ($now - $resolvedAt) < 30) {
+        return $resolved;
+    }
+
+    $candidates = aiServiceCandidateUrls();
     foreach ($candidates as $base) {
         $health = aiServiceHealthProbe($base);
         if ($health !== null && !empty($health['ok'])) {
             $resolved = $base;
+            $resolvedAt = $now;
             return $resolved;
         }
     }
 
-    $resolved = $candidates[0] ?? 'http://127.0.0.1:5000';
-    return $resolved;
+    // Do NOT permanently cache an unreachable fallback — next request re-probes.
+    $resolved = null;
+    $resolvedAt = 0;
+    return $candidates[0] ?? 'http://127.0.0.1:5000';
+}
+
+/** True when the Python AI service responds healthy on /health. */
+function aiServiceIsReachable(): bool
+{
+    foreach (aiServiceCandidateUrls() as $base) {
+        $health = aiServiceHealthProbe($base);
+        if ($health !== null && !empty($health['ok'])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -90,53 +123,71 @@ function aiPostMultipart(
         'image' => new CURLFile($fullPath, $mimeType, $downloadName),
     ]);
 
-    $base = aiServiceBaseUrl();
-    $url = $base . $path;
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL => $url,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $postFields,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 5,
-        CURLOPT_TIMEOUT => max(5, $timeoutSeconds),
-    ]);
+    // Try the preferred base first, then every other candidate on failure.
+    $preferred = aiServiceBaseUrl();
+    $bases = array_values(array_unique(array_merge([$preferred], aiServiceCandidateUrls())));
+    $lastError = 'Document verification is temporarily unavailable. Please try again in a few minutes.';
+    $lastStatus = 0;
+    $lastBase = $preferred;
 
-    $raw = curl_exec($ch);
-    $curlErr = curl_error($ch);
-    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
+    foreach ($bases as $base) {
+        $url = $base . $path;
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $postFields,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => max(5, $timeoutSeconds),
+        ]);
 
-    if ($raw === false) {
-        $hint = $curlErr ?: 'AI service unreachable';
-        error_log('[ai_http] curl failed for ' . $path . ': ' . $hint);
-        return [
-            'ok' => false,
-            'status' => 0,
-            'body' => null,
-            'error' => 'Document verification is temporarily unavailable. Please try again in a few minutes.',
-            'base_url' => $base,
-        ];
-    }
+        $raw = curl_exec($ch);
+        $curlErr = curl_error($ch);
+        $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        $lastBase = $base;
+        $lastStatus = $status;
 
-    $decoded = json_decode((string)$raw, true);
-    if (!is_array($decoded)) {
-        $snippet = trim(substr(preg_replace('/\s+/', ' ', (string)$raw), 0, 200));
-        error_log('[ai_http] invalid JSON from ' . $path . ': ' . $snippet);
+        if ($raw === false) {
+            $lastError = 'Document verification is temporarily unavailable. Please try again in a few minutes.';
+            error_log('[ai_http] curl failed for ' . $path . ' via ' . $base . ': ' . ($curlErr ?: 'unreachable'));
+            continue;
+        }
+
+        $decoded = json_decode((string)$raw, true);
+        if (!is_array($decoded)) {
+            $snippet = trim(substr(preg_replace('/\s+/', ' ', (string)$raw), 0, 200));
+            error_log('[ai_http] invalid JSON from ' . $path . ' via ' . $base . ': ' . $snippet);
+            $lastError = 'Document verification is temporarily unavailable. Please try again in a few minutes.';
+            continue;
+        }
+
+        if ($status >= 200 && $status < 300) {
+            return [
+                'ok' => true,
+                'status' => $status,
+                'body' => $decoded,
+                'base_url' => $base,
+            ];
+        }
+
+        // Non-2xx with JSON body (e.g. validation error from AI) — return as-is.
         return [
             'ok' => false,
             'status' => $status,
-            'body' => null,
-            'error' => 'Document verification is temporarily unavailable. Please try again in a few minutes.',
+            'body' => $decoded,
             'base_url' => $base,
+            'error' => sanitizeClientErrorMessage((string)($decoded['error'] ?? $decoded['message'] ?? $lastError)),
         ];
     }
 
     return [
-        'ok' => $status >= 200 && $status < 300,
-        'status' => $status,
-        'body' => $decoded,
-        'base_url' => $base,
+        'ok' => false,
+        'status' => $lastStatus,
+        'body' => null,
+        'error' => $lastError,
+        'base_url' => $lastBase,
     ];
 }
 

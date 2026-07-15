@@ -26,10 +26,12 @@ import {
   Shield,
   UsersRound,
   Layers,
+  Gift,
 } from 'lucide-react';
 import { useStudentLocaleOptional } from '../context/StudentLocaleContext';
 import { STUDENT_NAV_PATH_KEYS } from '../lib/studentLocale';
 import { StudentLanguageToggle } from '../components/student/StudentLanguageToggle';
+import { StudentNotificationBell } from '../components/student/StudentNotificationBell';
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -124,6 +126,7 @@ export function DashboardLayout({ children, navigation, studentPortal = false }:
           </div>
           <div className="flex shrink-0 items-center gap-2 sm:gap-3">
             {studentPortal && studentLocale ? <StudentLanguageToggle /> : null}
+            {studentPortal && studentLocale ? <StudentNotificationBell /> : null}
             <div className="hidden max-w-[180px] text-right md:block lg:max-w-none">
               <p className="truncate text-sm font-medium text-white">{user?.name}</p>
               <p className="truncate text-xs text-green-100">{user?.email}</p>
@@ -184,7 +187,6 @@ export const studentNavigation = [
   { name: 'Dashboard', path: '/student/dashboard', icon: Home },
   { name: 'Enrollment', path: '/student/enrollment', icon: ClipboardList },
   { name: 'Application Status', path: '/student/application-status', icon: CheckSquare },
-  { name: 'Notifications', path: '/student/notifications', icon: Bell },
   { name: 'Announcements', path: '/student/announcements', icon: BookOpen },
 ];
 
@@ -194,6 +196,7 @@ export const registrarNavigation = [
   { name: 'Students', path: '/registrar/students', icon: Users },
   { name: 'Sections', path: '/registrar/sections', icon: Layers },
   { name: 'Reports', path: '/registrar/reports', icon: BarChart3 },
+  { name: 'Referral Ledger', path: '/registrar/referral-ledger', icon: Gift },
   { name: 'Announcements', path: '/registrar/announcements', icon: Bell },
 ];
 

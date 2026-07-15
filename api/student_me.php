@@ -574,8 +574,7 @@ try {
     $hasDocUploads = count($latestDocs) > 0;
     $hasRejectedDocs = false;
     foreach ($latestDocs as $r) {
-        $st = strtolower(trim((string)($r['ai_status'] ?? 'pending')));
-        if ($st === 'rejected') {
+        if (documentNeedsStudentResubmit($r)) {
             $hasRejectedDocs = true;
             break;
         }

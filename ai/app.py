@@ -325,6 +325,50 @@ def _track_photo_duplicate(filepath: str, *, doc_type: str) -> dict | None:
     return {"duplicate": False, "hash": digest}
 
 
+def _photo_editor_metadata_issue(filepath: str) -> str | None:
+    """
+    Upload-gate check for obvious editor-app metadata on 2x2 photos.
+
+    This is intentionally separate from the authenticity/tamper scoring. A
+    phone/studio export can be harmless, but app names like Picsart usually mean
+    the portrait was modified (stickers, masks, background edits, draw tools).
+    """
+    try:
+        from PIL import Image, ExifTags
+
+        software_tag = None
+        for k, v in ExifTags.TAGS.items():
+            if v == "Software":
+                software_tag = k
+                break
+
+        img = Image.open(filepath)
+        exif = getattr(img, "getexif", lambda: None)()
+        values: list[str] = []
+        if software_tag is not None and exif:
+            sw = str(exif.get(software_tag, "")).strip()
+            if sw:
+                values.append(sw)
+
+        # Some apps store JSON edit history in EXIF blobs, not only Software.
+        raw_info = str(getattr(img, "info", {}) or "")
+        if raw_info:
+            values.append(raw_info)
+
+        joined = " ".join(values).lower()
+        edited_apps = ["picsart", "canva", "photoshop", "snapseed", "gimp", "lightroom"]
+        hit = next((app for app in edited_apps if app in joined), None)
+        if hit:
+            label = "Picsart" if hit == "picsart" else hit.title()
+            return (
+                f"The 2x2 photo appears to have been edited with {label}. "
+                "Upload an unedited photo with a plain white background."
+            )
+    except Exception:
+        return None
+    return None
+
+
 def _opencv_haarcascade_path(cascade_name: str = "haarcascade_frontalface_default.xml") -> str:
     """Resolve OpenCV Haar cascade XML across python-opencv / headless installs."""
     import cv2
@@ -623,6 +667,48 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
         elif mean_brightness > 235:
             issues.append("Image is overexposed (too bright). Reduce glare and retake.")
 
+        # Highlight clipping — mean brightness alone misses washed-out studio/phone shots
+        # with a white background (e.g. mean ~220 but >50% of pixels near 255).
+        try:
+            highlight_ratio = float(np.mean(gray >= 250))
+            near_white_ratio = float(np.mean(gray >= 245))
+        except Exception:
+            highlight_ratio = 0.0
+            near_white_ratio = 0.0
+
+        if is_photo:
+            face_bbox = face_metrics.get("face_bbox") if isinstance(face_metrics, dict) else None
+            face_overexposed = False
+            if isinstance(face_bbox, dict):
+                try:
+                    fx = int(face_bbox.get("x") or 0)
+                    fy = int(face_bbox.get("y") or 0)
+                    fw = int(face_bbox.get("w") or 0)
+                    fh = int(face_bbox.get("h") or 0)
+                    if fw >= 20 and fh >= 20:
+                        face_gray = gray[fy : fy + fh, fx : fx + fw]
+                        if face_gray.size > 0:
+                            face_mean = float(np.mean(face_gray))
+                            face_hi = float(np.mean(face_gray >= 245))
+                            # Washed-out face (not just white background behind the subject).
+                            if face_mean >= 195.0 or face_hi >= 0.22:
+                                face_overexposed = True
+                except Exception:
+                    face_overexposed = False
+
+            if face_overexposed:
+                issues.append(
+                    "Face area is overexposed (washed out). Retake with less light or lower exposure."
+                )
+            elif mean_brightness >= 205.0 and highlight_ratio >= 0.40:
+                issues.append("Image is overexposed (too bright). Reduce glare and retake.")
+            elif highlight_ratio >= 0.62 and mean_brightness >= 190.0:
+                issues.append("Image is overexposed (too bright). Reduce glare and retake.")
+            elif mean_brightness > 220.0 and near_white_ratio >= 0.55:
+                issues.append("Image is overexposed (too bright). Reduce glare and retake.")
+        elif near_white_ratio >= 0.55 and mean_brightness > 220:
+            issues.append("Image is overexposed (too bright). Reduce glare and retake.")
+
         if is_photo and contrast < 22.0:
             issues.append("Image contrast is too low. Use stronger lighting and avoid washed-out photos.")
         elif is_photo and contrast < 28.0:
@@ -635,7 +721,36 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
             elif ratio < 0.86 or ratio > 1.16:
                 warnings.append("Photo is not perfectly square — a 1:1 crop is recommended for 2x2 ID photos.")
 
-            # Duplicate-photo detection disabled for now (re-enable later via _track_photo_duplicate).
+            editor_issue = _photo_editor_metadata_issue(filepath)
+            if editor_issue:
+                issues.append(editor_issue)
+
+            # Require a plain white/neutral background. Use the two top corners;
+            # bottom corners often contain the student's jacket or shoulders.
+            try:
+                corner_h = max(20, int(h * 0.16))
+                corner_w = max(20, int(w * 0.16))
+                corners = np.concatenate(
+                    [
+                        img[:corner_h, :corner_w].reshape(-1, img.shape[2]),
+                        img[:corner_h, -corner_w:].reshape(-1, img.shape[2]),
+                    ],
+                    axis=0,
+                )
+                if corners.shape[1] >= 3:
+                    corner_bgr = corners[:, :3].astype(np.float32)
+                    corner_brightness = np.mean(corner_bgr, axis=1)
+                    corner_spread = np.max(corner_bgr, axis=1) - np.min(corner_bgr, axis=1)
+                    corner_light_ratio = float(np.mean(corner_brightness >= 185.0))
+                    corner_neutral_ratio = float(np.mean(corner_spread <= 28.0))
+                    if corner_light_ratio < 0.65 or corner_neutral_ratio < 0.55:
+                        issues.append(
+                            "The 2x2 photo must have a plain white background. "
+                            "Remove colored, dark, or edited backgrounds and upload again."
+                        )
+            except Exception:
+                # Other quality checks still run if corner sampling is unavailable.
+                pass
 
             photo_checks = {
                 "face_detected": bool(face_metrics.get("face_detected")),
@@ -654,8 +769,9 @@ def _image_quality_check(filepath: str, doc_type: str) -> dict:
                 if face_metrics.get("background_clutter"):
                     warnings.append("The background looks busy or textured — a plain light background is preferred.")
                 if face_metrics.get("face_occluded"):
-                    warnings.append(
-                        "Part of the face may be covered or edited — registrar will review the portrait."
+                    issues.append(
+                        "Part of the face appears covered, cropped, or digitally altered. "
+                        "Upload a clear, unedited 2×2 photo with the full face visible."
                     )
             else:
                 warnings.append("Face detection could not confirm a clear portrait. Retake with the face fully visible.")
@@ -10639,10 +10755,14 @@ def _evaluate(
     if doc_type in ("form137", "sf10", "form157", "sf9", "report_card"):
         min_words = 20
     if is_photo:
-        verified = True
+        # 2×2 may pass quality/tamper checks, but registrar still decides.
+        # Do not auto-mark ID photos as verified.
+        verified = False
+        payload["status"] = "pending"
+        payload["ai_clear"] = True
     else:
         verified = verify_score >= 0.62 and ocr_confidence >= 0.25 and word_count >= min_words
-    payload["status"] = "verified" if verified else "failed"
+        payload["status"] = "verified" if verified else "failed"
     payload["requested_doc_type"] = requested_doc_type
     payload["resolved_doc_type"] = doc_type
     payload["document_slot_mismatch"] = slot_mismatch_info is not None

@@ -104,13 +104,23 @@ if ($mimeType === '') {
 }
 
 $screen = aiScreenUploadReadability($absolutePath, $originalName, $mimeType, $docTypeKey);
+$forceDefer = !empty($payload['defer']) || !empty($payload['force_defer']);
 if (!$screen['ok']) {
-    http_response_code(503);
+    // Any AI/service failure degrades immediately to manual review. The file
+    // remains saved and the student can continue the enrollment workflow.
+    $upd = $pdo->prepare('UPDATE documents SET ai_status = :status WHERE id = :id');
+    $upd->execute([':status' => 'pending', ':id' => $docId]);
+    appLogEvent($pdo, 'document_readability_deferred', 'student', 'success', $userId, 'document', (string)$docId, [
+        'document_type' => $documentType,
+        'reason' => $forceDefer ? 'client_defer' : 'ai_check_failed',
+    ]);
     echo json_encode([
-        'success' => false,
-        'error' => $screen['message'],
-        'retryable' => true,
-        'level' => 2,
+        'success' => true,
+        'pass' => true,
+        'deferred' => true,
+        'ai_status' => 'pending',
+        'document_id' => $docId,
+        'message' => 'Automatic readability check is unavailable. Your upload was saved.',
     ]);
     exit;
 }

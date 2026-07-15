@@ -53,6 +53,10 @@ export function sanitizeExtensionNameInput(value: string): string {
   return value.replace(/[^A-Za-zñÑ.\s,]/g, "");
 }
 
+export function sanitizeEmailInput(value: string): string {
+  return value.replace(/[^\w.@+\-]/g, "").slice(0, 190);
+}
+
 export function sanitizeDigitsOnly(value: string, maxLength?: number): string {
   const digits = value.replace(/\D/g, "");
   return maxLength !== undefined ? digits.slice(0, maxLength) : digits;
@@ -112,7 +116,10 @@ export function sanitizeEnrollmentFieldValue(field: string, value: string): stri
     return sanitizeDigitsOnly(value, 12);
   }
   if (field === "referralCardControlNumber") {
-    return sanitizeDigitsOnly(value, 6);
+    return sanitizeDigitsOnly(value, 4);
+  }
+  if (field === "referrerEmail") {
+    return sanitizeEmailInput(value);
   }
   if (PHONE_FIELDS.has(field)) {
     return sanitizeDigitsOnly(value, 11);

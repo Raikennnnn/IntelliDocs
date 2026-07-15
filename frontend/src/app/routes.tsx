@@ -117,14 +117,7 @@ export const router = createBrowserRouter([
   },
   {
     path: '/student/notifications',
-    element: (
-      <ProtectedRoute allowedRoles={['student']}>
-        <RouteWithLayout navigation={studentNavigation} studentLocale>
-          <Pages.Notifications />
-        </RouteWithLayout>
-      </ProtectedRoute>
-    ),
-    errorElement: <ErrorBoundary />,
+    element: <Navigate to="/student/dashboard" replace />,
   },
   {
     path: '/student/profile',
@@ -165,7 +158,7 @@ export const router = createBrowserRouter([
   { path: '/dashboard', element: <Navigate to="/student/dashboard" replace /> },
   { path: '/enrollment', element: <Navigate to="/student/enrollment" replace /> },
   { path: '/application-status', element: <Navigate to="/student/application-status" replace /> },
-  { path: '/notifications', element: <Navigate to="/student/notifications" replace /> },
+  { path: '/notifications', element: <Navigate to="/student/dashboard" replace /> },
   { path: '/profile', element: <Navigate to="/student/profile" replace /> },
   { path: '/announcements', element: <Navigate to="/student/announcements" replace /> },
   // Registrar Routes
@@ -252,6 +245,17 @@ export const router = createBrowserRouter([
       <ProtectedRoute allowedRoles={['registrar']}>
         <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
           <Pages.Reports />
+        </RouteWithLayout>
+      </ProtectedRoute>
+    ),
+    errorElement: <ErrorBoundary />,
+  },
+  {
+    path: '/registrar/referral-ledger',
+    element: (
+      <ProtectedRoute allowedRoles={['registrar']}>
+        <RouteWithLayout navigation={registrarNavigation} staffDesktopOnly staffPortalLabel="Registrar">
+          <Pages.ReferralLedger />
         </RouteWithLayout>
       </ProtectedRoute>
     ),

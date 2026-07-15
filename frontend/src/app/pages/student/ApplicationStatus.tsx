@@ -441,23 +441,8 @@ export function ApplicationStatus() {
             // not be asked to re-upload digital copies anymore.
             if (approved) return null;
             const needsResubmit = (d: any) => {
-              const status = String(d?.status || "").toLowerCase();
-              const decision = String(d?.registrarDecision || "").toLowerCase();
-              const remarks = String(d?.remarks || "").trim();
-              // Explicit registrar rejection or AI rejection → needs resubmit.
-              if (decision === "reject") return true;
-              if (status.includes("reject")) return true;
-              // Registrar wrote remarks AND the document is not verified or
-              // already reviewed → treat as something the student should look
-              // at again. (A reviewed doc with informational remarks is fine.)
-              if (
-                remarks.length > 0 &&
-                !status.includes("verified") &&
-                !d?.registrarReviewed
-              ) {
-                return true;
-              }
-              return false;
+              const decision = String(d?.registrarDecision || d?.registrarDocDecision || "").toLowerCase();
+              return decision === "reject" || decision === "rejected";
             };
             const rejected = docs.filter(needsResubmit);
             if (rejected.length === 0) return null;
@@ -508,16 +493,15 @@ export function ApplicationStatus() {
               const status = String(doc.status || "").toLowerCase();
               const remarks = String(doc.remarks || "").trim();
               // A document explicitly rejected by the registrar always wins,
-              // regardless of any "reviewed" flag — the registrar may have
-              // marked it reviewed, then flipped to a rejection.
+              // even when AI status is still "verified" / "approved".
               // Exception: once the application is approved (or enrolled),
               // stale per-document rejection flags must not surface — the
               // registrar has already accepted the application as a whole.
               const decision = String(doc.registrarDecision || "").toLowerCase();
               const rejectionDetected =
                 decision === "reject" ||
-                status.includes("reject") ||
-                (remarks.length > 0 && !status.includes("verified"));
+                decision === "rejected" ||
+                status.includes("reject");
               const isRejectedDoc = !approved && rejectionDetected;
               return (
                 <div

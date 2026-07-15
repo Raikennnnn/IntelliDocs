@@ -86,6 +86,7 @@ import {
 } from "../../lib/studentLocale";
 import {
   displayEnrollmentText,
+  formatPaymentArrangementDisplay,
   displayFullName,
   displayStrandText,
   formatGradeLevelDisplay,
@@ -236,14 +237,8 @@ function studentDocumentDisplayMeta(
     aiStatus === "approved" ||
     aiStatus === "pass" ||
     aiStatus.includes("verify");
-  const needsResubmit =
-    !registrarCleared &&
-    (decision === "rejected" ||
-      aiStatus === "rejected" ||
-      (!opts.isGrade12PromotionFlow &&
-        String(doc.registrarRemarks || "").trim().length > 0 &&
-        !aiVerified &&
-        !opts.enrollmentFinalized));
+  // Registrar rejection always wins over AI "verified" / reviewed flags.
+  const needsResubmit = isRegistrarRejectionDecision(doc.registrarDecision);
 
   if (doc.status !== "uploaded") {
     return {
@@ -256,50 +251,6 @@ function studentDocumentDisplayMeta(
     };
   }
 
-  // Registrar manually reviewed this file — always show cleared (even if AI is pending).
-  if (registrarCleared && !needsResubmit) {
-    return {
-      needsResubmit: false,
-      verified: true,
-      label: opts.enrollmentFinalized ? "Verified" : "Approved",
-      badgeClass: "bg-green-600",
-      showCarriedHint: false,
-      allowReupload: false,
-    };
-  }
-
-  // Grade 12 re-enrollment: files on file from last year are already cleared.
-  if (opts.isGrade12PromotionFlow && !opts.enrollmentFinalized) {
-    if (needsResubmit) {
-      return {
-        needsResubmit: true,
-        verified: false,
-        label: "Contact registrar",
-        badgeClass: "bg-red-600",
-        showCarriedHint: false,
-        allowReupload: false,
-      };
-    }
-    return {
-      needsResubmit: false,
-      verified: true,
-      label: "Approved",
-      badgeClass: "bg-green-600",
-      showCarriedHint: false,
-      allowReupload: false,
-    };
-  }
-
-  const verified =
-    !needsResubmit && (opts.enrollmentFinalized || aiVerified);
-
-  const showCarriedHint =
-    opts.isGrade12PromotionFlow &&
-    !opts.enrollmentFinalized &&
-    !verified &&
-    !needsResubmit &&
-    Boolean(doc.carriedForward);
-
   if (needsResubmit) {
     return {
       needsResubmit: true,
@@ -311,7 +262,9 @@ function studentDocumentDisplayMeta(
     };
   }
 
-  if (verified) {
+  // Only the registrar (or a finalized enrollment) may show "Approved".
+  // AI "verified" alone must not look like final approval.
+  if (registrarCleared || opts.enrollmentFinalized) {
     return {
       needsResubmit: false,
       verified: true,
@@ -321,6 +274,21 @@ function studentDocumentDisplayMeta(
       allowReupload: false,
     };
   }
+
+  // Grade 12 re-enrollment: files on file from last year are already cleared.
+  if (opts.isGrade12PromotionFlow) {
+    return {
+      needsResubmit: false,
+      verified: true,
+      label: "Approved",
+      badgeClass: "bg-green-600",
+      showCarriedHint: false,
+      allowReupload: false,
+    };
+  }
+
+  const showCarriedHint = Boolean(doc.carriedForward);
+
   if (showCarriedHint) {
     return {
       needsResubmit: false,
@@ -342,15 +310,29 @@ function studentDocumentDisplayMeta(
     };
   }
 
+  // AI may have cleared the photo, but registrar has not approved yet.
+  // Keep re-upload available so students can replace it before review,
+  // and so a later registrar rejection can always take over this slot.
+  if (aiVerified) {
+    return {
+      needsResubmit: false,
+      verified: false,
+      label: "Uploaded — awaiting review",
+      badgeClass: "bg-blue-600",
+      showCarriedHint: false,
+      allowReupload: true,
+    };
+  }
+
   if (aiStatus === "screening") {
     if (doc.readabilityCheckPaused) {
       return {
         needsResubmit: false,
         verified: false,
-        label: "Verification unavailable",
-        badgeClass: "bg-red-600 text-white",
+        label: "Uploaded",
+        badgeClass: "bg-slate-600 text-white",
         showCarriedHint: false,
-        allowReupload: false,
+        allowReupload: true,
       };
     }
     return {
@@ -383,21 +365,54 @@ type ApiDocumentRow = {
   registrar_reviewed?: number | boolean;
   upload_count?: number | string;
   carried_forward?: number | boolean;
+  /** 1 when registrar required a re-upload (explicit server flag). */
+  needs_resubmit?: number | boolean;
 };
 
 function documentRowFromApiHit(doc: DocumentUpload, hit: ApiDocumentRow): DocumentUpload {
+  const decisionRaw =
+    hit.registrar_doc_decision ??
+    (hit as { registrarDocDecision?: string }).registrarDocDecision ??
+    (hit as { registrarDecision?: string }).registrarDecision ??
+    "";
+  const remarksRaw =
+    hit.registrar_doc_remarks ??
+    (hit as { registrarDocRemarks?: string }).registrarDocRemarks ??
+    (hit as { registrarRemarks?: string }).registrarRemarks ??
+    "";
+  const needsResubmitFlag =
+    hit.needs_resubmit === true ||
+    Number(hit.needs_resubmit ?? 0) === 1 ||
+    isRegistrarRejectionDecision(String(decisionRaw || ""));
   return {
     ...doc,
     status: "uploaded",
     uploadedId: hit.id,
     uploadedAt: hit.uploaded_at,
     aiStatus: hit.ai_status,
-    registrarDecision: hit.registrar_doc_decision,
-    registrarRemarks: hit.registrar_doc_remarks,
+    registrarDecision: needsResubmitFlag ? "rejected" : String(decisionRaw || ""),
+    registrarRemarks: String(remarksRaw || ""),
     registrarReviewed: hit.registrar_reviewed === true || Number(hit.registrar_reviewed ?? 0) === 1,
     uploadCount: Math.max(0, Number(hit.upload_count ?? 0) || 0),
     carriedForward: hit.carried_forward === true || Number(hit.carried_forward ?? 0) === 1,
   };
+}
+
+/** Whether the registrar marked this requirement for re-upload. */
+function isRegistrarRejectionDecision(decision: string | undefined | null): boolean {
+  const d = String(decision || "").toLowerCase();
+  return d === "rejected" || d === "reject";
+}
+
+function apiRowNeedsRegistrarResubmit(row: ApiDocumentRow): boolean {
+  if (row.needs_resubmit === true || Number(row.needs_resubmit ?? 0) === 1) {
+    return true;
+  }
+  const decision =
+    row.registrar_doc_decision ??
+    (row as { registrarDocDecision?: string }).registrarDocDecision ??
+    (row as { registrarDecision?: string }).registrarDecision;
+  return isRegistrarRejectionDecision(decision);
 }
 
 /** Map API rows (machine or human type keys) onto the enrollment step requirements. */
@@ -405,7 +420,10 @@ function mergeDocumentsFromApiRows(prev: DocumentUpload[], rows: ApiDocumentRow[
   const mapByType = new Map<string, ApiDocumentRow>();
   for (const d of rows) {
     const key = slotKeyFromApiType(String(d.type || ""));
-    if (key && !mapByType.has(key)) {
+    if (!key) continue;
+    const existing = mapByType.get(key);
+    // Prefer a rejected row if an older duplicate slot somehow appears first.
+    if (!existing || apiRowNeedsRegistrarResubmit(d)) {
       mapByType.set(key, d);
     }
   }
@@ -480,13 +498,16 @@ interface EnrollmentFormData {
   lastSchoolYearAttended: string;
   
   // Bring a Friend Promo
-  hasReferralCode: boolean;
+  hasReferralCode: boolean | null;
   referralCardControlNumber: string;
   referrerName: string;
   referrerContactNumber: string;
+  referrerEmail: string;
+  referrerType: string;
   
   // Accounting
   modeOfPayment: string;
+  paymentArrangement: '' | 'full_payment' | 'installment';
   voucherNo: string;
   
   // Confirmation
@@ -631,11 +652,14 @@ const INITIAL_ENROLLMENT_FORM_DATA: EnrollmentFormData = {
   gradeLevelAtPreviousSchool: "",
   sectionAtPreviousSchool: "",
   lastSchoolYearAttended: "",
-  hasReferralCode: false,
+  hasReferralCode: null,
   referralCardControlNumber: "",
   referrerName: "",
   referrerContactNumber: "",
+  referrerEmail: "",
+  referrerType: "",
   modeOfPayment: "",
+  paymentArrangement: "",
   voucherNo: "",
   confirmInformation: false,
 };
@@ -678,11 +702,21 @@ export function StudentEnrollment() {
   const [isDecliningGrade12, setIsDecliningGrade12] = useState(false);
   const [missingParentDialogOpen, setMissingParentDialogOpen] = useState(false);
   const [missingParentParts, setMissingParentParts] = useState<string[]>([]);
-  const [formData, setFormData] = useState<EnrollmentFormData>(INITIAL_ENROLLMENT_FORM_DATA);
+  const accountEmail = String(user?.email ?? "").trim();
+  const [formData, setFormData] = useState<EnrollmentFormData>(() => ({
+    ...INITIAL_ENROLLMENT_FORM_DATA,
+    email: String(user?.email ?? "").trim(),
+  }));
   const birthDateBounds = useMemo(() => birthDateBoundsForShs(), []);
   const submitInFlightRef = useRef(false);
   const readabilityInFlightRef = useRef(new Set<number>());
   const readabilityRetryRef = useRef(new Map<number, number>());
+
+  // Enrollment email always comes from the logged-in account (register/login).
+  useEffect(() => {
+    if (!accountEmail) return;
+    setFormData((prev) => (prev.email === accountEmail ? prev : { ...prev, email: accountEmail }));
+  }, [accountEmail]);
 
   const hasOpenSchoolYear =
     enrollmentAllowedFromSettings === true ||
@@ -855,6 +889,11 @@ export function StudentEnrollment() {
           setShowNewEnrollmentForm(false);
         }
 
+        const withAccountEmail = (data: EnrollmentFormData): EnrollmentFormData => {
+          const email = String(user?.email ?? "").trim();
+          return email ? { ...data, email } : data;
+        };
+
         if (json.enrollment?.form_data && (isInProgressCurrentSy || !isNewSyOpen)) {
           setFormData(prev => {
             const merged = {
@@ -865,32 +904,40 @@ export function StudentEnrollment() {
               ),
             };
             if (isInProgressCurrentSy && priorFormFromApi && isNewSyOpen) {
-              return applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
-                promoteGrade: true,
-                currentSection: loadedStudentSection,
-              });
+              return withAccountEmail(
+                applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
+                  promoteGrade: true,
+                  currentSection: loadedStudentSection,
+                }),
+              );
             }
             if (reEnrollEligible && priorFormFromApi && !isNewSyOpen) {
-              return applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
-                promoteGrade: false,
-                currentSection: loadedStudentSection,
-              });
+              return withAccountEmail(
+                applyReEnrollmentFormPrefill(merged, priorFormFromApi, priorMeta, {
+                  promoteGrade: false,
+                  currentSection: loadedStudentSection,
+                }),
+              );
             }
-            return merged;
+            return withAccountEmail(merged);
           });
         } else if (isInProgressCurrentSy && priorFormFromApi && isNewSyOpen) {
           setFormData(prev =>
-            applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, {
-              promoteGrade: true,
-              currentSection: loadedStudentSection,
-            })
+            withAccountEmail(
+              applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, {
+                promoteGrade: true,
+                currentSection: loadedStudentSection,
+              }),
+            )
           );
         } else if (reEnrollEligible && priorFormFromApi && !isNewSyOpen) {
           setFormData(prev =>
-            applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, {
-              promoteGrade: false,
-              currentSection: loadedStudentSection,
-            })
+            withAccountEmail(
+              applyReEnrollmentFormPrefill(prev, priorFormFromApi, priorMeta, {
+                promoteGrade: false,
+                currentSection: loadedStudentSection,
+              }),
+            )
           );
         }
 
@@ -918,18 +965,23 @@ export function StudentEnrollment() {
           localStorage.removeItem('studentEnrollmentLocked');
         }
 
-        let docsEnrollmentId =
-          isInProgressCurrentSy && json.enrollment?.id ? Number(json.enrollment.id) : 0;
+        let docsEnrollmentId = json.enrollment?.id ? Number(json.enrollment.id) : 0;
+        if (!Number.isFinite(docsEnrollmentId) || docsEnrollmentId <= 0) {
+          docsEnrollmentId = 0;
+        }
         const forcedStep = Number(searchParams.get('step') || '') || 0;
         if (searchParams.get('resubmit') === '1') {
           setCurrentStep(4);
         } else if (forcedStep >= 1 && forcedStep <= 6) {
           setCurrentStep(forcedStep);
         } else if (
-          !isNewSyOpen &&
           json.enrollment?.current_step &&
           json.enrollment.current_step >= 1 &&
-          json.enrollment.current_step <= 6
+          json.enrollment.current_step <= 6 &&
+          // Resume the saved draft step for any in-progress application
+          // (including a new-school-year draft). Only reset to step 1 when
+          // a new SY is open and there is no draft yet for that year.
+          (isInProgressCurrentSy || !isNewSyOpen)
         ) {
           setCurrentStep(json.enrollment.current_step);
         } else if (isNewSyOpen && !isInProgressCurrentSy) {
@@ -973,6 +1025,16 @@ export function StudentEnrollment() {
         };
         if (docsRes.ok && docsJson.success && Array.isArray(docsJson.documents)) {
           setDocuments((prev) => mergeDocumentsFromApiRows(prev, docsJson.documents as ApiDocumentRow[]));
+          const hasRejectedDocs = docsJson.documents.some((row) =>
+            apiRowNeedsRegistrarResubmit(row as ApiDocumentRow),
+          );
+          if (hasRejectedDocs) {
+            setIsEnrollmentLocked(false);
+            localStorage.removeItem("studentEnrollmentLocked");
+            if (!resubmit && forcedStep < 1) {
+              setCurrentStep(4);
+            }
+          }
         }
 
         const stepFromUrl = new URLSearchParams(window.location.search).get("step");
@@ -1005,6 +1067,7 @@ export function StudentEnrollment() {
     try {
       const sanitizedForm = sanitizeEnrollmentFormData({
         ...formData,
+        email: accountEmail || formData.email,
         municipality: normalizeMunicipalityValue(formData.municipality),
         barangay: normalizeBarangayValue(formData.municipality, formData.barangay),
         strand: normalizeStrandCode(formData.strand),
@@ -1138,45 +1201,46 @@ export function StudentEnrollment() {
     setDocuments((prev) => mergeDocumentsFromApiRows(prev, rows));
   };
 
-  // Grade 12 step 4: refresh documents after server heal marks rollover copies.
+  // Refresh documents whenever the student opens the upload step so registrar
+  // rejections (require re-upload) sync even if the page was already open.
   useEffect(() => {
     if (currentStep !== 4) return;
-    if (!grade12PromotionActive) return;
     const eid = enrollmentId;
     if (!eid) return;
 
     let cancelled = false;
-    (async () => {
+    const refreshDocs = async () => {
       try {
         const docsRes = await apiFetch(`/api/documents?enrollment_id=${eid}`);
         const docsText = await docsRes.text();
         const docsJson = JSON.parse(docsText) as {
           success?: boolean;
-          documents?: Array<{
-            id: number;
-            type: string;
-            uploaded_at?: string;
-            ai_status?: string;
-            registrar_doc_decision?: string;
-            registrar_doc_remarks?: string;
-            registrar_reviewed?: number | boolean;
-            upload_count?: number | string;
-            carried_forward?: number | boolean;
-          }>;
+          documents?: ApiDocumentRow[];
         };
         if (cancelled || !docsRes.ok || !docsJson.success || !Array.isArray(docsJson.documents)) {
           return;
         }
         applyUploadedDocuments(docsJson.documents);
+        const hasRejectedDocs = docsJson.documents.some(apiRowNeedsRegistrarResubmit);
+        if (hasRejectedDocs) {
+          setIsEnrollmentLocked(false);
+          localStorage.removeItem("studentEnrollmentLocked");
+        }
       } catch {
         // keep existing document state
       }
-    })();
+    };
+
+    void refreshDocs();
+    const pollId = window.setInterval(() => {
+      void refreshDocs();
+    }, 4000);
 
     return () => {
       cancelled = true;
+      window.clearInterval(pollId);
     };
-  }, [currentStep, grade12PromotionActive, enrollmentId]);
+  }, [currentStep, enrollmentId]);
 
   const startGrade12Enrollment = useCallback(async () => {
     if (grade12BlockedPhysicalDocs) {
@@ -1189,11 +1253,17 @@ export function StudentEnrollment() {
     setIsStartingGrade12(true);
     try {
       const prefill = applyReEnrollmentFormPrefill(
-        INITIAL_ENROLLMENT_FORM_DATA,
+        {
+          ...INITIAL_ENROLLMENT_FORM_DATA,
+          email: String(user?.email ?? "").trim(),
+        },
         priorReenrollFormData ?? priorApproved?.form_data ?? {},
         priorApproved,
         { promoteGrade: true, currentSection: currentStudentSection }
       );
+      if (String(user?.email ?? "").trim() !== "") {
+        prefill.email = String(user?.email ?? "").trim();
+      }
       setFormData(prefill);
       setCurrentStep(1);
 
@@ -1263,7 +1333,7 @@ export function StudentEnrollment() {
     } finally {
       setIsStartingGrade12(false);
     }
-  }, [priorApproved, priorReenrollFormData, schoolYearCurrent, grade12BlockedPhysicalDocs]);
+  }, [priorApproved, priorReenrollFormData, schoolYearCurrent, grade12BlockedPhysicalDocs, currentStudentSection, user?.email]);
 
   const declineGrade12Continuation = useCallback(async () => {
     setIsDecliningGrade12(true);
@@ -1314,7 +1384,24 @@ export function StudentEnrollment() {
     'sectionAtPreviousSchool',
   ]);
 
-  const handleInputChange = (field: keyof EnrollmentFormData, value: string | boolean) => {
+  const handleInputChange = (field: keyof EnrollmentFormData, value: string | boolean | null) => {
+    if (field === "hasReferralCode") {
+      const hasReferral = value === true;
+      setFormData((prev) => ({
+        ...prev,
+        hasReferralCode: typeof value === "boolean" ? value : null,
+        ...(hasReferral
+          ? {}
+          : {
+              referralCardControlNumber: "",
+              referrerName: "",
+              referrerContactNumber: "",
+              referrerEmail: "",
+              referrerType: "",
+            }),
+      }));
+      return;
+    }
     if (typeof value !== "string") {
       setFormData((prev) => ({ ...prev, [field]: value }));
       return;
@@ -1383,6 +1470,8 @@ export function StudentEnrollment() {
         ai_status?: string;
         readability_failed?: boolean;
         retryable?: boolean;
+        deferred?: boolean;
+        message?: string;
         level?: number;
       };
       if (!res.ok || !json.success) {
@@ -1405,34 +1494,23 @@ export function StudentEnrollment() {
           toast.error(`Document not readable: ${json.error || 'Upload a clearer photo (JPG or PNG).'}`, {
             duration: 9000,
           });
-        } else if (json.retryable || res.status === 503) {
-          const attempts = (readabilityRetryRef.current.get(documentId) ?? 0) + 1;
-          readabilityRetryRef.current.set(documentId, attempts);
-          if (attempts >= 6) {
-            setDocuments((prev) => {
-              const next = [...prev];
-              if (next[docIndex]?.uploadedId === documentId) {
-                next[docIndex] = {
-                  ...next[docIndex],
-                  readabilityCheckPaused: true,
-                };
-              }
-              return next;
-            });
-            toast.error(
-              'Document verification is temporarily unavailable. Tap Retry check on the document, or try again in a few minutes.',
-              { duration: 8000 },
-            );
-            return;
-          }
-          toast.error(json.error || 'Readability check unavailable. Retrying…', {
-            duration: 5000,
-          });
-          window.setTimeout(() => {
-            void runDocumentReadabilityCheck(docIndex, documentId);
-          }, 5000);
         } else {
-          toast.error(json.error || 'Readability check failed.');
+          // Never hold the student workflow for an automated-check failure.
+          setDocuments((prev) => {
+            const next = [...prev];
+            if (next[docIndex]?.uploadedId === documentId) {
+              next[docIndex] = {
+                ...next[docIndex],
+                aiStatus: 'pending',
+                readabilityCheckPaused: true,
+              };
+            }
+            return next;
+          });
+          toast.error(
+            'Automatic verification is unavailable. Your upload was saved and you may continue enrollment.',
+            { duration: 9000 },
+          );
         }
         return;
       }
@@ -1443,13 +1521,33 @@ export function StudentEnrollment() {
           next[docIndex] = {
             ...next[docIndex],
             aiStatus: json.ai_status || 'pending',
-            readabilityCheckPaused: false,
+            readabilityCheckPaused: Boolean(json.deferred),
           };
         }
         return next;
       });
+      if (json.deferred) {
+        toast.message(
+          'Automatic verification is unavailable. Your upload was saved.',
+          { duration: 8000 },
+        );
+      }
     } catch {
-      toast.error('Readability check failed. Try uploading again.');
+      setDocuments((prev) => {
+        const next = [...prev];
+        if (next[docIndex]?.uploadedId === documentId) {
+          next[docIndex] = {
+            ...next[docIndex],
+            aiStatus: 'pending',
+            readabilityCheckPaused: true,
+          };
+        }
+        return next;
+      });
+      toast.error(
+        'Automatic verification could not run. Your upload was saved and you may continue enrollment.',
+        { duration: 9000 },
+      );
     } finally {
       readabilityInFlightRef.current.delete(documentId);
     }
@@ -1549,6 +1647,9 @@ export function StudentEnrollment() {
           attempts_remaining?: number | null;
           resubmit_attempt?: boolean;
           attempt_limit?: number;
+          ai_status?: string;
+          ai_check_deferred?: boolean;
+          readability_pending?: boolean;
         };
       };
       if (!res.ok || !json.success) {
@@ -1598,28 +1699,39 @@ export function StudentEnrollment() {
         );
       }
 
+      const deferredCheck = Boolean(json.document?.ai_check_deferred);
+      const uploadedDocId = Number(json.document?.id ?? 0);
+      const initialAiStatus = json.document?.ai_status ?? (deferredCheck ? 'pending' : 'screening');
+
       setDocuments(prev => {
         const next = [...prev];
         next[index] = {
           ...next[index],
           file,
           status: 'uploaded',
-          uploadedId: Number(json.document?.id ?? 0) || undefined,
+          uploadedId: uploadedDocId > 0 ? uploadedDocId : undefined,
           uploadedAt: json.document?.uploaded_at ?? new Date().toISOString(),
-          aiStatus: json.document?.ai_status ?? 'screening',
+          aiStatus: initialAiStatus,
           registrarDecision: '',
           registrarRemarks: '',
           registrarReviewed: false,
           uploadCount: Math.max(0, Number(json.document?.upload_count ?? 0) || 0),
           carriedForward: false,
+          readabilityCheckPaused: deferredCheck,
         };
         return next;
       });
       setDocumentsAuthenticityConfirmed(false);
-      toast.success(`${documents[index].name} uploaded — checking readability…`);
-      const uploadedDocId = Number(json.document?.id ?? 0);
-      if (uploadedDocId > 0) {
-        void runDocumentReadabilityCheck(index, uploadedDocId);
+      if (deferredCheck) {
+        toast.success(
+          `${documents[index].name} uploaded.`,
+          { duration: 8000 },
+        );
+      } else {
+        toast.success(`${documents[index].name} uploaded — checking readability…`);
+        if (uploadedDocId > 0) {
+          void runDocumentReadabilityCheck(index, uploadedDocId);
+        }
       }
     } catch {
       toast.error('Failed to upload document');
@@ -1664,6 +1776,10 @@ export function StudentEnrollment() {
     }
     if (birthDateIssue === 'ineligible') {
       toast.error(t('form.val.birthDateIneligible'));
+      return false;
+    }
+    if (formData.gradeLevel !== '11' && formData.gradeLevel !== '12') {
+      toast.error(t('form.val.requiredFields'));
       return false;
     }
     if (!hasValidPersonName(formData.givenName)) {
@@ -1712,12 +1828,52 @@ export function StudentEnrollment() {
   };
 
   const validateStep2 = () => {
-    const motherName = formData.motherGivenName.trim();
-    const fatherName = formData.fatherGivenName.trim();
-    const guardianName = formData.guardianGivenName.trim();
-    const hasMother = motherName.length > 0;
-    const hasFather = fatherName.length > 0;
-    const hasGuardianFilled = formData.hasGuardian && guardianName.length > 0;
+    const groupHasAnyValue = (fields: Array<keyof EnrollmentFormData>) =>
+      fields.some((field) => String(formData[field] ?? "").trim().length > 0);
+    const groupIsComplete = (fields: Array<keyof EnrollmentFormData>) =>
+      fields.every((field) => String(formData[field] ?? "").trim().length > 0);
+
+    const motherFields: Array<keyof EnrollmentFormData> = [
+      'motherGivenName',
+      'motherMaidenMiddleName',
+      'motherMaidenLastName',
+      'motherContactNumber',
+      'motherOccupation',
+    ];
+    const fatherFields: Array<keyof EnrollmentFormData> = [
+      'fatherGivenName',
+      'fatherMiddleName',
+      'fatherLastName',
+      'fatherContactNumber',
+      'fatherOccupation',
+    ];
+    const guardianFields: Array<keyof EnrollmentFormData> = [
+      'guardianGivenName',
+      'guardianMiddleName',
+      'guardianLastName',
+      'guardianContactNumber',
+      'relationshipToGuardian',
+    ];
+
+    const hasMotherStarted = groupHasAnyValue(motherFields);
+    const hasFatherStarted = groupHasAnyValue(fatherFields);
+    const hasGuardianStarted = formData.hasGuardian || groupHasAnyValue(guardianFields);
+    const hasMother = groupIsComplete(motherFields);
+    const hasFather = groupIsComplete(fatherFields);
+    const hasGuardianFilled = formData.hasGuardian && groupIsComplete(guardianFields);
+
+    if (hasMotherStarted && !hasMother) {
+      toast.error(t('form.val.familySectionIncomplete', { section: t('form.mother.section') }));
+      return false;
+    }
+    if (hasFatherStarted && !hasFather) {
+      toast.error(t('form.val.familySectionIncomplete', { section: t('form.father.section') }));
+      return false;
+    }
+    if (hasGuardianStarted && !hasGuardianFilled) {
+      toast.error(t('form.val.familySectionIncomplete', { section: t('form.guardian.section') }));
+      return false;
+    }
 
     if (!hasMother && !hasFather && !hasGuardianFilled) {
       toast.error(t('form.val.parentRequired'));
@@ -1861,13 +2017,11 @@ export function StudentEnrollment() {
       (doc) => doc.status === 'uploaded' && String(doc.aiStatus || '').toLowerCase() === 'screening',
     );
     if (screeningDocs.length > 0) {
-      const paused = screeningDocs.some((doc) => doc.readabilityCheckPaused);
-      toast.error(
-        paused
-          ? 'Document verification is temporarily unavailable. Tap Retry check on the affected document(s), or try again in a few minutes.'
-          : 'Document readability checks are still in progress. Please wait a moment.',
-      );
-      return false;
+      const allPaused = screeningDocs.every((doc) => doc.readabilityCheckPaused);
+      if (!allPaused) {
+        toast.error('Document readability checks are still in progress. Please wait a moment.');
+        return false;
+      }
     }
     if (!documentsAuthenticityConfirmed) {
       const grade12PrefillLocked = isGrade12PrefillLocked({
@@ -1892,10 +2046,46 @@ export function StudentEnrollment() {
     return true;
   };
 
+  const validateStep5 = () => {
+    if (formData.hasReferralCode === null) {
+      toast.error(t('form.val.referralChoice'));
+      return false;
+    }
+    if (formData.hasReferralCode) {
+      const controlDigits = formData.referralCardControlNumber.replace(/\D/g, '');
+      if (controlDigits.length !== 4) {
+        toast.error(t('form.val.referralControl'));
+        return false;
+      }
+      if (!formData.referrerName.trim()) {
+        toast.error(t('form.val.referrerName'));
+        return false;
+      }
+      const referrerContact = formData.referrerContactNumber.replace(/\D/g, '');
+      if (!/^09\d{9}$/.test(referrerContact)) {
+        toast.error(t('form.val.referrerContact'));
+        return false;
+      }
+      const referrerEmail = formData.referrerEmail.trim().toLowerCase();
+      if (!referrerEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(referrerEmail)) {
+        toast.error(t('form.val.referrerEmail'));
+        return false;
+      }
+      if (!formData.referrerType.trim()) {
+        toast.error(t('form.val.referrerType'));
+        return false;
+      }
+    }
+    return true;
+  };
+
   const advanceToNextStep = async () => {
-    const ok = await saveEnrollment('save_draft', currentStep);
+    // Persist the destination step so "Continue enrollment" resumes where the
+    // student left off (the next incomplete step), not the last completed one.
+    const nextStep = Math.min(currentStep + 1, 6);
+    const ok = await saveEnrollment('save_draft', nextStep);
     if (!ok) return;
-    setCurrentStep((prev) => Math.min(prev + 1, 6));
+    setCurrentStep(nextStep);
   };
 
   const handleNext = async () => {
@@ -1911,6 +2101,7 @@ export function StudentEnrollment() {
     }
     if (currentStep === 3 && !validateStep3()) return;
     if (currentStep === 4 && !validateStep4()) return;
+    if (currentStep === 5 && !validateStep5()) return;
     await advanceToNextStep();
   };
 
@@ -1930,8 +2121,13 @@ export function StudentEnrollment() {
     if (!validateStep2()) return;
     if (!validateStep3()) return;
     if (!validateStep4()) return;
+    if (!validateStep5()) return;
     if (!formData.modeOfPayment?.trim()) {
       toast.error(t('form.val.paymentSelect'));
+      return;
+    }
+    if (formData.paymentArrangement !== 'full_payment' && formData.paymentArrangement !== 'installment') {
+      toast.error(t('form.val.paymentArrangementSelect'));
       return;
     }
     if (!formData.confirmInformation) {
@@ -1953,6 +2149,25 @@ export function StudentEnrollment() {
       { value: 'qva', label: t('form.payment.qva') },
       { value: 'als', label: t('form.payment.als') },
       { value: 'cash', label: t('form.payment.cash') },
+    ],
+    [t],
+  );
+
+  const paymentArrangementOptions = useMemo(
+    () => [
+      { value: 'full_payment' as const, label: t('form.payment.fullPayment') },
+      { value: 'installment' as const, label: t('form.payment.installment') },
+    ],
+    [t],
+  );
+
+  const referrerTypeOptions = useMemo(
+    () => [
+      { value: 'enrolled_student', label: t('form.payment.referrerType.enrolledStudent') },
+      { value: 'graduate', label: t('form.payment.referrerType.graduate') },
+      { value: 'parent_civilian', label: t('form.payment.referrerType.parentCivilian') },
+      { value: 'visitation', label: t('form.payment.referrerType.visitation') },
+      { value: 'other_civilian', label: t('form.payment.referrerType.otherCivilian') },
     ],
     [t],
   );
@@ -1983,7 +2198,11 @@ export function StudentEnrollment() {
   // through to the blank form. Without it, the locked branch wins because
   // the latest row in the DB is still the previous SY's approved row.
   // Allow resubmission flow to bypass the locked status card and open the upload step.
-  const isResubmitFlow = searchParams.get('resubmit') === '1';
+  const hasRejectedDocuments = useMemo(
+    () => documents.some((doc) => isRegistrarRejectionDecision(doc.registrarDecision)),
+    [documents],
+  );
+  const isResubmitFlow = searchParams.get("resubmit") === "1" || hasRejectedDocuments;
   const lockedView = enrollmentAllowed && isEnrollmentLocked && !showNewEnrollmentForm && !isResubmitFlow;
 
   const isFirstTimeEnrollmentUser = useMemo(() => {
@@ -2542,9 +2761,15 @@ export function StudentEnrollment() {
                       id="email"
                       type="email"
                       value={formData.email}
-                      onChange={(e) => handleInputChange('email', e.target.value)}
+                      readOnly
+                      disabled
+                      autoComplete="email"
                       placeholder={t('form.ph.email')}
+                      className={lockedPrefillInputClass.trim()}
                     />
+                    <p className="text-xs text-gray-500">
+                      Uses the email from your registration / login. Update it in Profile if needed.
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <RequiredLabel htmlFor="lrn">{t('form.lrn')}</RequiredLabel>
@@ -2795,7 +3020,7 @@ export function StudentEnrollment() {
                 <h2 className="text-2xl font-semibold mb-6">{t('form.mother.section')}</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="motherGivenName">{t('form.mother.firstName')}</Label>
+                    <RequiredLabel htmlFor="motherGivenName">{t('form.mother.firstName')}</RequiredLabel>
                     <Input
                       id="motherGivenName"
                       value={formData.motherGivenName}
@@ -2805,7 +3030,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherMaidenMiddleName">{t('form.mother.middleName')}</Label>
+                    <RequiredLabel htmlFor="motherMaidenMiddleName">{t('form.mother.middleName')}</RequiredLabel>
                     <Input
                       id="motherMaidenMiddleName"
                       value={formData.motherMaidenMiddleName}
@@ -2815,7 +3040,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherMaidenLastName">{t('form.mother.lastName')}</Label>
+                    <RequiredLabel htmlFor="motherMaidenLastName">{t('form.mother.lastName')}</RequiredLabel>
                     <Input
                       id="motherMaidenLastName"
                       value={formData.motherMaidenLastName}
@@ -2825,7 +3050,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherContactNumber">{t('form.mother.contact')}</Label>
+                    <RequiredLabel htmlFor="motherContactNumber">{t('form.mother.contact')}</RequiredLabel>
                     <Input
                       id="motherContactNumber"
                       type="tel"
@@ -2837,7 +3062,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="motherOccupation">{t('form.mother.occupation')}</Label>
+                    <RequiredLabel htmlFor="motherOccupation">{t('form.mother.occupation')}</RequiredLabel>
                     <Input
                       id="motherOccupation"
                       value={formData.motherOccupation}
@@ -2856,7 +3081,7 @@ export function StudentEnrollment() {
                 <h2 className="text-2xl font-semibold mb-6">{t('form.father.section')}</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="fatherGivenName">{t('form.father.firstName')}</Label>
+                    <RequiredLabel htmlFor="fatherGivenName">{t('form.father.firstName')}</RequiredLabel>
                     <Input
                       id="fatherGivenName"
                       value={formData.fatherGivenName}
@@ -2866,7 +3091,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherMiddleName">{t('form.father.middleName')}</Label>
+                    <RequiredLabel htmlFor="fatherMiddleName">{t('form.father.middleName')}</RequiredLabel>
                     <Input
                       id="fatherMiddleName"
                       value={formData.fatherMiddleName}
@@ -2876,7 +3101,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherLastName">{t('form.father.lastName')}</Label>
+                    <RequiredLabel htmlFor="fatherLastName">{t('form.father.lastName')}</RequiredLabel>
                     <Input
                       id="fatherLastName"
                       value={formData.fatherLastName}
@@ -2886,7 +3111,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherContactNumber">{t('form.father.contact')}</Label>
+                    <RequiredLabel htmlFor="fatherContactNumber">{t('form.father.contact')}</RequiredLabel>
                     <Input
                       id="fatherContactNumber"
                       type="tel"
@@ -2898,7 +3123,7 @@ export function StudentEnrollment() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="fatherOccupation">{t('form.father.occupation')}</Label>
+                    <RequiredLabel htmlFor="fatherOccupation">{t('form.father.occupation')}</RequiredLabel>
                     <Input
                       id="fatherOccupation"
                       value={formData.fatherOccupation}
@@ -2931,7 +3156,7 @@ export function StudentEnrollment() {
                     <h2 className="text-2xl font-semibold mb-6">{t('form.guardian.section')}</h2>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <Label htmlFor="guardianGivenName">{t('form.guardian.firstName')}</Label>
+                        <RequiredLabel htmlFor="guardianGivenName">{t('form.guardian.firstName')}</RequiredLabel>
                         <Input
                           id="guardianGivenName"
                           value={formData.guardianGivenName}
@@ -2941,7 +3166,7 @@ export function StudentEnrollment() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianMiddleName">{t('form.guardian.middleName')}</Label>
+                        <RequiredLabel htmlFor="guardianMiddleName">{t('form.guardian.middleName')}</RequiredLabel>
                         <Input
                           id="guardianMiddleName"
                           value={formData.guardianMiddleName}
@@ -2951,7 +3176,7 @@ export function StudentEnrollment() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianLastName">{t('form.guardian.lastName')}</Label>
+                        <RequiredLabel htmlFor="guardianLastName">{t('form.guardian.lastName')}</RequiredLabel>
                         <Input
                           id="guardianLastName"
                           value={formData.guardianLastName}
@@ -2961,7 +3186,7 @@ export function StudentEnrollment() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="guardianContactNumber">{t('form.guardian.contact')}</Label>
+                        <RequiredLabel htmlFor="guardianContactNumber">{t('form.guardian.contact')}</RequiredLabel>
                         <Input
                           id="guardianContactNumber"
                           type="tel"
@@ -2973,7 +3198,7 @@ export function StudentEnrollment() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="relationshipToGuardian">{t('form.guardian.relationship')}</Label>
+                        <RequiredLabel htmlFor="relationshipToGuardian">{t('form.guardian.relationship')}</RequiredLabel>
                         <Input
                           id="relationshipToGuardian"
                           value={formData.relationshipToGuardian}
@@ -2990,7 +3215,7 @@ export function StudentEnrollment() {
             {/* Emergency Contact */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">{t('form.emergency.section')}</h2>
+                <RequiredLabel className="text-2xl font-semibold mb-6 block">{t('form.emergency.section')}</RequiredLabel>
                 <div className="flex flex-wrap gap-3 sm:gap-4">
                   {['mother', 'father', 'guardian'].map((contact) => (
                     <label key={contact} className="flex items-center gap-2 cursor-pointer">
@@ -3395,16 +3620,23 @@ export function StudentEnrollment() {
             {/* Bring a Friend Promo */}
             <Card>
               <CardContent className="p-4 sm:p-6 md:p-8">
-                <h2 className="text-2xl font-semibold mb-6">{t('form.payment.promo')}</h2>
+                <h2 className="text-2xl font-semibold mb-2">{t('form.payment.promo')}</h2>
+                <p className="text-sm text-gray-600 mb-6 rounded-md border border-blue-100 bg-blue-50/80 px-3 py-2">
+                  {t('form.payment.promoHint')}
+                </p>
                 <div className="mb-4">
-                  <Label className="mb-3 block">{t('form.payment.hasReferral')}</Label>
+                  <RequiredLabel className="mb-3 block">{t('form.payment.hasReferral')}</RequiredLabel>
                   <div className="flex flex-wrap gap-3 sm:gap-4">
                     {(['yes', 'no'] as const).map((option) => (
                       <label key={option} className="flex items-center gap-2 cursor-pointer">
                         <input
                           type="radio"
                           name="hasReferralCode"
-                          checked={formData.hasReferralCode === (option === 'yes')}
+                          checked={
+                            option === 'yes'
+                              ? formData.hasReferralCode === true
+                              : formData.hasReferralCode === false
+                          }
                           onChange={() => handleInputChange('hasReferralCode', option === 'yes')}
                           className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
                         />
@@ -3417,19 +3649,19 @@ export function StudentEnrollment() {
                 {formData.hasReferralCode && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                     <div className="space-y-2">
-                      <Label htmlFor="referralCardControlNumber">{t('form.payment.referralControl')}</Label>
+                      <RequiredLabel htmlFor="referralCardControlNumber">{t('form.payment.referralControl')}</RequiredLabel>
                       <Input
                         id="referralCardControlNumber"
                         type="text"
                         inputMode="numeric"
-                        maxLength={6}
+                        maxLength={4}
                         value={formData.referralCardControlNumber}
                         onChange={(e) => handleInputChange('referralCardControlNumber', e.target.value)}
                         placeholder={t('form.ph.referralControl')}
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="referrerName">{t('form.payment.referrerName')}</Label>
+                      <RequiredLabel htmlFor="referrerName">{t('form.payment.referrerName')}</RequiredLabel>
                       <Input
                         id="referrerName"
                         value={formData.referrerName}
@@ -3438,7 +3670,7 @@ export function StudentEnrollment() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="referrerContactNumber">{t('form.payment.referrerContact')}</Label>
+                      <RequiredLabel htmlFor="referrerContactNumber">{t('form.payment.referrerContact')}</RequiredLabel>
                       <Input
                         id="referrerContactNumber"
                         type="tel"
@@ -3448,6 +3680,33 @@ export function StudentEnrollment() {
                         placeholder={t('form.ph.contact')}
                         maxLength={11}
                       />
+                    </div>
+                    <div className="space-y-2">
+                      <RequiredLabel htmlFor="referrerEmail">{t('form.payment.referrerEmail')}</RequiredLabel>
+                      <Input
+                        id="referrerEmail"
+                        type="email"
+                        autoComplete="email"
+                        value={formData.referrerEmail}
+                        onChange={(e) => handleInputChange('referrerEmail', e.target.value)}
+                        placeholder={t('form.ph.referrerEmail')}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <RequiredLabel htmlFor="referrerType">{t('form.payment.referrerType.label')}</RequiredLabel>
+                      <select
+                        id="referrerType"
+                        value={formData.referrerType}
+                        onChange={(e) => handleInputChange('referrerType', e.target.value)}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      >
+                        <option value="">{t('form.payment.referrerType.placeholder')}</option>
+                        {referrerTypeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 )}
@@ -3479,6 +3738,30 @@ export function StudentEnrollment() {
                   <p className="text-sm text-gray-600 mt-4 rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2">
                     {t('form.payment.voucherHint')}
                   </p>
+                </div>
+
+                <div className="space-y-4 mt-8 pt-6 border-t">
+                  <RequiredLabel className="mb-3 block">{t('form.payment.arrangement')}</RequiredLabel>
+                  <div className="space-y-2">
+                    {paymentArrangementOptions.map((option) => (
+                      <label key={option.value} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="paymentArrangement"
+                          value={option.value}
+                          checked={formData.paymentArrangement === option.value}
+                          onChange={(e) =>
+                            handleInputChange(
+                              'paymentArrangement',
+                              e.target.value as EnrollmentFormData['paymentArrangement'],
+                            )
+                          }
+                          className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -3586,6 +3869,10 @@ export function StudentEnrollment() {
                     <div>
                       <p className="text-gray-600">{t('form.payment.mode')}</p>
                       <p className="font-medium">{displayEnrollmentText(formData.modeOfPayment)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-600">{t('form.payment.arrangement')}</p>
+                      <p className="font-medium">{formatPaymentArrangementDisplay(formData.paymentArrangement)}</p>
                     </div>
                     <div>
                       <p className="text-gray-600">{t('form.review.voucherNo')}</p>

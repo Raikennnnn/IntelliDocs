@@ -30,3 +30,26 @@ export function displayFullName(...parts: Array<string | null | undefined>): str
   const joined = parts.map((p) => String(p ?? "").trim()).filter(Boolean).join(" ");
   return displayEnrollmentText(joined || null);
 }
+
+/** Full Payment / Installment label for enrollment review screens. */
+export function formatPaymentArrangementDisplay(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (raw === "full_payment") return "FULL PAYMENT";
+  if (raw === "installment") return "INSTALLMENT";
+  return displayEnrollmentText(value);
+}
+
+const REFERRER_TYPE_LABELS: Record<string, string> = {
+  enrolled_student: "Enrolled student",
+  graduate: "Graduate",
+  parent_civilian: "Parent / civilian",
+  visitation: "School visitation",
+  other_civilian: "Other civilian",
+};
+
+/** Bring a Friend referrer type for registrar display. */
+export function formatReferrerTypeDisplay(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return EMPTY;
+  return REFERRER_TYPE_LABELS[raw] ?? displayEnrollmentText(raw.replace(/_/g, " "));
+}

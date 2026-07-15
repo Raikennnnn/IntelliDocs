@@ -103,7 +103,8 @@ function documentDeriveAiStatusFromArtifacts(?string $aiSecurityJson, mixed $aiS
         }
         $statusRaw = strtolower(trim((string)($envelope['status'] ?? '')));
         if ($statusRaw === 'verified') {
-            return 'verified';
+            // Envelope may say verified; business status stays pending until registrar review.
+            return 'pending';
         }
         if ($statusRaw === 'failed') {
             return 'failed';
@@ -111,7 +112,7 @@ function documentDeriveAiStatusFromArtifacts(?string $aiSecurityJson, mixed $aiS
     }
 
     if ($aiScore !== null && $aiScore !== '' && is_numeric($aiScore)) {
-        return 'verified';
+        return 'pending';
     }
 
     return 'pending';
@@ -460,9 +461,12 @@ function persistDocumentAiResult(PDO $pdo, int $docId, array $result, ?string $f
     if ($tamper < 0.35 || $l3Fail) {
         $aiStatus = 'tampered';
     } elseif ($statusRaw === 'verified' && is_array($sec) && !empty($sec['overall_pass'])) {
-        $aiStatus = 'verified';
+        // AI may be clear, but registrar still decides — keep as pending for UI.
+        $aiStatus = 'pending';
     } elseif ($statusRaw === 'verified') {
-        $aiStatus = 'verified';
+        $aiStatus = 'pending';
+    } elseif (in_array($statusRaw, ['pending', 'review', 'scored'], true)) {
+        $aiStatus = 'pending';
     } else {
         $aiStatus = 'failed';
     }

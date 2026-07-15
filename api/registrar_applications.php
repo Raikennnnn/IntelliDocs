@@ -128,7 +128,10 @@ try {
         INNER JOIN (
             SELECT user_id, MAX(id) AS latest_id
             FROM enrollments
-            WHERE LOWER(status) IN ('pending', 'under_review', 'under review', 'review', 'rejected', 'draft')
+            WHERE (
+                TRIM(COALESCE(status, '')) = ''
+                OR LOWER(status) IN ('pending', 'under_review', 'under review', 'review', 'rejected', 'draft')
+            )
             GROUP BY user_id
         ) open_apps ON open_apps.latest_id = e.id
         ORDER BY e.id DESC

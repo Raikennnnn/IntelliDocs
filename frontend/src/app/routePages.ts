@@ -25,6 +25,7 @@ export const Reports = lazyNamed(() => import('./pages/registrar/Reports'), 'Rep
 export const RegistrarActivityLogs = lazyNamed(() => import('./pages/registrar/ActivityLogs'), 'ActivityLogs');
 export const RegistrarStudents = lazyNamed(() => import('./pages/registrar/Students'), 'Students');
 export const RegistrarSections = lazyNamed(() => import('./pages/registrar/Sections'), 'Sections');
+export const ReferralLedger = lazyNamed(() => import('./pages/registrar/ReferralLedger'), 'ReferralLedger');
 
 export const AdminDashboard = lazyNamed(() => import('./pages/admin/AdminDashboard'), 'AdminDashboard');
 export const UserManagement = lazyNamed(() => import('./pages/admin/UserManagement'), 'UserManagement');

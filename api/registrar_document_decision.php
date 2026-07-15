@@ -161,7 +161,6 @@ try {
                    registrar_doc_remarks = :remarks,
                    doc_decided_at = CURRENT_TIMESTAMP,
                    doc_decided_by = :actor,
-                   ai_status = "rejected",
                    registrar_reviewed = 0,
                    reviewed_at = NULL,
                    reviewed_by = NULL
@@ -224,8 +223,7 @@ try {
            SET registrar_doc_decision = NULL,
                registrar_doc_remarks = NULL,
                doc_decided_at = NULL,
-               doc_decided_by = NULL,
-               ai_status = "pending"
+               doc_decided_by = NULL
          WHERE id = :id
     ');
     $upd->execute([':id' => $documentId]);

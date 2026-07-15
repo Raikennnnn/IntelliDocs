@@ -41,6 +41,8 @@ import { toast } from "sonner";
 import { apiFetch, formatApiError, parseApiJson } from "../../lib/api";
 import {
   displayEnrollmentText as d,
+  formatPaymentArrangementDisplay,
+  formatReferrerTypeDisplay,
   displayStrandText as ds,
   formatGradeLevelDisplay as dg,
 } from "../../lib/enrollmentDisplayFormat";
@@ -1330,6 +1332,13 @@ export function ReviewDocuments() {
           action: 'approve',
           enrollment_id: application.enrollmentId,
           remarks,
+          ai_concern_override:
+            aggregateConcern !== null && aggregateConcern > CONCERN_STRICT_THRESHOLD,
+          ai_concern_score: aggregateConcern,
+          ai_concern_override_ack:
+            aggregateConcern !== null &&
+            aggregateConcern > CONCERN_STRICT_THRESHOLD &&
+            lowScoreOverrideAck,
         }),
       });
       const text = await res.text();
@@ -2330,6 +2339,52 @@ export function ReviewDocuments() {
                     <p className="text-gray-600">Referrer Contact Number</p>
                     <p className="font-medium">{d(application.referrerContactNumber)}</p>
                   </div>
+                  <div>
+                    <p className="text-gray-600">Referrer Email</p>
+                    <p className="font-medium">
+                      {d(
+                        application.referrerEmail ||
+                          (application.referralPromo as { referrerEmail?: string } | undefined)?.referrerEmail
+                      )}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-gray-600">Referrer Type</p>
+                    <p className="font-medium">
+                      {formatReferrerTypeDisplay(
+                        (application.referralPromo as { referrerType?: string } | undefined)?.referrerType ||
+                          (application.referrerType as string | undefined),
+                      )}
+                    </p>
+                  </div>
+                  {Boolean(
+                    (application.referralPromo as { referredFreebieStatusLabel?: string } | undefined)
+                      ?.referredFreebieStatusLabel,
+                  ) && (
+                    <div>
+                      <p className="text-gray-600">Referred Student Freebie</p>
+                      <p className="font-medium">
+                        {
+                          (application.referralPromo as { referredFreebieStatusLabel: string })
+                            .referredFreebieStatusLabel
+                        }
+                      </p>
+                    </div>
+                  )}
+                  {Boolean(
+                    (application.referralPromo as { referrerIncentiveStatusLabel?: string } | undefined)
+                      ?.referrerIncentiveStatusLabel,
+                  ) && (
+                    <div>
+                      <p className="text-gray-600">Referrer Incentive (₱500)</p>
+                      <p className="font-medium">
+                        {
+                          (application.referralPromo as { referrerIncentiveStatusLabel: string })
+                            .referrerIncentiveStatusLabel
+                        }
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -2340,6 +2395,10 @@ export function ReviewDocuments() {
                 <div>
                   <p className="text-gray-600">Mode of Payment</p>
                   <p className="font-medium">{d(application.modeOfPayment)}</p>
+                </div>
+                <div>
+                  <p className="text-gray-600">Payment Arrangement</p>
+                  <p className="font-medium">{formatPaymentArrangementDisplay(application.paymentArrangement)}</p>
                 </div>
                 {application.voucherNo && (
                   <div>
@@ -2423,9 +2482,7 @@ export function ReviewDocuments() {
                   const ai = aiResultForDisplay(docType, rawAi) ?? rawAi;
                   const aiPct = documentConcernPercent(ai);
                   const resubmitRequired =
-                    String(doc?.registrarDocDecision || "").toLowerCase() === "rejected" ||
-                    String(doc?.status || "").toLowerCase() === "flagged" ||
-                    String(doc?.aiStatus || "").toLowerCase() === "rejected";
+                    String(doc?.registrarDocDecision || "").toLowerCase() === "rejected";
                   const registrarCleared =
                     Boolean(doc?.registrarReviewed) ||
                     String(doc?.status || "").toLowerCase() === "verified";
@@ -3618,7 +3675,7 @@ export function ReviewDocuments() {
                       </Alert>
                     )}
                     <p className="text-xs text-gray-500 mt-2">
-                      Verified: {selectedDocument.uploadedDate}
+                      Uploaded: {selectedDocument.uploadedDate}
                     </p>
                 </div>
 

@@ -16,6 +16,7 @@ require_once __DIR__ . '/section_assignment.php';
 require_once __DIR__ . '/enrollment_status_helpers.php';
 require_once __DIR__ . '/cohort_helpers.php';
 require_once __DIR__ . '/physical_docs_helpers.php';
+require_once __DIR__ . '/referral_promo_helpers.php';
 require_once __DIR__ . '/ai_persist.php';
 require_once __DIR__ . '/ai_http.php';
 require_once __DIR__ . '/ai_verify_refine.php';
@@ -354,6 +355,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'documents' => $documents,
             'documentsReviewed' => $documentsReviewed,
             'totalDocuments' => count($documents),
+            'referralPromo' => referralPromoClaimToApiPayload(fetchReferralPromoClaimForEnrollment($pdo, $enrollmentId)),
         ];
         $payload = array_merge($form, $serverFields);
 
@@ -476,7 +478,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // a second round-trip in task 4.2.
                 $ownerStmt = $pdo->prepare(
                     'SELECT u.id AS user_id, u.school_username, u.email, u.full_name,
-                            e.status AS enrollment_status, e.enrollment_steps
+                            e.status AS enrollment_status, e.enrollment_steps, e.school_year
                      FROM enrollments e
                      INNER JOIN users u ON u.id = e.user_id
                      WHERE e.id = :id LIMIT 1'
@@ -502,6 +504,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                         syncStudentCohortForEnrollment($pdo, $enrollmentId);
                         carryForwardPhysicalDocsForEnrollment($pdo, $enrollmentId);
+                        $stepsRaw = (string)($ownerRow['enrollment_steps'] ?? '{}');
+                        $stepsDecoded = json_decode($stepsRaw, true);
+                        $formData = is_array($stepsDecoded) && is_array($stepsDecoded['form_data'] ?? null)
+                            ? $stepsDecoded['form_data']
+                            : [];
+                        $enrollmentSchoolYear = trim((string)($ownerRow['school_year'] ?? ''));
+                        if ($enrollmentSchoolYear !== '') {
+                            $referralResult = finalizeReferralPromoOnEnrollmentApproval(
+                                $pdo,
+                                $enrollmentId,
+                                $enrollmentSchoolYear,
+                                $formData
+                            );
+                            if (($referralResult['ok'] ?? false) !== true) {
+                                appLogEvent($pdo, 'referral_promo_finalize', 'registrar', 'failed', $actorId, 'enrollment', (string)$enrollmentId, [
+                                    'code' => (string)($referralResult['code'] ?? 'referral_finalize_failed'),
+                                    'error' => (string)($referralResult['error'] ?? ''),
+                                ]);
+                            }
+                        }
                         appLogEvent($pdo, 'registrar_decision', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, [
                             'decision' => 'enrolled',
                             'idempotent' => true,
@@ -716,9 +738,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 appLogEvent($pdo, 'registrar_decision', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, ['decision' => $status]);
+                if ($action === 'approve') {
+                    $aiConcernOverride = !empty($payload['ai_concern_override_ack']);
+                    $aiConcernScore = isset($payload['ai_concern_score']) ? (float)$payload['ai_concern_score'] : null;
+                    if ($aiConcernOverride) {
+                        appLogEvent($pdo, 'registrar_decision_override', 'registrar', 'success', $actorId, 'enrollment', (string)$enrollmentId, [
+                            'decision' => 'approve',
+                            'ai_concern_score' => $aiConcernScore,
+                            'override_reason' => $remarks !== '' ? $remarks : 'manual_acknowledgment',
+                        ]);
+                    }
+                }
                 syncStudentCohortForEnrollment($pdo, $enrollmentId);
                 if ($action === 'approve') {
                     carryForwardPhysicalDocsForEnrollment($pdo, $enrollmentId);
+                    $enrollmentSchoolYear = trim((string)($ownerRow['school_year'] ?? ''));
+                    if ($enrollmentSchoolYear !== '') {
+                        $referralResult = finalizeReferralPromoOnEnrollmentApproval(
+                            $pdo,
+                            $enrollmentId,
+                            $enrollmentSchoolYear,
+                            $formData
+                        );
+                        if (($referralResult['ok'] ?? false) !== true) {
+                            $warnings[] = 'referral_promo_finalize_failed';
+                            appLogEvent($pdo, 'referral_promo_finalize', 'registrar', 'failed', $actorId, 'enrollment', (string)$enrollmentId, [
+                                'code' => (string)($referralResult['code'] ?? 'referral_finalize_failed'),
+                                'error' => (string)($referralResult['error'] ?? ''),
+                            ]);
+                        }
+                    }
                 }
 
                 // Section auto-assignment. Runs OUTSIDE the credential

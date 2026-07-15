@@ -63,6 +63,28 @@ function ensureEnrollmentSchema(PDO $pdo): void
             $pdo->exec("ALTER TABLE enrollments ADD COLUMN {$col} {$ddl}");
         }
     }
+
+    // Older XAMPP schemas used an ENUM without `draft`. Saving a draft then
+    // stored '' (invalid enum), which hid the application from the registrar.
+    try {
+        $typeStmt = $pdo->query("SHOW COLUMNS FROM enrollments LIKE 'status'");
+        $typeRow = $typeStmt ? $typeStmt->fetch(PDO::FETCH_ASSOC) : false;
+        $colType = strtolower((string)($typeRow['Type'] ?? ''));
+        if (str_starts_with($colType, 'enum(') && !str_contains($colType, "'draft'")) {
+            $pdo->exec(
+                "ALTER TABLE enrollments
+                 MODIFY COLUMN status ENUM('draft','pending','under_review','approved','enrolled','rejected')
+                 NOT NULL DEFAULT 'pending'"
+            );
+        }
+        $pdo->exec(
+            "UPDATE enrollments
+             SET status = 'draft'
+             WHERE TRIM(COALESCE(status, '')) = ''"
+        );
+    } catch (Throwable $e) {
+        // Non-fatal — upload/save can still proceed.
+    }
 }
 
 function isLockedStatus(string $status): bool
@@ -732,6 +754,18 @@ if ($method === 'POST') {
         $formData['strand'] = normalizeStrandCode((string)$formData['strand']);
     }
 
+    // Enrollment email always comes from the authenticated account.
+    try {
+        $acctEmailStmt = $pdo->prepare('SELECT email FROM users WHERE id = :id LIMIT 1');
+        $acctEmailStmt->execute([':id' => $userId]);
+        $accountEmail = strtolower(trim((string)($acctEmailStmt->fetchColumn() ?: '')));
+        if ($accountEmail !== '') {
+            $formData['email'] = $accountEmail;
+        }
+    } catch (Throwable $e) {
+        // Keep client-provided email only if account lookup fails.
+    }
+
     $gradeLevel = (string)($formData['gradeLevel'] ?? '');
     $strand = (string)($formData['strand'] ?? '');
     $schoolYear = getEnrollmentSchoolYear($pdo);
@@ -740,6 +774,77 @@ if ($method === 'POST') {
         echo json_encode(['success' => false, 'error' => 'Enrollment is closed. No active school year is configured.']);
         exit;
     }
+
+    $gradeNum = enrollmentGradeNumber($gradeLevel);
+    if ($gradeNum !== 11 && $gradeNum !== 12) {
+        if ($action === 'submit' || trim($gradeLevel) !== '') {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Please select Grade 11 or Grade 12.']);
+            exit;
+        }
+    }
+
+    $paymentArrangement = strtolower(trim((string)($formData['paymentArrangement'] ?? '')));
+    $allowedPaymentArrangements = ['full_payment', 'installment'];
+    if ($action === 'submit') {
+        if (!in_array($paymentArrangement, $allowedPaymentArrangements, true)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Please select Full Payment or Installment.']);
+            exit;
+        }
+
+        require_once __DIR__ . '/referral_promo_helpers.php';
+        $referralValidation = validateReferralPromoFormData($formData);
+        if ($referralValidation['ok'] !== true) {
+            http_response_code(400);
+            echo json_encode([
+                'success' => false,
+                'error' => (string)($referralValidation['error'] ?? 'Invalid referral information.'),
+                'code' => (string)($referralValidation['code'] ?? 'referral_invalid'),
+            ]);
+            exit;
+        }
+        $referralData = referralPromoDataFromForm($formData);
+        if ($referralData['has_referral']) {
+            $existingIdForReferral = 0;
+            try {
+                $earlyExistingStmt = $pdo->prepare(
+                    'SELECT id FROM enrollments
+                      WHERE user_id = :user_id AND TRIM(COALESCE(school_year, \'\')) = :sy
+                      ORDER BY id DESC LIMIT 1'
+                );
+                $earlyExistingStmt->execute([':user_id' => $userId, ':sy' => $schoolYear]);
+                $existingIdForReferral = (int)($earlyExistingStmt->fetchColumn() ?: 0);
+            } catch (Throwable $e) {
+                $existingIdForReferral = 0;
+            }
+            $controlAvailability = validateReferralControlAvailable(
+                $pdo,
+                $schoolYear,
+                $referralData['control_number'],
+                $existingIdForReferral
+            );
+            if ($controlAvailability['ok'] !== true) {
+                http_response_code(409);
+                echo json_encode([
+                    'success' => false,
+                    'error' => (string)($controlAvailability['error'] ?? 'Referral card already used.'),
+                    'code' => (string)($controlAvailability['code'] ?? 'referral_control_used'),
+                ]);
+                exit;
+            }
+            $formData['referralCardControlNumber'] = $referralData['control_number'];
+            $formData['referrerContactNumber'] = $referralData['referrer_contact'];
+            $formData['referrerEmail'] = $referralData['referrer_email'];
+        }
+    } elseif ($paymentArrangement !== '' && !in_array($paymentArrangement, $allowedPaymentArrangements, true)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Invalid payment arrangement.']);
+        exit;
+    }
+    $formData['paymentArrangement'] = in_array($paymentArrangement, $allowedPaymentArrangements, true)
+        ? $paymentArrangement
+        : '';
 
     $physicalBlock = enforceGrade12PhysicalDocsComplete($pdo, $userId, $gradeLevel, $schoolYear);
     if ($physicalBlock !== null) {
@@ -1089,24 +1194,14 @@ if ($method === 'POST') {
         }
 
         if ($action === 'submit' && columnExists($pdo, 'documents', 'ai_status')) {
-            $screenStmt = $pdo->prepare(
-                "SELECT id, type FROM documents
-                 WHERE enrollment_id = :eid AND LOWER(TRIM(ai_status)) = 'screening'
-                 LIMIT 1"
-            );
-            $screenStmt->execute([':eid' => $enrollmentId]);
-            $screeningDoc = $screenStmt->fetch(PDO::FETCH_ASSOC);
-            if (is_array($screeningDoc)) {
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
-                }
-                http_response_code(400);
-                echo json_encode([
-                    'success' => false,
-                    'error' => 'Document readability checks are still in progress. Wait a moment and try again.',
-                    'screening_document_id' => (int)($screeningDoc['id'] ?? 0),
+            // Submission never waits on AI. Any unfinished checks become
+            // pending manual review so AI cannot halt business operations.
+            $deferred = deferEnrollmentScreeningDocuments($pdo, $enrollmentId, 'enrollment_submission');
+            if ($deferred > 0) {
+                appLogEvent($pdo, 'ai_screening_deferred', 'student', 'success', $userId, 'enrollment', (string)$enrollmentId, [
+                    'deferred_documents' => $deferred,
+                    'reason' => 'enrollment_submission',
                 ]);
-                exit;
             }
         }
 

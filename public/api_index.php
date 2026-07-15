@@ -105,6 +105,10 @@ switch ($route) {
     case 'registrar/reports/':
         require_once __DIR__ . '/../api/registrar_reports.php';
         break;
+    case 'registrar/referral-ledger':
+    case 'registrar/referral-ledger/':
+        require_once __DIR__ . '/../api/registrar_referral_ledger.php';
+        break;
     case 'registrar/application':
     case 'registrar/application/':
         require_once __DIR__ . '/../api/registrar_application_detail.php';

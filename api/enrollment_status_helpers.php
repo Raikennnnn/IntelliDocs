@@ -305,19 +305,33 @@ function normalizeDocumentRequirementKey(string $type): string
     return $t;
 }
 
-/** Whether the registrar or AI requires a new upload for this row. */
-function documentNeedsStudentResubmit(array $row): bool
+/** Promote in-flight screening rows to pending when AI is down (fault-tolerant enrollment). */
+function deferEnrollmentScreeningDocuments(PDO $pdo, int $enrollmentId, string $reason = 'ai_service_unreachable'): int
 {
-    $ai = strtolower(trim((string)($row['ai_status'] ?? '')));
-    if ($ai === 'rejected' || str_contains($ai, 'reject') || str_contains($ai, 'tamper')) {
-        return true;
+    if ($enrollmentId <= 0 || !enrollmentTableExists($pdo, 'documents')) {
+        return 0;
     }
-    $decision = strtolower(trim((string)($row['registrar_doc_decision'] ?? '')));
-    if ($decision === 'rejected') {
-        return true;
+    if (!enrollmentColumnExists($pdo, 'documents', 'ai_status')) {
+        return 0;
     }
 
-    return false;
+    $stmt = $pdo->prepare(
+        "UPDATE documents
+            SET ai_status = 'pending'
+          WHERE enrollment_id = :eid
+            AND LOWER(TRIM(ai_status)) = 'screening'"
+    );
+    $stmt->execute([':eid' => $enrollmentId]);
+
+    return (int)$stmt->rowCount();
+}
+
+/** Whether the registrar requires a new upload for this row (AI flags alone do not). */
+function documentNeedsStudentResubmit(array $row): bool
+{
+    $decision = strtolower(trim((string)($row['registrar_doc_decision'] ?? '')));
+    // Registrar rejection always wins — even if an earlier "reviewed" flag remains.
+    return $decision === 'rejected' || $decision === 'reject';
 }
 
 /** True when the registrar explicitly rejected — resubmit attempt limits apply. */
@@ -539,6 +553,7 @@ function studentDocumentReuploadBlocked(PDO $pdo, int $userId, int $enrollmentId
 /** Registrar portal pill: Verified, Flagged, or Under Review. */
 function documentRegistrarUiStatus(array $row): string
 {
+    // Registrar rejection always wins over AI "verified".
     if (documentNeedsStudentResubmit($row)) {
         return 'Flagged';
     }
@@ -549,16 +564,16 @@ function documentRegistrarUiStatus(array $row): string
     return 'Under Review';
 }
 
-/** Whether a document row was already cleared by AI and/or the registrar. */
+/** Whether a document row was already cleared by the registrar (not AI alone). */
 function documentRowCountsAsVerified(array $row): bool
 {
-    $ai = strtolower(trim((string)($row['ai_status'] ?? '')));
-    if (in_array($ai, ['verified', 'approved', 'pass'], true)) {
-        return true;
+    // A registrar rejection means the file is NOT cleared, even if AI said verified.
+    if (documentNeedsStudentResubmit($row)) {
+        return false;
     }
-    if ($ai !== '' && str_contains($ai, 'verify')) {
-        return true;
-    }
+
+    // AI "verified" / scores alone must NOT auto-clear a document.
+    // Only an explicit registrar review (or approve decision) counts.
     if (!empty($row['registrar_reviewed']) && (int)$row['registrar_reviewed'] === 1) {
         return true;
     }
@@ -929,10 +944,11 @@ function healGrade12CarriedDocuments(PDO $pdo, int $userId, ?array &$enrollmentR
 
         // A new upload for this school year replaces the rollover copy (unless
         // the prior year was already fully enrolled — then still sync flags).
-        $isFreshUpload = $hasCarriedForward && (int)($doc['carried_forward'] ?? 0) === 0;
-        if ($isFreshUpload && documentNeedsStudentResubmit($doc)) {
+        // Never overwrite an active registrar rejection (require re-upload).
+        if (documentNeedsStudentResubmit($doc)) {
             continue;
         }
+        $isFreshUpload = $hasCarriedForward && (int)($doc['carried_forward'] ?? 0) === 0;
         if ($isFreshUpload && !$priorEnrollmentCleared) {
             continue;
         }
