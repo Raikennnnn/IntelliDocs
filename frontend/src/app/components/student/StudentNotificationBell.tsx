@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
 import {
   Bell,
   CheckCircle,
@@ -14,7 +13,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { useStudentLocale } from "../../context/StudentLocaleContext";
 import {
   formatStudentNotificationDate,
-  studentNotificationHref,
   useStudentNotifications,
   type StudentNotification,
 } from "../../lib/studentNotifications";
@@ -36,8 +34,8 @@ function NotificationIcon({ type }: { type: StudentNotification["type"] }) {
 
 export function StudentNotificationBell() {
   const { t } = useStudentLocale();
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const {
     notifications,
     loading,
@@ -57,6 +55,7 @@ export function StudentNotificationBell() {
   };
 
   const handleNotificationClick = async (notification: StudentNotification) => {
+    setExpandedId((prev) => (prev === notification.id ? null : notification.id));
     if (!notification.read) {
       try {
         await markAsRead(notification.id);
@@ -64,8 +63,6 @@ export function StudentNotificationBell() {
         toast.error(e instanceof Error ? e.message : t("notifications.markReadError"));
       }
     }
-    setOpen(false);
-    navigate(studentNotificationHref(notification));
   };
 
   return (
@@ -126,31 +123,44 @@ export function StudentNotificationBell() {
             </div>
           ) : (
             <ul className="divide-y">
-              {notifications.map((notification) => (
-                <li key={notification.id}>
-                  <button
-                    type="button"
-                    className={`w-full cursor-pointer px-4 py-3 text-left transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B1538]/30 ${
-                      !notification.read ? "bg-red-50/40" : ""
-                    }`}
-                    onClick={() => void handleNotificationClick(notification)}
-                  >
-                    <div className="flex items-start gap-2">
-                      <NotificationIcon type={notification.type} />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-gray-900">{notification.title}</p>
-                        <p className="mt-0.5 text-xs text-gray-500">
-                          {formatStudentNotificationDate(notification.date)}
-                        </p>
-                        <p className="mt-1 line-clamp-2 text-sm text-gray-700">{notification.message}</p>
+              {notifications.map((notification) => {
+                const expanded = expandedId === notification.id;
+                return (
+                  <li key={notification.id}>
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      className={`w-full cursor-pointer px-4 py-3 text-left transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B1538]/30 ${
+                        !notification.read ? "bg-red-50/40" : ""
+                      }`}
+                      onClick={() => void handleNotificationClick(notification)}
+                    >
+                      <div className="flex items-start gap-2">
+                        <NotificationIcon type={notification.type} />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-900">{notification.title}</p>
+                          <p className="mt-0.5 text-xs text-gray-500">
+                            {formatStudentNotificationDate(notification.date)}
+                          </p>
+                          <p
+                            className={`mt-1 text-sm text-gray-700 ${
+                              expanded ? "whitespace-pre-line break-words" : "line-clamp-2"
+                            }`}
+                          >
+                            {notification.message}
+                          </p>
+                          <span className="mt-1 inline-block text-[11px] font-medium text-[#8B1538]">
+                            {expanded ? t("notifications.showLess") : t("notifications.readMore")}
+                          </span>
+                        </div>
+                        {!notification.read && (
+                          <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-[#8B1538]" aria-hidden />
+                        )}
                       </div>
-                      {!notification.read && (
-                        <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-[#8B1538]" aria-hidden />
-                      )}
-                    </div>
-                  </button>
-                </li>
-              ))}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
