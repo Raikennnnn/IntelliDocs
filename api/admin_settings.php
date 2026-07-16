@@ -123,6 +123,82 @@ try {
         exit;
     }
 
+    if ($action === 'preview_referrer_email' || $action === 'test_referrer_email') {
+        requireActorPermission($pdo, $actor, 'configureSystem', false);
+        require_once __DIR__ . '/referral_enrolled_email.php';
+        require_once __DIR__ . '/school_year_helpers.php';
+        $sampleSy = '';
+        try {
+            $sampleSy = trim((string)(getEnrollmentSchoolYear($pdo) ?? ''));
+        } catch (Throwable $e) {
+            $sampleSy = '';
+        }
+        if ($sampleSy === '') {
+            $sampleSy = '2026-2027';
+        }
+        $sample = buildReferralEnrolledEmail([
+            'referrer_name' => 'Sample Referrer',
+            'referred_student_name' => 'Juan Dela Cruz',
+            'control_number' => '00042',
+            'school_year' => $sampleSy,
+        ]);
+
+        if ($action === 'preview_referrer_email') {
+            echo json_encode([
+                'success' => true,
+                'subject' => $sample['subject'],
+                'body' => $sample['body'],
+            ]);
+            exit;
+        }
+
+        applySystemMailEnvOverrides($pdo);
+        $recipient = trim((string)($payload['recipient'] ?? ''));
+        if ($recipient === '' || !filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
+            $userStmt = $pdo->prepare('SELECT email FROM users WHERE id = :id LIMIT 1');
+            $userStmt->execute([':id' => $actorId]);
+            $recipient = trim((string)($userStmt->fetchColumn() ?: ''));
+        }
+        if ($recipient === '' || !filter_var($recipient, FILTER_VALIDATE_EMAIL)) {
+            http_response_code(422);
+            echo json_encode(['success' => false, 'error' => 'A valid recipient email is required']);
+            exit;
+        }
+
+        $readiness = checkMailerReadiness();
+        if (!($readiness['ready'] ?? false)) {
+            http_response_code(422);
+            echo json_encode([
+                'success' => false,
+                'error' => 'Mail transport is not ready',
+                'issues' => $readiness['issues'] ?? [],
+            ]);
+            exit;
+        }
+
+        $queueId = queueEmail($pdo, $recipient, $sample['subject'], $sample['body']);
+        $sent = processSingleQueuedEmail($pdo, $queueId);
+        $mailError = $sent ? null : getEmailQueueLastError($pdo, $queueId);
+        appLogEvent($pdo, 'admin_settings', 'admin', $sent ? 'success' : 'failed', $actorId, 'email', $recipient, [
+            'action' => 'test_referrer_email',
+        ]);
+        if (!$sent) {
+            http_response_code(502);
+            echo json_encode([
+                'success' => false,
+                'error' => $mailError ?: 'Failed to send sample referrer email',
+            ]);
+            exit;
+        }
+        echo json_encode([
+            'success' => true,
+            'message' => "Sample referrer enrollment email sent to {$recipient}",
+            'recipient' => $recipient,
+            'subject' => $sample['subject'],
+        ]);
+        exit;
+    }
+
     $section = strtolower(trim((string)($payload['section'] ?? 'all')));
 
     if ($section === 'email' || $section === 'all') {

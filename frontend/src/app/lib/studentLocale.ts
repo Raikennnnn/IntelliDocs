@@ -103,6 +103,8 @@ const messages = {
     'form.ph.contact': '09XXXXXXXXX',
     'form.ph.email': 'your.email@example.com',
     'form.ph.lrn': '12 digit LRN',
+    'form.hint.lrn':
+      'Use the same LRN you have had since elementary school. You can usually find it on your SF9 report card.',
     'form.ph.blockLot': 'Enter block/lot/house no.',
     'form.ph.street': 'Enter street',
     'form.ph.compound': 'Enter compound/subdivision/village',
@@ -205,7 +207,7 @@ const messages = {
     'form.doc.retryCheck': 'Retry check',
     'form.payment.promo': 'Bring a Friend Promo',
     'form.payment.promoHint':
-      'Each referral card has a one-time 4-digit control number for this school year. You receive enrollment freebies after approval; your referrer earns ₱500 only after you complete your 1st semester (void if you drop out before then).',
+      'Each referral card has a one-time 5-digit control number for this school year. You receive enrollment freebies after approval; your referrer earns ₱500 only after you complete your 1st semester (void if you drop out before then).',
     'form.payment.hasReferral': 'Do you have a Bring a Friend referral card?',
     'form.payment.yes': 'Yes',
     'form.payment.no': 'No',
@@ -220,7 +222,7 @@ const messages = {
     'form.payment.referrerType.parentCivilian': 'Parent / civilian',
     'form.payment.referrerType.visitation': 'School visitation',
     'form.payment.referrerType.otherCivilian': 'Other civilian',
-    'form.ph.referralControl': '4-digit control number (e.g. 0001)',
+    'form.ph.referralControl': '5-digit control number (e.g. 00001)',
     'form.ph.referrerName': "Enter referrer's name",
     'form.ph.referrerEmail': "Enter referrer's email address",
     'form.payment.accounting': 'Accounting',
@@ -272,7 +274,12 @@ const messages = {
     'form.val.paymentSelect': 'Please select a mode of payment (Payment & Promo step).',
     'form.val.paymentArrangementSelect': 'Please select Full Payment or Installment (Payment & Promo step).',
     'form.val.referralChoice': 'Please indicate whether you have a Bring a Friend referral card.',
-    'form.val.referralControl': 'Referral card control number must be exactly 4 digits.',
+    'form.val.referralControl': 'Referral card control number must be exactly 5 digits.',
+    'form.val.referralControlNotFound':
+      'This referral control number was not issued for this school year. Check the number on your Bring a Friend card.',
+    'form.val.referralControlUsed':
+      'This referral card has already been used. Ask your referrer for a different card or choose No if you do not have one.',
+    'form.val.referralGeneric': 'Could not verify your referral card. Please check your details and try again.',
     'form.val.referrerName': "Referrer's name is required.",
     'form.val.referrerContact': "Referrer's contact number must be 11 digits starting with 09.",
     'form.val.referrerEmail': "Referrer's email address is required and must be valid.",
@@ -422,6 +429,8 @@ const messages = {
     'form.ph.contact': '09XXXXXXXXX',
     'form.ph.email': 'iyong.email@halimbawa.com',
     'form.ph.lrn': '12-digit na LRN',
+    'form.hint.lrn':
+      'Gamitin ang parehong LRN na ginagamit mo mula elementary. Karaniwang makikita ito sa iyong SF9 report card.',
     'form.ph.blockLot': 'Ilagay ang block/lot/house no.',
     'form.ph.street': 'Ilagay ang kalye',
     'form.ph.compound': 'Ilagay ang compound/subdivision/village',
@@ -524,7 +533,7 @@ const messages = {
     'form.doc.retryCheck': 'Subukang muli',
     'form.payment.promo': 'Bring a Friend Promo',
     'form.payment.promoHint':
-      'Ang bawat referral card ay may isang beses na 4-digit control number para sa school year na ito. Makakatanggap ka ng freebies pag naaprubahan ang enrollment; ang referrer ay makakakuha ng ₱500 lamang pagkatapos mong matapos ang 1st semester (mawawalan ng bisa kung mag-drop out bago iyon).',
+      'Ang bawat referral card ay may isang beses na 5-digit control number para sa school year na ito. Makakatanggap ka ng freebies pag naaprubahan ang enrollment; ang referrer ay makakakuha ng ₱500 lamang pagkatapos mong matapos ang 1st semester (mawawalan ng bisa kung mag-drop out bago iyon).',
     'form.payment.hasReferral': 'May Bring a Friend referral card ka ba?',
     'form.payment.yes': 'Oo',
     'form.payment.no': 'Hindi',
@@ -539,7 +548,7 @@ const messages = {
     'form.payment.referrerType.parentCivilian': 'Magulang / sibilyan',
     'form.payment.referrerType.visitation': 'School visitation',
     'form.payment.referrerType.otherCivilian': 'Ibang sibilyan',
-    'form.ph.referralControl': '4-digit na control number (hal. 0001)',
+    'form.ph.referralControl': '5-digit na control number (hal. 00001)',
     'form.ph.referrerName': 'Ilagay ang pangalan ng referrer',
     'form.ph.referrerEmail': 'Ilagay ang email ng referrer',
     'form.payment.accounting': 'Accounting',
@@ -590,7 +599,12 @@ const messages = {
     'form.val.paymentSelect': 'Pumili ng paraan ng pagbabayad (hakbang na Bayad at Promo).',
     'form.val.paymentArrangementSelect': 'Pumili ng Buong Bayad o Hulugan (hakbang na Bayad at Promo).',
     'form.val.referralChoice': 'Pakitukoy kung may Bring a Friend referral card ka.',
-    'form.val.referralControl': 'Ang control number ay dapat eksaktong 4 digit.',
+    'form.val.referralControl': 'Ang control number ay dapat eksaktong 5 digit.',
+    'form.val.referralControlNotFound':
+      'Hindi inisyu ang control number na ito para sa school year na ito. Suriin ang numero sa iyong Bring a Friend card.',
+    'form.val.referralControlUsed':
+      'Nagamit na ang referral card na ito. Humingi ng ibang card sa referrer mo, o piliin ang Hindi kung wala ka nito.',
+    'form.val.referralGeneric': 'Hindi ma-verify ang referral card. Suriin ang iyong detalye at subukang muli.',
     'form.val.referrerName': 'Kailangan ang pangalan ng referrer.',
     'form.val.referrerContact': 'Ang numero ng referrer ay dapat 11 digit na nagsisimula sa 09.',
     'form.val.referrerEmail': 'Kailangan ang wastong email address ng referrer.',
@@ -652,6 +666,33 @@ export function getStudentMessage(
     (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
     template,
   );
+}
+
+const REFERRAL_PROMO_ERROR_KEYS: Record<string, StudentMessageKey> = {
+  referral_choice_required: 'form.val.referralChoice',
+  referral_control_invalid: 'form.val.referralControl',
+  referral_control_not_found: 'form.val.referralControlNotFound',
+  referral_control_used: 'form.val.referralControlUsed',
+  referrer_name_required: 'form.val.referrerName',
+  referrer_contact_invalid: 'form.val.referrerContact',
+  referrer_email_invalid: 'form.val.referrerEmail',
+  referrer_type_required: 'form.val.referrerType',
+  referral_invalid: 'form.val.referralGeneric',
+};
+
+/** Map API referral error codes to student-friendly toast text. */
+export function referralPromoErrorMessage(
+  t: (key: StudentMessageKey) => string,
+  code?: string,
+  fallback?: string,
+): string {
+  const normalized = (code || '').trim();
+  if (normalized && REFERRAL_PROMO_ERROR_KEYS[normalized]) {
+    return t(REFERRAL_PROMO_ERROR_KEYS[normalized]);
+  }
+  const message = (fallback || '').trim();
+  if (message) return message;
+  return t('form.val.referralGeneric');
 }
 
 export const STUDENT_NAV_PATH_KEYS: Record<string, StudentMessageKey> = {

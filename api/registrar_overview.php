@@ -69,36 +69,46 @@ try {
     $schoolYearScope = $ongoingYear !== '' ? $ongoingYear : $enrollmentYear;
 
     if (tableExists($pdo, 'enrollments')) {
-        // Pending application queue → enrollment intake year.
-        $appYearSql = '';
-        $appYearParams = [];
-        if ($enrollmentYear !== '') {
-            $appYearSql = " AND TRIM(COALESCE(school_year, '')) = :app_sy";
-            $appYearParams[':app_sy'] = $enrollmentYear;
-        }
+        // Application queue totals must match /api/registrar/applications:
+        // one latest in-flight row per user (pending/draft/review/rejected), no school-year filter.
+        $openAppsJoin = "
+            INNER JOIN (
+                SELECT user_id, MAX(id) AS latest_id
+                FROM enrollments
+                WHERE (
+                    TRIM(COALESCE(status, '')) = ''
+                    OR LOWER(status) IN ('pending', 'under_review', 'under review', 'review', 'rejected', 'draft')
+                )
+                GROUP BY user_id
+            ) open_apps ON open_apps.latest_id = e.id
+        ";
+
         $appSummarySql = "
             SELECT
-                SUM(CASE WHEN LOWER(status) IN ('pending', 'under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS total_applications,
-                SUM(CASE WHEN LOWER(status) = 'pending' THEN 1 ELSE 0 END) AS pending_count,
-                SUM(CASE WHEN LOWER(status) IN ('under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS review_count,
-                SUM(CASE WHEN LOWER(status) = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
-            FROM enrollments
-            WHERE 1=1 {$appYearSql}
+                COUNT(*) AS total_applications,
+                SUM(CASE
+                    WHEN TRIM(COALESCE(e.status, '')) = ''
+                      OR LOWER(e.status) IN ('pending', 'draft')
+                    THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN LOWER(e.status) IN ('under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS review_count,
+                SUM(CASE WHEN LOWER(e.status) = 'rejected' THEN 1 ELSE 0 END) AS rejected_count
+            FROM enrollments e
+            {$openAppsJoin}
         ";
-        $appStmt = $pdo->prepare($appSummarySql);
-        $appStmt->execute($appYearParams);
-        $appSummary = $appStmt->fetch() ?: [];
+        $appStmt = $pdo->query($appSummarySql);
+        $appSummary = $appStmt ? ($appStmt->fetch() ?: []) : [];
         $applicationsTotal = (int)($appSummary['total_applications'] ?? 0);
         $pending = (int)($appSummary['pending_count'] ?? 0);
         $underReview = (int)($appSummary['review_count'] ?? 0);
         $rejected = (int)($appSummary['rejected_count'] ?? 0);
 
-        // Enrolled roster → ongoing academic year (fallback: enrollment year).
+        // Enrolled roster → active enrollment year (same default as Students page).
         $enrollYearSql = '';
         $enrollYearParams = [];
-        if ($ongoingYear !== '') {
+        $enrolledCountYear = $enrollmentYear !== '' ? $enrollmentYear : $ongoingYear;
+        if ($enrolledCountYear !== '') {
             $enrollYearSql = " AND TRIM(COALESCE(school_year, '')) = :enroll_sy";
-            $enrollYearParams[':enroll_sy'] = $ongoingYear;
+            $enrollYearParams[':enroll_sy'] = $enrolledCountYear;
         }
         $enrollSummarySql = "
             SELECT
@@ -113,19 +123,18 @@ try {
         $enrolledTotal = (int)($enrollSummary['total_enrolled'] ?? 0);
         $approved = (int)($enrollSummary['approved_count'] ?? 0);
 
-        // Per-strand: pending from intake year, enrolled from ongoing year.
+        // Per-strand: open applications from the same queue as Applications; enrolled from active enrollment year.
         $strandPendingSql = "
             SELECT
-                COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified') AS strand_name,
-                SUM(CASE WHEN LOWER(status) IN ('pending', 'under_review', 'under review', 'review') THEN 1 ELSE 0 END) AS total_applications
-            FROM enrollments
-            WHERE 1=1 {$appYearSql}
-            GROUP BY COALESCE(NULLIF(TRIM(strand), ''), 'Unspecified')
+                COALESCE(NULLIF(TRIM(e.strand), ''), 'Unspecified') AS strand_name,
+                COUNT(*) AS total_applications
+            FROM enrollments e
+            {$openAppsJoin}
+            GROUP BY COALESCE(NULLIF(TRIM(e.strand), ''), 'Unspecified')
         ";
-        $strandPendingStmt = $pdo->prepare($strandPendingSql);
-        $strandPendingStmt->execute($appYearParams);
+        $strandPendingStmt = $pdo->query($strandPendingSql);
         $pendingByStrand = [];
-        foreach ($strandPendingStmt->fetchAll() ?: [] as $row) {
+        foreach (($strandPendingStmt ? $strandPendingStmt->fetchAll() : []) ?: [] as $row) {
             $pendingByStrand[(string)$row['strand_name']] = (int)$row['total_applications'];
         }
 

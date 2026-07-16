@@ -178,8 +178,9 @@ export function RegistrarDashboard() {
       <div>
         <h3 className="text-xl font-semibold text-gray-900 mb-4">Strand Enrollment Overview</h3>
         <p className="text-xs text-gray-500 mb-3">
-          The {overallQuota.toLocaleString()}-seat capacity is school-wide; per-strand cards show this
-          strand's slice of the total enrolled students.
+          Open applications match the Applications queue (pending, draft, under review, rejected).
+          Enrolled counts use the active enrollment year. The {overallQuota.toLocaleString()}-seat
+          capacity is school-wide; per-strand cards show each strand&apos;s slice of enrolled students.
         </p>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {strands.map((strand) => {
@@ -212,7 +213,7 @@ export function RegistrarDashboard() {
                       shown once at the top of the dashboard. */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="bg-gray-50 p-3 rounded-lg">
-                      <p className="text-xs text-gray-600 mb-1">Pending applications</p>
+                      <p className="text-xs text-gray-600 mb-1">Open applications</p>
                       <p className="text-2xl font-bold text-gray-900">{strand.totalApplications}</p>
                     </div>
                     <div className="bg-green-50 p-3 rounded-lg">

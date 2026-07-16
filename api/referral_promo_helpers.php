@@ -7,8 +7,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/enrollment_status_helpers.php';
 
-const REFERRAL_CONTROL_DIGIT_LENGTH = 4;
-const REFERRAL_CONTROL_MAX_VALUE = 9999;
+const REFERRAL_CONTROL_DIGIT_LENGTH = 5;
+const REFERRAL_CONTROL_MAX_VALUE = 99999;
 
 /** @return list<string> */
 function referralPromoReferrerTypes(): array
@@ -61,7 +61,7 @@ function ensureReferralPromoSchema(PDO $pdo): void
             CREATE TABLE IF NOT EXISTS referral_promo_claims (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 school_year VARCHAR(30) NOT NULL,
-                control_number CHAR(4) NOT NULL,
+                control_number CHAR(5) NOT NULL,
                 enrollment_id INT NULL,
                 referrer_name VARCHAR(120) NOT NULL,
                 referrer_contact VARCHAR(20) NOT NULL,
@@ -72,6 +72,7 @@ function ensureReferralPromoSchema(PDO $pdo): void
                 first_semester_completed_at DATETIME NULL,
                 void_reason VARCHAR(255) NULL,
                 claimed_at DATETIME NULL,
+                referrer_notified_at DATETIME NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY uniq_referral_sy_control (school_year, control_number),
@@ -95,11 +96,20 @@ function ensureReferralPromoSchema(PDO $pdo): void
             );
         }
 
-        migrateReferralControlNumberToFourDigits($pdo);
+        $colStmt->execute([':table' => 'referral_promo_claims', ':column' => 'referrer_notified_at']);
+        if (!$colStmt->fetchColumn()) {
+            $pdo->exec(
+                "ALTER TABLE referral_promo_claims
+                    ADD COLUMN referrer_notified_at DATETIME NULL
+                    AFTER claimed_at"
+            );
+        }
+
+        migrateReferralControlNumberWidth($pdo);
     }
 }
 
-function migrateReferralControlNumberToFourDigits(PDO $pdo): void
+function migrateReferralControlNumberWidth(PDO $pdo): void
 {
     $lenStmt = $pdo->prepare(
         'SELECT CHARACTER_MAXIMUM_LENGTH
@@ -111,8 +121,16 @@ function migrateReferralControlNumberToFourDigits(PDO $pdo): void
     );
     $lenStmt->execute([':table' => 'referral_promo_claims', ':column' => 'control_number']);
     $currentLen = (int)($lenStmt->fetchColumn() ?: REFERRAL_CONTROL_DIGIT_LENGTH);
-    if ($currentLen <= REFERRAL_CONTROL_DIGIT_LENGTH) {
+    if ($currentLen === REFERRAL_CONTROL_DIGIT_LENGTH) {
         return;
+    }
+
+    // Widen first when growing (e.g. CHAR(4) -> CHAR(5)) so padded values fit.
+    if ($currentLen < REFERRAL_CONTROL_DIGIT_LENGTH) {
+        $pdo->exec(
+            'ALTER TABLE referral_promo_claims
+                MODIFY control_number CHAR(' . REFERRAL_CONTROL_DIGIT_LENGTH . ') NOT NULL'
+        );
     }
 
     $rows = $pdo->query(
@@ -131,7 +149,8 @@ function migrateReferralControlNumberToFourDigits(PDO $pdo): void
         $key = (string)($row['school_year'] ?? '') . '|' . $normalized;
         if (isset($seen[$key])) {
             throw new RuntimeException(
-                'Cannot migrate referral control numbers to 4 digits: duplicate '
+                'Cannot migrate referral control numbers to '
+                . REFERRAL_CONTROL_DIGIT_LENGTH . ' digits: duplicate '
                 . $normalized . ' for school year ' . (string)($row['school_year'] ?? '')
             );
         }
@@ -143,10 +162,12 @@ function migrateReferralControlNumberToFourDigits(PDO $pdo): void
         ]);
     }
 
-    $pdo->exec(
-        'ALTER TABLE referral_promo_claims
-            MODIFY control_number CHAR(' . REFERRAL_CONTROL_DIGIT_LENGTH . ') NOT NULL'
-    );
+    if ($currentLen > REFERRAL_CONTROL_DIGIT_LENGTH) {
+        $pdo->exec(
+            'ALTER TABLE referral_promo_claims
+                MODIFY control_number CHAR(' . REFERRAL_CONTROL_DIGIT_LENGTH . ') NOT NULL'
+        );
+    }
 }
 
 function normalizeReferrerEmail(string $raw): string
@@ -161,7 +182,7 @@ function normalizeReferralControlNumber(string $raw): string
         return '';
     }
 
-    // Accept legacy 6-digit cards by numeric value (e.g. 000001 -> 0001).
+    // Accept legacy 4/6-digit cards by numeric value (e.g. 0001 / 000001 -> 00001).
     $num = (int)$digits;
     if ($num < 1 || $num > REFERRAL_CONTROL_MAX_VALUE) {
         return '';
@@ -209,8 +230,8 @@ function validateReferralPromoFormData(array $formData): array
         return ['ok' => true];
     }
 
-    if ($data['control_number'] === '' || !preg_match('/^\d{4}$/', $data['control_number'])) {
-        return ['ok' => false, 'error' => 'Referral card control number must be a 4-digit number.', 'code' => 'referral_control_invalid'];
+    if ($data['control_number'] === '' || !preg_match('/^\d{5}$/', $data['control_number'])) {
+        return ['ok' => false, 'error' => 'Referral card control number must be a 5-digit number.', 'code' => 'referral_control_invalid'];
     }
     if ($data['referrer_name'] === '') {
         return ['ok' => false, 'error' => "Referrer's name is required.", 'code' => 'referrer_name_required'];
@@ -253,7 +274,11 @@ function validateReferralControlAvailable(
     $stmt->execute([':sy' => $sy, ':control' => $control]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || !is_array($row)) {
-        return ['ok' => true];
+        return [
+            'ok' => false,
+            'error' => 'This referral control number was not issued for the current school year. Check the number printed on your card.',
+            'code' => 'referral_control_not_found',
+        ];
     }
 
     $claimedEnrollmentId = (int)($row['enrollment_id'] ?? 0);
@@ -351,28 +376,37 @@ function finalizeReferralPromoOnEnrollmentApproval(
             ':id' => $existingId,
         ]);
 
-        return ['ok' => true, 'claim_id' => $existingId];
+        $claimId = $existingId;
+    } else {
+        $ins = $pdo->prepare(
+            'INSERT INTO referral_promo_claims (
+                school_year, control_number, enrollment_id, referrer_name, referrer_contact, referrer_email, referrer_type,
+                referred_freebie_status, referrer_incentive_status, claimed_at
+            ) VALUES (
+                :sy, :control, :eid, :name, :contact, :email, :type, "eligible", "pending", NOW()
+            )'
+        );
+        $ins->execute([
+            ':sy' => $sy,
+            ':control' => $control,
+            ':eid' => $enrollmentId,
+            ':name' => $data['referrer_name'],
+            ':contact' => $data['referrer_contact'],
+            ':email' => $data['referrer_email'],
+            ':type' => $data['referrer_type'],
+        ]);
+        $claimId = (int)$pdo->lastInsertId();
     }
 
-    $ins = $pdo->prepare(
-        'INSERT INTO referral_promo_claims (
-            school_year, control_number, enrollment_id, referrer_name, referrer_contact, referrer_email, referrer_type,
-            referred_freebie_status, referrer_incentive_status, claimed_at
-        ) VALUES (
-            :sy, :control, :eid, :name, :contact, :email, :type, "eligible", "pending", NOW()
-        )'
-    );
-    $ins->execute([
-        ':sy' => $sy,
-        ':control' => $control,
-        ':eid' => $enrollmentId,
-        ':name' => $data['referrer_name'],
-        ':contact' => $data['referrer_contact'],
-        ':email' => $data['referrer_email'],
-        ':type' => $data['referrer_type'],
-    ]);
+    // Best-effort: never fail enrollment approval if mail fails.
+    try {
+        require_once __DIR__ . '/referral_enrolled_email.php';
+        notifyReferrerAfterReferralClaim($pdo, $claimId, $formData, false);
+    } catch (Throwable $e) {
+        // Ignore mail errors here; approve path logs separately if needed.
+    }
 
-    return ['ok' => true, 'claim_id' => (int)$pdo->lastInsertId()];
+    return ['ok' => true, 'claim_id' => $claimId];
 }
 
 /**
@@ -401,6 +435,7 @@ function referralPromoClaimToApiPayload(?array $row): array
         'referrerIncentiveStatus' => (string)($row['referrer_incentive_status'] ?? 'pending'),
         'referrerIncentiveStatusLabel' => referralPromoIncentiveStatusLabel((string)($row['referrer_incentive_status'] ?? 'pending')),
         'claimedAt' => (string)($row['claimed_at'] ?? ''),
+        'referrerNotifiedAt' => (string)($row['referrer_notified_at'] ?? ''),
         'firstSemesterCompletedAt' => (string)($row['first_semester_completed_at'] ?? ''),
         'voidReason' => (string)($row['void_reason'] ?? ''),
         'isPreissued' => referralPromoClaimIsPreissued($row),

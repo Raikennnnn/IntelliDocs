@@ -17,11 +17,7 @@ if (!isset($pdo) || !($pdo instanceof PDO)) {
     exit;
 }
 
-require_once __DIR__ . '/user_role.php';
-require_once __DIR__ . '/ai_persist.php';
-require_once __DIR__ . '/ai_verify_refine.php';
-require_once __DIR__ . '/enrollment_status_helpers.php';
-require_once __DIR__ . '/ai_http.php';
+require_once __DIR__ . '/ai_verify_runner.php';
 
 header('Content-Type: application/json');
 
@@ -57,265 +53,61 @@ if ($docId <= 0) {
     exit;
 }
 
-// Load file_path + enrollment context for expected-field cross-checks.
-$stmt = $pdo->prepare('
-    SELECT d.id,
-           d.file_path,
-           d.enrollment_id,
-           d.type AS document_type,
-           d.ai_status,
-           d.ai_score,
-           d.ai_security_json,
-           COALESCE(NULLIF(d.original_name, \'\'), NULLIF(d.filename, \'\'), CONCAT(\'document_\', d.id)) AS download_name,
-           COALESCE(NULLIF(d.mime_type, \'\'), \'\') AS mime_type,
-           e.enrollment_steps,
-           e.grade_level,
-           e.strand,
-           u.id AS user_id,
-           u.full_name,
-           u.first_name,
-           u.middle_name,
-           u.last_name,
-           u.extension_name
-    FROM documents d
-    LEFT JOIN enrollments e ON e.id = d.enrollment_id
-    LEFT JOIN users u ON u.id = e.user_id
-    WHERE d.id = :id
-    LIMIT 1
-');
-$stmt->execute([':id' => $docId]);
-$row = $stmt->fetch(PDO::FETCH_ASSOC);
-if (!$row) {
-    http_response_code(404);
-    echo json_encode(['success' => false, 'error' => 'Document not found']);
-    exit;
-}
-
-$formData = [];
-$steps = json_decode((string)($row['enrollment_steps'] ?? '{}'), true);
-if (is_array($steps) && is_array($steps['form_data'] ?? null)) {
-    $formData = $steps['form_data'];
-}
-if ($docType === '' || $docType === 'other') {
-    $docType = mapDocumentTypeForAi((string)($row['document_type'] ?? ''));
-}
-
-$userContext = [
-    'full_name' => (string)($row['full_name'] ?? ''),
-    'first_name' => (string)($row['first_name'] ?? ''),
-    'middle_name' => (string)($row['middle_name'] ?? ''),
-    'last_name' => (string)($row['last_name'] ?? ''),
-    'extension_name' => (string)($row['extension_name'] ?? ''),
-];
-$enrollmentContext = [
-    'grade_level' => (string)($row['grade_level'] ?? ''),
-    'strand' => (string)($row['strand'] ?? ''),
-];
-
-$autoExpected = buildAiExpectedVerifyFieldsForDocument($formData, $docType, $userContext, $enrollmentContext);
-
-// Always include PSA identity fields when present — content detection may resolve
-// a birth certificate even if the upload slot label is SF10 / Form 137.
-$identityExpected = buildAiExpectedVerifyFieldsForDocument(
-    $formData,
-    'birth_certificate',
-    $userContext,
-    $enrollmentContext
-);
-foreach (['expected_name', 'expected_sex', 'expected_dob', 'expected_birth_place'] as $identityKey) {
-    $identityVal = trim((string)($identityExpected[$identityKey] ?? ''));
-    if ($identityVal !== '') {
-        $autoExpected[$identityKey] = $identityVal;
-    }
-}
-
-$pickExpected = static function (string $getKey, string $autoKey) use ($autoExpected): string {
-    $fromGet = trim((string)($_GET[$getKey] ?? ''));
-    if ($fromGet !== '') {
-        return $fromGet;
-    }
-    return trim((string)($autoExpected[$autoKey] ?? ''));
-};
-
-$expectedName = $pickExpected('expected_name', 'expected_name');
-$expectedLrn = preg_replace('/\D+/', '', $pickExpected('expected_lrn', 'expected_lrn'));
-$expectedSex = $pickExpected('expected_sex', 'expected_sex');
-$expectedSchoolYear = $pickExpected('expected_school_year', 'expected_school_year');
-$expectedPrevSchool = $pickExpected('expected_prev_school', 'expected_prev_school');
-$expectedDob = $pickExpected('expected_dob', 'expected_dob');
-$expectedBirthPlace = $pickExpected('expected_birth_place', 'expected_birth_place');
-$expectedGradeLevel = $pickExpected('expected_grade_level', 'expected_grade_level');
-$expectedStrand = $pickExpected('expected_strand', 'expected_strand');
-
-$relative = trim(str_replace('\\', '/', (string)($row['file_path'] ?? '')));
-if ($relative === '' || strpos($relative, '..') !== false) {
-    http_response_code(404);
-    echo json_encode(['success' => false, 'error' => 'File path not recorded for this document']);
-    exit;
-}
-
-$projectRoot = realpath(dirname(__DIR__));
-if ($projectRoot === false) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'error' => 'Server path error']);
-    exit;
-}
-
-$fullPath = realpath($projectRoot . '/' . $relative);
-$allowedBase = realpath($projectRoot . '/uploads/documents');
-$normFull = $fullPath !== false ? strtolower(str_replace('\\', '/', $fullPath)) : '';
-$normAllowed = $allowedBase !== false ? strtolower(str_replace('\\', '/', $allowedBase)) : '';
-$underUploads = $normFull !== '' && $normAllowed !== '' && strpos($normFull, rtrim($normAllowed, '/') . '/') === 0;
-if (!$underUploads && $normFull !== '') {
-    $prefix = strtolower(str_replace('\\', '/', $projectRoot . '/uploads/documents/'));
-    $underUploads = strpos($normFull, $prefix) === 0;
-}
-
-if ($fullPath === false || !$underUploads || !is_file($fullPath)) {
-    http_response_code(404);
-    echo json_encode(['success' => false, 'error' => 'File not found on server']);
-    exit;
-}
-
-$fileFingerprint = documentAiFileFingerprint($fullPath);
 $rerunRaw = strtolower(trim((string)($_GET['rerun'] ?? $_GET['force'] ?? '')));
 $forceRerun = in_array($rerunRaw, ['1', 'true', 'yes'], true);
-$aiStatusRaw = (string)($row['ai_status'] ?? '');
-$storedEnvelope = parseStoredAiVerifyEnvelope(
-    isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null
-);
-$scorePct = null;
-if (isset($row['ai_score']) && $row['ai_score'] !== '' && is_numeric($row['ai_score'])) {
-    $scorePct = (float)$row['ai_score'];
-}
 
-$expectedContext = aiRefineExpectedContextFromAuto([
-    'expected_name' => $expectedName,
-    'expected_lrn' => $expectedLrn,
-    'expected_sex' => $expectedSex,
-    'expected_school_year' => $expectedSchoolYear,
-    'expected_prev_school' => $expectedPrevSchool,
-    'expected_dob' => $expectedDob,
-    'expected_birth_place' => $expectedBirthPlace,
+$pickGet = static function (string $key): string {
+    return trim((string)($_GET[$key] ?? ''));
+};
+
+$result = runDocumentAiVerification($pdo, $docId, [
+    'force_rerun' => $forceRerun,
+    'doc_type' => $docType,
+    'expected' => [
+        'expected_name' => $pickGet('expected_name'),
+        'expected_lrn' => preg_replace('/\D+/', '', $pickGet('expected_lrn')) ?? '',
+        'expected_sex' => $pickGet('expected_sex'),
+        'expected_school_year' => $pickGet('expected_school_year'),
+        'expected_prev_school' => $pickGet('expected_prev_school'),
+        'expected_dob' => $pickGet('expected_dob'),
+        'expected_birth_place' => $pickGet('expected_birth_place'),
+        'expected_grade_level' => $pickGet('expected_grade_level'),
+        'expected_strand' => $pickGet('expected_strand'),
+    ],
 ]);
 
-if (documentHasPersistedAiArtifacts($aiStatusRaw, isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null, $row['ai_score'] ?? null)) {
-    if (!$forceRerun && !aiPersistedEnvelopeIsStale($storedEnvelope)) {
-        $cached = reconstructAiVerifyFromLockedRow($aiStatusRaw, $scorePct, $storedEnvelope);
-        $cached = refineAiVerifyResult($cached, $docType, $fullPath, $expectedContext);
-        $cached['v'] = AI_VERIFY_PAYLOAD_VERSION;
-        echo json_encode(['success' => true, 'result' => $cached, 'cached' => true]);
-        exit;
+if (($result['ok'] ?? false) !== true) {
+    $status = (int)($result['http_status'] ?? 502);
+    if ($status < 400) {
+        $status = 502;
     }
-}
-
-$aiStatusNorm = strtolower(trim($aiStatusRaw));
-if ($aiStatusNorm === 'processing' && $forceRerun) {
-    documentResetAiPending($pdo, $docId);
-    $aiStatusRaw = 'pending';
-    $aiStatusNorm = 'pending';
-}
-
-if ($aiStatusNorm === 'processing' && !$forceRerun) {
-    if (documentHasPersistedAiArtifacts(
-        $aiStatusRaw,
-        isset($row['ai_security_json']) ? (string)$row['ai_security_json'] : null,
-        $row['ai_score'] ?? null
-    )) {
-        echo json_encode([
-            'success' => true,
-            'processing' => true,
-            'cached' => true,
-            'result' => [
-                'status' => 'verified',
-                'confidence' => 0,
-                '_processing' => true,
-            ],
-        ]);
-        exit;
-    }
-    documentResetAiPending($pdo, $docId);
-    $aiStatusRaw = 'pending';
-    $aiStatusNorm = 'pending';
-}
-
-if (!function_exists('curl_init')) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'error' => 'PHP cURL extension is required for AI verification']);
-    exit;
-}
-
-$downloadName = (string)($row['download_name'] ?? ('document_' . $docId));
-$mimeType = trim((string)($row['mime_type'] ?? ''));
-if ($mimeType === '') {
-    $ext = strtolower(pathinfo($fullPath, PATHINFO_EXTENSION));
-    $mimeType = match ($ext) {
-        'png' => 'image/png',
-        'jpg', 'jpeg' => 'image/jpeg',
-        'gif' => 'image/gif',
-        'webp' => 'image/webp',
-        default => 'application/octet-stream',
-    };
-}
-
-$postFields = [
-    'doc_type' => $docType !== '' ? $docType : 'other',
-];
-
-// Optional: cross-check student-provided fields against OCR.
-if ($expectedName !== '') $postFields['expected_name'] = $expectedName;
-if ($expectedLrn !== '') $postFields['expected_lrn'] = $expectedLrn;
-if ($expectedSex !== '') $postFields['expected_sex'] = $expectedSex;
-if ($expectedSchoolYear !== '') $postFields['expected_school_year'] = $expectedSchoolYear;
-if ($expectedPrevSchool !== '') $postFields['expected_prev_school'] = $expectedPrevSchool;
-if ($expectedDob !== '') $postFields['expected_dob'] = $expectedDob;
-if ($expectedBirthPlace !== '') $postFields['expected_birth_place'] = $expectedBirthPlace;
-$skipGradeStrandForMoral = in_array(strtolower($docType), ['good_moral', 'goodmoral'], true);
-if ($expectedGradeLevel !== '' && !$skipGradeStrandForMoral) {
-    $postFields['expected_grade_level'] = $expectedGradeLevel;
-}
-if ($expectedStrand !== '' && !$skipGradeStrandForMoral) {
-    $postFields['expected_strand'] = $expectedStrand;
-}
-
-@set_time_limit(620);
-@ini_set('max_execution_time', '620');
-
-if ($forceRerun) {
-    documentPrepareForAiRerun($pdo, $docId);
-} else {
-    documentMarkAiProcessing($pdo, $docId);
-}
-
-$aiRes = aiPostMultipart('/verify', $fullPath, $downloadName, $mimeType, $postFields, 580);
-
-if (!$aiRes['ok'] || !is_array($aiRes['body'])) {
-    documentResetAiPending($pdo, $docId);
-    $decoded = is_array($aiRes['body']) ? $aiRes['body'] : null;
-    $error = $aiRes['error'] ?? 'Failed to reach AI service';
-    if ($decoded && isset($decoded['error']) && is_string($decoded['error']) && $decoded['error'] !== '') {
-        $error = $decoded['error'];
-    }
-    http_response_code(502);
+    http_response_code($status);
     echo json_encode([
         'success' => false,
-        'error' => $error,
-        'detail' => $decoded ?? ($aiRes['base_url'] ?? null),
-        'ai_base_url' => $aiRes['base_url'] ?? aiServiceBaseUrl(),
+        'error' => (string)($result['error'] ?? 'Document check could not be completed.'),
+        'detail' => $result['detail'] ?? null,
+        'ai_base_url' => $result['ai_base_url'] ?? null,
     ]);
     exit;
 }
 
-$decoded = $aiRes['body'];
-$decoded = refineAiVerifyResult($decoded, $docType, $fullPath, $expectedContext);
-$decoded['v'] = AI_VERIFY_PAYLOAD_VERSION;
-
-try {
-    persistDocumentAiResult($pdo, $docId, $decoded, $fileFingerprint !== '' ? $fileFingerprint : null);
-} catch (Throwable $e) {
-    // Return AI result even if DB persist fails.
+if (!empty($result['processing'])) {
+    echo json_encode([
+        'success' => true,
+        'processing' => true,
+        'cached' => !empty($result['cached']),
+        'result' => $result['result'] ?? [
+            'status' => 'verified',
+            'confidence' => 0,
+            '_processing' => true,
+        ],
+    ]);
+    exit;
 }
 
-echo json_encode(['success' => true, 'result' => $decoded]);
+echo json_encode([
+    'success' => true,
+    'result' => $result['result'] ?? [],
+    'cached' => !empty($result['cached']),
+]);
 exit;
-

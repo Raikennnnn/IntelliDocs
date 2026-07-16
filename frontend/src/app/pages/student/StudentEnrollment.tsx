@@ -83,6 +83,7 @@ import {
   translateEmergencyContact,
   translateEnrollmentDocumentName,
   translateEnrollmentStatus,
+  referralPromoErrorMessage,
 } from "../../lib/studentLocale";
 import {
   displayEnrollmentText,
@@ -1100,6 +1101,7 @@ export function StudentEnrollment() {
       const json = JSON.parse(text) as {
         success?: boolean;
         error?: string;
+        code?: string;
         message?: string;
         enrollment_id?: number;
         status?: string;
@@ -1117,8 +1119,23 @@ export function StudentEnrollment() {
         if (json.grade12_blocked_physical_docs) {
           setGrade12BlockedPhysicalDocs(true);
         }
-        toast.error(json.error || 'Could not save enrollment. Please try again.', {
-          duration: json.grade12_blocked_physical_docs ? 10000 : 4000,
+        const referralCodes = new Set([
+          'referral_choice_required',
+          'referral_control_invalid',
+          'referral_control_not_found',
+          'referral_control_used',
+          'referrer_name_required',
+          'referrer_contact_invalid',
+          'referrer_email_invalid',
+          'referrer_type_required',
+          'referral_invalid',
+        ]);
+        const toastMessage =
+          json.code && referralCodes.has(json.code)
+            ? referralPromoErrorMessage(t, json.code, json.error)
+            : json.error || 'Could not save enrollment. Please try again.';
+        toast.error(toastMessage, {
+          duration: json.grade12_blocked_physical_docs || referralCodes.has(json.code || '') ? 10000 : 5000,
         });
         if (res.status === 409) {
           setEnrollmentStatusRaw('pending');
@@ -2053,7 +2070,7 @@ export function StudentEnrollment() {
     }
     if (formData.hasReferralCode) {
       const controlDigits = formData.referralCardControlNumber.replace(/\D/g, '');
-      if (controlDigits.length !== 4) {
+      if (controlDigits.length !== 5) {
         toast.error(t('form.val.referralControl'));
         return false;
       }
@@ -2784,6 +2801,7 @@ export function StudentEnrollment() {
                       disabled={isPermanentlyLockedField}
                       className={isPermanentlyLockedField ? lockedPrefillInputClass.trim() : undefined}
                     />
+                    <p className="text-xs text-gray-500">{t('form.hint.lrn')}</p>
                   </div>
                 </div>
               </CardContent>
@@ -3654,7 +3672,7 @@ export function StudentEnrollment() {
                         id="referralCardControlNumber"
                         type="text"
                         inputMode="numeric"
-                        maxLength={4}
+                        maxLength={5}
                         value={formData.referralCardControlNumber}
                         onChange={(e) => handleInputChange('referralCardControlNumber', e.target.value)}
                         placeholder={t('form.ph.referralControl')}

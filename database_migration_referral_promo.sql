@@ -6,7 +6,7 @@ USE intellidocs_db;
 CREATE TABLE IF NOT EXISTS referral_promo_claims (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   school_year VARCHAR(30) NOT NULL,
-  control_number CHAR(4) NOT NULL,
+  control_number CHAR(5) NOT NULL,
   enrollment_id INT NULL,
   referrer_name VARCHAR(120) NOT NULL,
   referrer_contact VARCHAR(20) NOT NULL,
@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS referral_promo_claims (
   first_semester_completed_at DATETIME NULL,
   void_reason VARCHAR(255) NULL,
   claimed_at DATETIME NULL,
+  referrer_notified_at DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_referral_sy_control (school_year, control_number),
@@ -24,3 +25,6 @@ CREATE TABLE IF NOT EXISTS referral_promo_claims (
   INDEX idx_referral_incentive (referrer_incentive_status),
   INDEX idx_referral_freebie (referred_freebie_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Existing installs:
+-- ALTER TABLE referral_promo_claims ADD COLUMN referrer_notified_at DATETIME NULL AFTER claimed_at;

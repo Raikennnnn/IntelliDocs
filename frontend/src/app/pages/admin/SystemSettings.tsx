@@ -27,11 +27,13 @@ import {
   AlertCircle,
   CheckCircle,
   Loader2,
+  Eye,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { apiFetch } from "../../lib/api";
 import { useRolePermissions } from "../../context/RolePermissionsContext";
+import { Switch } from "../../components/ui/switch";
 
 type EmailConfig = {
   mailProvider: "brevo" | "phpmail";
@@ -41,6 +43,7 @@ type EmailConfig = {
   fromName: string;
   emailPassword: string;
   otpExpiry: string;
+  emailReferrerOnEnroll: boolean;
 };
 
 type RolePermissions = {
@@ -162,6 +165,10 @@ export function SystemSettings() {
   const [savingEmail, setSavingEmail] = useState(false);
   const [savingPermissions, setSavingPermissions] = useState(false);
   const [testingEmail, setTestingEmail] = useState(false);
+  const [testingReferrerEmail, setTestingReferrerEmail] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState<{ subject: string; body: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mailHealth, setMailHealth] = useState<MailHealth | null>(null);
 
@@ -173,6 +180,7 @@ export function SystemSettings() {
     fromName: "Nuestra Señora De Guia Academy",
     emailPassword: "",
     otpExpiry: "10",
+    emailReferrerOnEnroll: true,
   });
 
   const [permissions, setPermissions] = useState<RolePermissions>(defaultPermissions);
@@ -204,6 +212,7 @@ export function SystemSettings() {
         fromName: String(email.fromName ?? "Nuestra Señora De Guia Academy"),
         emailPassword: String(email.emailPassword ?? ""),
         otpExpiry: String(email.otpExpiry ?? "10"),
+        emailReferrerOnEnroll: email.emailReferrerOnEnroll !== false && email.emailReferrerOnEnroll !== 0 && email.emailReferrerOnEnroll !== "0",
       });
 
       const perms = json.permissions as RolePermissions | undefined;
@@ -318,6 +327,57 @@ export function SystemSettings() {
       toast.error(e instanceof Error ? e.message : "Test email failed");
     } finally {
       setTestingEmail(false);
+    }
+  };
+
+  const handlePreviewReferrerEmail = async () => {
+    setPreviewLoading(true);
+    try {
+      const res = await apiFetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "preview_referrer_email" }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Could not load email preview");
+      }
+      setPreviewHtml({
+        subject: String(json.subject ?? ""),
+        body: String(json.body ?? ""),
+      });
+      setPreviewOpen(true);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Preview failed");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleTestReferrerEmail = async () => {
+    setTestingReferrerEmail(true);
+    try {
+      const res = await apiFetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "test_referrer_email",
+          recipient: emailConfig.emailAddress || undefined,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        const issues = Array.isArray(json.issues) ? json.issues.join("; ") : "";
+        throw new Error(
+          ((json.error as string) || "Sample referrer email failed") +
+            (issues ? `: ${issues}` : ""),
+        );
+      }
+      toast.success(json.message || "Sample referrer email sent");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Sample referrer email failed");
+    } finally {
+      setTestingReferrerEmail(false);
     }
   };
 
@@ -497,6 +557,56 @@ export function SystemSettings() {
             </div>
           </div>
 
+          <div className="rounded-md border border-gray-200 p-4 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900">Referrer email on enrollment</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  When a referred student is enrolled, email the Bring a Friend referrer that
+                  their card was claimed and reward tracking is open.
+                </p>
+              </div>
+              <Switch
+                checked={emailConfig.emailReferrerOnEnroll}
+                onCheckedChange={(checked) =>
+                  setEmailConfig({ ...emailConfig, emailReferrerOnEnroll: checked })
+                }
+                disabled={loading}
+                aria-label="Email referrer when student is enrolled"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handlePreviewReferrerEmail()}
+                disabled={loading || previewLoading}
+              >
+                {previewLoading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Eye className="w-4 h-4 mr-2" />
+                )}
+                Preview email
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleTestReferrerEmail()}
+                disabled={loading || testingReferrerEmail}
+              >
+                {testingReferrerEmail ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Mail className="w-4 h-4 mr-2" />
+                )}
+                Send sample to me
+              </Button>
+            </div>
+          </div>
+
           <div className="flex flex-wrap gap-3">
             <Button
               onClick={() => void handleSaveEmailConfig()}
@@ -525,6 +635,31 @@ export function SystemSettings() {
           </div>
         </CardContent>
       </Card>
+
+      <AlertDialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <AlertDialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Referrer enrollment email preview</AlertDialogTitle>
+            <AlertDialogDescription>
+              {previewHtml?.subject || "Sample subject"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="overflow-auto border rounded-md bg-white max-h-[55vh]">
+            {previewHtml?.body ? (
+              <iframe
+                title="Referrer email preview"
+                className="w-full min-h-[420px] border-0"
+                srcDoc={previewHtml.body}
+              />
+            ) : (
+              <p className="p-4 text-sm text-gray-500">No preview loaded.</p>
+            )}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Card>
         <CardHeader>

@@ -249,7 +249,7 @@ function documentMarkAiProcessing(PDO $pdo, int $docId): void
     $stmt = $pdo->prepare(
         "UPDATE documents SET ai_status = 'processing'
           WHERE id = :id
-            AND LOWER(TRIM(COALESCE(ai_status, ''))) IN ('', 'pending')"
+            AND LOWER(TRIM(COALESCE(ai_status, ''))) IN ('', 'pending', 'queued')"
     );
     $stmt->execute([':id' => $docId]);
 }

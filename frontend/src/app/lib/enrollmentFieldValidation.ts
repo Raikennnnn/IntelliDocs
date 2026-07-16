@@ -116,7 +116,7 @@ export function sanitizeEnrollmentFieldValue(field: string, value: string): stri
     return sanitizeDigitsOnly(value, 12);
   }
   if (field === "referralCardControlNumber") {
-    return sanitizeDigitsOnly(value, 4);
+    return sanitizeDigitsOnly(value, 5);
   }
   if (field === "referrerEmail") {
     return sanitizeEmailInput(value);

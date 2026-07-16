@@ -143,10 +143,56 @@ if ($method === 'POST') {
             'mark_first_semester_complete',
             'mark_incentive_paid',
             'void',
+            'resend_referrer_enrolled_email',
         ];
         if (!in_array($action, $allowedActions, true)) {
             http_response_code(400);
             echo json_encode(['success' => false, 'error' => 'Invalid action.']);
+            exit;
+        }
+
+        if ($action === 'resend_referrer_enrolled_email') {
+            require_once __DIR__ . '/referral_enrolled_email.php';
+            ensureReferralPromoSchema($pdo);
+            $claimStmt = $pdo->prepare('SELECT * FROM referral_promo_claims WHERE id = :id LIMIT 1');
+            $claimStmt->execute([':id' => $claimId]);
+            $claimRow = $claimStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$claimRow) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'error' => 'Referral claim not found.']);
+                exit;
+            }
+            if (empty($claimRow['enrollment_id'])) {
+                http_response_code(409);
+                echo json_encode(['success' => false, 'error' => 'Claim is not linked to an enrolled student yet.']);
+                exit;
+            }
+            $result = notifyReferrerAfterReferralClaim($pdo, $claimId, [], true);
+            if (($result['ok'] ?? false) !== true || empty($result['sent'])) {
+                $skip = (string)($result['skipped'] ?? '');
+                $err = match ($skip) {
+                    'no_email' => 'Referrer has no valid email address.',
+                    default => (string)($result['error'] ?? 'Failed to send referrer email.'),
+                };
+                http_response_code(409);
+                echo json_encode(['success' => false, 'error' => $err, 'code' => $skip !== '' ? $skip : 'send_failed']);
+                exit;
+            }
+            $fresh = $pdo->prepare('SELECT c.*, u.full_name AS referred_student_name
+                FROM referral_promo_claims c
+                LEFT JOIN enrollments e ON e.id = c.enrollment_id
+                LEFT JOIN users u ON u.id = e.user_id
+               WHERE c.id = :id LIMIT 1');
+            $fresh->execute([':id' => $claimId]);
+            $freshRow = $fresh->fetch(PDO::FETCH_ASSOC) ?: $claimRow;
+            appLogEvent($pdo, 'referral_ledger_update', 'registrar', 'success', $actorId, 'referral_claim', (string)$claimId, [
+                'action' => $action,
+            ]);
+            echo json_encode([
+                'success' => true,
+                'message' => 'Referrer enrollment email sent.',
+                'claim' => referralPromoClaimToApiPayload($freshRow),
+            ]);
             exit;
         }
 

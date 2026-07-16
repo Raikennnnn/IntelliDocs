@@ -13,6 +13,7 @@ import {
   ExternalLink,
   ChevronLeft,
   ChevronRight,
+  Mail,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -162,7 +163,11 @@ export function ReferralLedger() {
 
   const runAction = async (
     claimId: number,
-    action: "mark_freebie_given" | "mark_first_semester_complete" | "mark_incentive_paid",
+    action:
+      | "mark_freebie_given"
+      | "mark_first_semester_complete"
+      | "mark_incentive_paid"
+      | "resend_referrer_enrolled_email",
   ) => {
     setActionBusyId(claimId);
     try {
@@ -397,6 +402,11 @@ export function ReferralLedger() {
                       claim.referrerIncentiveStatus === "pending";
                     const canMarkPaid = !isVoid && claim.referrerIncentiveStatus === "eligible";
                     const canVoid = !isVoid && claim.referrerIncentiveStatus !== "paid";
+                    const canResendEmail =
+                      !isVoid &&
+                      !!claim.enrollmentId &&
+                      !!claim.referrerEmail &&
+                      claim.referrerEmail.includes("@");
 
                     return (
                       <TableRow key={claim.id}>
@@ -430,6 +440,14 @@ export function ReferralLedger() {
                               {claim.referrerTypeLabel} · {claim.referrerContactNumber}
                               {claim.referrerEmail ? ` · ${claim.referrerEmail}` : ''}
                             </p>
+                          )}
+                          {!claim.isPreissued && claim.referrerNotifiedAt && (
+                            <p className="text-xs text-green-700 mt-1">
+                              Enrollment notice sent {claim.referrerNotifiedAt.slice(0, 16).replace('T', ' ')}
+                            </p>
+                          )}
+                          {!claim.isPreissued && claim.enrollmentId && claim.referrerEmail && !claim.referrerNotifiedAt && (
+                            <p className="text-xs text-amber-700 mt-1">Enrollment notice not sent yet</p>
                           )}
                         </TableCell>
                         <TableCell>
@@ -481,6 +499,17 @@ export function ReferralLedger() {
                               >
                                 <Banknote className="w-3.5 h-3.5 mr-1" />
                                 Mark paid
+                              </Button>
+                            )}
+                            {canResendEmail && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={busy}
+                                onClick={() => void runAction(claim.id, "resend_referrer_enrolled_email")}
+                              >
+                                <Mail className="w-3.5 h-3.5 mr-1" />
+                                {claim.referrerNotifiedAt ? "Resend email" : "Email referrer"}
                               </Button>
                             )}
                             {canVoid && (
@@ -569,10 +598,10 @@ export function ReferralLedger() {
               <Input
                 id="preissue-start"
                 inputMode="numeric"
-                maxLength={4}
+                maxLength={5}
                 value={preissueStart}
                 onChange={(e) => setPreissueStart(e.target.value)}
-                placeholder="0001"
+                placeholder="00001"
               />
             </div>
           </div>

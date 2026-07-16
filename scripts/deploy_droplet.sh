@@ -218,6 +218,37 @@ wait_for_ai_health() {
   return 1
 }
 
+write_ai_queue_timer_units() {
+  cat > /etc/systemd/system/intellidocs-ai-queue.service <<UNIT
+[Unit]
+Description=IntelliDocs AI verification queue (one batch)
+After=network.target intellidocs-ai.service mysql.service mariadb.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=${APP_ROOT}
+Environment=AI_BASE_URL=http://127.0.0.1:8080
+ExecStart=/usr/bin/php ${APP_ROOT}/scripts/process_ai_verification_queue.php --max=1
+Nice=5
+UNIT
+
+  cat > /etc/systemd/system/intellidocs-ai-queue.timer <<UNIT
+[Unit]
+Description=Run IntelliDocs AI verification queue every 30 seconds
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=intellidocs-ai-queue.service
+
+[Install]
+WantedBy=timers.target
+UNIT
+}
+
 step "Install / update AI systemd unit"
 write_ai_systemd_unit
 systemctl daemon-reload
@@ -230,6 +261,13 @@ if ! wait_for_ai_health 90; then
   journalctl -u intellidocs-ai -n 30 --no-pager || true
   exit 1
 fi
+
+step "Install / enable AI verification queue timer"
+write_ai_queue_timer_units
+systemctl daemon-reload
+systemctl enable intellidocs-ai-queue.timer
+systemctl restart intellidocs-ai-queue.timer
+systemctl --no-pager --full status intellidocs-ai-queue.timer || true
 
 step "Configure nginx/PHP timeouts for long AI OCR"
 if [ -f "$APP_ROOT/scripts/configure_nginx_ai_timeouts.sh" ]; then

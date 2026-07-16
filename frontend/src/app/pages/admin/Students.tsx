@@ -9,13 +9,11 @@ import { Alert, AlertDescription } from '../../components/ui/alert';
 import { formatStrandSectionTitle } from '../../lib/strands';
 
 /**
- * Admin Students directory.
+ * Admin Students directory — enrolled roster by default.
  *
- * Distinct from `admin/UserManagement.tsx` (which manages all user accounts):
- * this page only lists students and lets the admin filter / search across the
- * latest enrollment record per student. Names are pulled from the enrollment
- * data so the directory is meaningful even before the registrar has issued
- * credentials.
+ * Distinct from `admin/UserManagement.tsx` (accounts) and from Registrar
+ * Applications (open enrollments). Defaults to Enrolled so drafts / pending
+ * apps are not mixed into the student list; status filter can still widen.
  */
 
 type Student = {
@@ -62,6 +60,7 @@ const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
 function statusBadgeClass(raw: string): string {
   switch ((raw || '').toLowerCase()) {
     case 'approved':
+    case 'enrolled':
       return 'bg-green-600 text-white';
     case 'rejected':
       return 'bg-red-600 text-white';
@@ -85,7 +84,7 @@ export function Students() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [grade, setGrade] = useState<string>('all');
-  const [status, setStatus] = useState<string>('all');
+  const [status, setStatus] = useState<string>('approved');
   const [strand, setStrand] = useState<string>('all');
   const [schoolYear, setSchoolYear] = useState<string>('all');
   const [strandOptions, setStrandOptions] = useState<string[]>([]);
@@ -107,7 +106,7 @@ export function Students() {
         const params = new URLSearchParams();
         if (debouncedSearch) params.set('q', debouncedSearch);
         if (grade !== 'all') params.set('grade_level', grade);
-        if (status !== 'all') params.set('status', status);
+        params.set('status', status);
         if (strand !== 'all') params.set('strand', strand);
         if (schoolYear !== 'all') params.set('school_year', schoolYear);
 
@@ -162,8 +161,8 @@ export function Students() {
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Students</h1>
         <p className="text-sm text-gray-600">
-          Directory of student accounts pulled from enrollment records. Names come from the
-          latest enrollment a student has on file.
+          Enrolled student roster. Open applications stay with the registrar; use Status if you
+          need drafts or pending reviews.
         </p>
       </div>
 
@@ -243,7 +242,11 @@ export function Students() {
       <Card>
         <CardHeader>
           <CardTitle>{`${students.length} student${students.length === 1 ? '' : 's'}`}</CardTitle>
-          <CardDescription>Showing the latest enrollment record per student.</CardDescription>
+          <CardDescription>
+            {status === 'approved'
+              ? 'Enrolled students only (latest enrollment per account).'
+              : 'Showing the latest enrollment record per student.'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (

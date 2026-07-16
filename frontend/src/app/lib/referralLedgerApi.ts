@@ -27,6 +27,7 @@ export type ReferralLedgerClaim = {
   referrerIncentiveStatus: string;
   referrerIncentiveStatusLabel: string;
   claimedAt: string;
+  referrerNotifiedAt: string;
   firstSemesterCompletedAt: string;
   voidReason: string;
   isPreissued: boolean;
@@ -52,7 +53,8 @@ export type ReferralLedgerAction =
   | "mark_freebie_given"
   | "mark_first_semester_complete"
   | "mark_incentive_paid"
-  | "void";
+  | "void"
+  | "resend_referrer_enrolled_email";
 
 type ReferralLedgerActionResponse = {
   success: boolean;

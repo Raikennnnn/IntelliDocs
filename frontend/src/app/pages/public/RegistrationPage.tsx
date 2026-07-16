@@ -37,6 +37,35 @@ export function RegistrationPage() {
   const [dpaAccepted, setDpaAccepted] = useState(false);
   const [showPasswordHints, setShowPasswordHints] = useState(false);
   const [openLegalDoc, setOpenLegalDoc] = useState<LegalDocumentId | null>(null);
+  const [readLegalDocs, setReadLegalDocs] = useState({
+    terms: false,
+    privacy: false,
+    dpa: false,
+  });
+
+  const termsPrivacyUnlocked = readLegalDocs.terms && readLegalDocs.privacy;
+  const dpaUnlocked = readLegalDocs.dpa;
+
+  const openLegalDocument = (docId: LegalDocumentId) => {
+    setReadLegalDocs((prev) => ({ ...prev, [docId]: true }));
+    setOpenLegalDoc(docId);
+  };
+
+  const handleTermsPrivacyCheck = (checked: boolean | 'indeterminate') => {
+    if (!termsPrivacyUnlocked) {
+      toast.error('Open and read the Terms of Use and Privacy Policy first, then check this box.');
+      return;
+    }
+    setTermsPrivacyAccepted(checked === true);
+  };
+
+  const handleDpaCheck = (checked: boolean | 'indeterminate') => {
+    if (!dpaUnlocked) {
+      toast.error('Open and read the Data Processing Agreement (DPA) first, then check this box.');
+      return;
+    }
+    setDpaAccepted(checked === true);
+  };
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -437,28 +466,51 @@ export function RegistrationPage() {
                     Required agreements
                   </p>
                   <div className="flex items-start gap-2">
-                    <Checkbox
-                      id="terms-privacy"
-                      checked={termsPrivacyAccepted}
-                      onCheckedChange={(checked) => setTermsPrivacyAccepted(checked === true)}
-                      className="mt-0.5 size-4 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white"
-                    />
+                    <span
+                      className="mt-0.5 inline-flex"
+                      onClick={() => {
+                        if (!termsPrivacyUnlocked) {
+                          toast.error('Open and read the Terms of Use and Privacy Policy first, then check this box.');
+                        }
+                      }}
+                    >
+                      <Checkbox
+                        id="terms-privacy"
+                        checked={termsPrivacyAccepted}
+                        disabled={!termsPrivacyUnlocked}
+                        onCheckedChange={handleTermsPrivacyCheck}
+                        className="size-4 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    </span>
                     <div className="min-w-0 flex-1 text-xs leading-snug text-gray-700 break-words">
-                      <label htmlFor="terms-privacy" className="cursor-pointer font-normal">
+                      <label
+                        htmlFor="terms-privacy"
+                        className={termsPrivacyUnlocked ? 'cursor-pointer font-normal' : 'cursor-not-allowed font-normal text-gray-500'}
+                        onClick={(e) => {
+                          if (!termsPrivacyUnlocked) {
+                            e.preventDefault();
+                            toast.error('Open and read the Terms of Use and Privacy Policy first, then check this box.');
+                          }
+                        }}
+                      >
                         I have read and agree to the
                       </label>{' '}
                       <button
                         type="button"
-                        onClick={() => setOpenLegalDoc('terms')}
-                        className="font-semibold text-[#8B1538] hover:underline"
+                        onClick={() => openLegalDocument('terms')}
+                        className={`font-semibold hover:underline ${
+                          readLegalDocs.terms ? 'text-[#2D5016]' : 'text-[#8B1538]'
+                        }`}
                       >
                         NSDGA Terms of Use
                       </button>{' '}
                       <span className="text-gray-600">and</span>{' '}
                       <button
                         type="button"
-                        onClick={() => setOpenLegalDoc('privacy')}
-                        className="font-semibold text-[#8B1538] hover:underline"
+                        onClick={() => openLegalDocument('privacy')}
+                        className={`font-semibold hover:underline ${
+                          readLegalDocs.privacy ? 'text-[#2D5016]' : 'text-[#8B1538]'
+                        }`}
                       >
                         Privacy Policy
                       </button>
@@ -466,20 +518,41 @@ export function RegistrationPage() {
                     </div>
                   </div>
                   <div className="flex items-start gap-2">
-                    <Checkbox
-                      id="dpa"
-                      checked={dpaAccepted}
-                      onCheckedChange={(checked) => setDpaAccepted(checked === true)}
-                      className="mt-0.5 size-4 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white"
-                    />
+                    <span
+                      className="mt-0.5 inline-flex"
+                      onClick={() => {
+                        if (!dpaUnlocked) {
+                          toast.error('Open and read the Data Processing Agreement (DPA) first, then check this box.');
+                        }
+                      }}
+                    >
+                      <Checkbox
+                        id="dpa"
+                        checked={dpaAccepted}
+                        disabled={!dpaUnlocked}
+                        onCheckedChange={handleDpaCheck}
+                        className="size-4 shrink-0 border-2 border-gray-500 bg-white shadow-sm data-[state=checked]:border-[#8B1538] data-[state=checked]:bg-[#8B1538] data-[state=checked]:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    </span>
                     <div className="min-w-0 flex-1 text-xs leading-snug text-gray-700 break-words">
-                      <label htmlFor="dpa" className="cursor-pointer font-normal">
+                      <label
+                        htmlFor="dpa"
+                        className={dpaUnlocked ? 'cursor-pointer font-normal' : 'cursor-not-allowed font-normal text-gray-500'}
+                        onClick={(e) => {
+                          if (!dpaUnlocked) {
+                            e.preventDefault();
+                            toast.error('Open and read the Data Processing Agreement (DPA) first, then check this box.');
+                          }
+                        }}
+                      >
                         I consent to the processing of my personal data as described in the
                       </label>{' '}
                       <button
                         type="button"
-                        onClick={() => setOpenLegalDoc('dpa')}
-                        className="font-semibold text-[#8B1538] hover:underline"
+                        onClick={() => openLegalDocument('dpa')}
+                        className={`font-semibold hover:underline ${
+                          readLegalDocs.dpa ? 'text-[#2D5016]' : 'text-[#8B1538]'
+                        }`}
                       >
                         Data Processing Agreement (DPA)
                       </button>
@@ -488,7 +561,9 @@ export function RegistrationPage() {
                   </div>
                   {(!termsPrivacyAccepted || !dpaAccepted) && (
                     <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-snug text-amber-700">
-                      Check both boxes above to continue with registration.
+                      {!termsPrivacyUnlocked || !dpaUnlocked
+                        ? 'Open each linked agreement above, then check both boxes to continue.'
+                        : 'Check both boxes above to continue with registration.'}
                     </p>
                   )}
                 </div>

@@ -126,7 +126,20 @@ function getSystemEmailConfig(PDO $pdo): array
         'emailPassword' => $hasApiKey ? SYSTEM_SETTINGS_MASK : '',
         'otpExpiry' => (string)getOtpExpiryMinutes($pdo),
         'hasApiKey' => $hasApiKey,
+        'emailReferrerOnEnroll' => isReferrerEnrollEmailEnabledFromSetting(
+            readSystemSetting($pdo, 'email_referrer_on_enroll')
+        ),
     ];
+}
+
+function isReferrerEnrollEmailEnabledFromSetting(?string $raw): bool
+{
+    if ($raw === null || trim($raw) === '') {
+        return true;
+    }
+    $v = strtolower(trim($raw));
+
+    return !in_array($v, ['0', 'false', 'off', 'no'], true);
 }
 
 /** @return array<string, array<string, bool>> */
@@ -215,6 +228,15 @@ function saveSystemEmailConfig(PDO $pdo, array $payload): void
 
     $otpExpiry = (int)($payload['otpExpiry'] ?? 10);
     writeSystemSetting($pdo, 'otp_expiry_minutes', (string)max(5, min(60, $otpExpiry)));
+
+    if (array_key_exists('emailReferrerOnEnroll', $payload)) {
+        $enabled = filter_var($payload['emailReferrerOnEnroll'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if ($enabled === null) {
+            $raw = strtolower(trim((string)$payload['emailReferrerOnEnroll']));
+            $enabled = !in_array($raw, ['0', 'false', 'off', 'no', ''], true);
+        }
+        writeSystemSetting($pdo, 'email_referrer_on_enroll', $enabled ? '1' : '0');
+    }
 }
 
 function buildOtpEmailBodyWithExpiry(PDO $pdo, string $otp, string $purpose = 'registration'): string

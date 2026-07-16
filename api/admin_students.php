@@ -2,22 +2,22 @@
 declare(strict_types=1);
 
 /**
- * Admin students directory.
+ * Admin students directory (enrolled roster by default).
  *
  * GET /api/admin/students
  *   ?q=<name fragment>            — match against first/last/full name
  *   &grade_level=11|12|all        — filter by enrollment grade level
  *   &strand=<value>|all           — filter by strand (case-insensitive exact)
  *   &school_year=YYYY-YYYY|current|all — restrict to one SY (default: all)
- *   &status=approved|pending|rejected|all — restrict by enrollment status
+ *   &status=approved|pending|rejected|under_review|draft|all
+ *        Default: approved (matches both approved + enrolled). Use all to
+ *        include open applications; those normally live under Registrar.
  *
  * Auth: X-User-Id must resolve to an admin.
  *
- * The endpoint joins users with the user's *latest* enrollment row (any
- * status) so admins can see students who have submitted but not yet been
- * approved. The `name` returned to the client is built with the same
- * fallback chain admin_users.php uses (users.full_name, structured name
- * columns, enrollment form_data.givenName/lastName, finally username).
+ * Joins users with the user's *latest* enrollment row. Name uses the same
+ * fallback chain as admin_users.php (users.full_name, structured columns,
+ * enrollment form_data, username).
  */
 
 if (!isset($pdo) || !($pdo instanceof PDO)) {
@@ -81,7 +81,7 @@ $rawQ = trim((string)($_GET['q'] ?? ''));
 $gradeFilter = strtolower(trim((string)($_GET['grade_level'] ?? 'all')));
 $strandFilter = trim((string)($_GET['strand'] ?? 'all'));
 $syRaw = trim((string)($_GET['school_year'] ?? 'all'));
-$statusFilter = strtolower(trim((string)($_GET['status'] ?? 'all')));
+$statusFilter = strtolower(trim((string)($_GET['status'] ?? 'approved')));
 
 $syCurrent = getEnrollmentSchoolYear($pdo);
 $syFilter = 'all';
@@ -205,11 +205,15 @@ if ($strandFilter !== '' && strtolower($strandFilter) !== 'all') {
 }
 
 if ($statusFilter !== '' && $statusFilter !== 'all') {
-    // Normalize status: 'approved'|'pending'|'rejected'. Anything else falls back.
-    $allowed = ['approved', 'pending', 'rejected', 'under_review', 'draft'];
-    if (in_array($statusFilter, $allowed, true)) {
-        $whereParts[] = 'LOWER(COALESCE(e.enrollment_status, \'\')) = :status';
-        $bindings[':status'] = $statusFilter;
+    // 'approved' / 'enrolled' both mean Enrolled in the UI.
+    if ($statusFilter === 'approved' || $statusFilter === 'enrolled') {
+        $whereParts[] = "LOWER(COALESCE(e.enrollment_status, '')) IN ('approved', 'enrolled')";
+    } else {
+        $allowed = ['pending', 'rejected', 'under_review', 'draft'];
+        if (in_array($statusFilter, $allowed, true)) {
+            $whereParts[] = 'LOWER(COALESCE(e.enrollment_status, \'\')) = :status';
+            $bindings[':status'] = $statusFilter;
+        }
     }
 }
 

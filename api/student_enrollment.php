@@ -792,7 +792,19 @@ if ($method === 'POST') {
             echo json_encode(['success' => false, 'error' => 'Please select Full Payment or Installment.']);
             exit;
         }
+    } elseif ($paymentArrangement !== '' && !in_array($paymentArrangement, $allowedPaymentArrangements, true)) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'Invalid payment arrangement.']);
+        exit;
+    }
+    $formData['paymentArrangement'] = in_array($paymentArrangement, $allowedPaymentArrangements, true)
+        ? $paymentArrangement
+        : '';
 
+    // Validate Bring a Friend referral info as soon as the student reaches the referral step.
+    // This prevents random control numbers from advancing to the next step; a toast is shown
+    // on the client because this endpoint returns 4xx with a helpful message.
+    if ($currentStep >= 5) {
         require_once __DIR__ . '/referral_promo_helpers.php';
         $referralValidation = validateReferralPromoFormData($formData);
         if ($referralValidation['ok'] !== true) {
@@ -837,14 +849,7 @@ if ($method === 'POST') {
             $formData['referrerContactNumber'] = $referralData['referrer_contact'];
             $formData['referrerEmail'] = $referralData['referrer_email'];
         }
-    } elseif ($paymentArrangement !== '' && !in_array($paymentArrangement, $allowedPaymentArrangements, true)) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'error' => 'Invalid payment arrangement.']);
-        exit;
     }
-    $formData['paymentArrangement'] = in_array($paymentArrangement, $allowedPaymentArrangements, true)
-        ? $paymentArrangement
-        : '';
 
     $physicalBlock = enforceGrade12PhysicalDocsComplete($pdo, $userId, $gradeLevel, $schoolYear);
     if ($physicalBlock !== null) {
@@ -1207,6 +1212,20 @@ if ($method === 'POST') {
 
         if ($pdo->inTransaction()) {
             $pdo->commit();
+        }
+
+        $aiQueueSummary = null;
+        if ($action === 'submit') {
+            require_once __DIR__ . '/ai_verification_queue.php';
+            $aiQueueSummary = enqueueEnrollmentAiVerificationJobs($pdo, $enrollmentId);
+            if (($aiQueueSummary['queued'] ?? 0) > 0) {
+                appLogEvent($pdo, 'ai_verify_queue_enqueue', 'student', 'success', $userId, 'enrollment', (string)$enrollmentId, [
+                    'queued' => (int)$aiQueueSummary['queued'],
+                    'skipped' => (int)($aiQueueSummary['skipped'] ?? 0),
+                    'document_ids' => $aiQueueSummary['document_ids'] ?? [],
+                ]);
+                spawnAiVerificationQueueWorker(dirname(__DIR__));
+            }
         }
 
         if ($documentAuthenticityConsentSaved) {
