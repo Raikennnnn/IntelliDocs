@@ -703,6 +703,11 @@ export function StudentEnrollment() {
   const [isDecliningGrade12, setIsDecliningGrade12] = useState(false);
   const [missingParentDialogOpen, setMissingParentDialogOpen] = useState(false);
   const [missingParentParts, setMissingParentParts] = useState<string[]>([]);
+  /** Live voucher check while typing on the referral step. */
+  const [referralControlCheck, setReferralControlCheck] = useState<
+    'idle' | 'checking' | 'available' | 'used' | 'not_found' | 'invalid' | 'error'
+  >('idle');
+  const referralCheckSeqRef = useRef(0);
   const accountEmail = String(user?.email ?? "").trim();
   const [formData, setFormData] = useState<EnrollmentFormData>(() => ({
     ...INITIAL_ENROLLMENT_FORM_DATA,
@@ -1137,7 +1142,10 @@ export function StudentEnrollment() {
         toast.error(toastMessage, {
           duration: json.grade12_blocked_physical_docs || referralCodes.has(json.code || '') ? 10000 : 5000,
         });
-        if (res.status === 409) {
+        // Referral conflicts use HTTP 409 historically — never treat those as
+        // "already submitted" or the form falsely locks under review.
+        const isReferralConflict = !!(json.code && referralCodes.has(json.code));
+        if (res.status === 409 && !isReferralConflict) {
           setEnrollmentStatusRaw('pending');
           setShowNewEnrollmentForm(false);
           setIsEnrollmentLocked(true);
@@ -1404,6 +1412,7 @@ export function StudentEnrollment() {
   const handleInputChange = (field: keyof EnrollmentFormData, value: string | boolean | null) => {
     if (field === "hasReferralCode") {
       const hasReferral = value === true;
+      setReferralControlCheck('idle');
       setFormData((prev) => ({
         ...prev,
         hasReferralCode: typeof value === "boolean" ? value : null,
@@ -1424,6 +1433,9 @@ export function StudentEnrollment() {
       return;
     }
     const sanitized = sanitizeEnrollmentFieldValue(field, value);
+    if (field === 'referralCardControlNumber') {
+      setReferralControlCheck('idle');
+    }
     if (field === 'middleName') {
       const middleName = UPPERCASE_FIELDS.has(field) ? sanitized.toUpperCase() : sanitized;
       setFormData((prev) => ({
@@ -2074,6 +2086,18 @@ export function StudentEnrollment() {
         toast.error(t('form.val.referralControl'));
         return false;
       }
+      if (referralControlCheck === 'used') {
+        toast.error(t('form.val.referralControlUsed'));
+        return false;
+      }
+      if (referralControlCheck === 'not_found') {
+        toast.error(t('form.val.referralControlNotFound'));
+        return false;
+      }
+      if (referralControlCheck === 'checking') {
+        toast.error(t('form.val.referralControlChecking'));
+        return false;
+      }
       if (!formData.referrerName.trim()) {
         toast.error(t('form.val.referrerName'));
         return false;
@@ -2095,6 +2119,77 @@ export function StudentEnrollment() {
     }
     return true;
   };
+
+  const verifyReferralControlNow = async (
+    controlNumber: string,
+  ): Promise<'available' | 'used' | 'not_found' | 'invalid' | 'error'> => {
+    const digits = controlNumber.replace(/\D/g, '');
+    if (digits.length !== 5) {
+      setReferralControlCheck('invalid');
+      return 'invalid';
+    }
+    const seq = ++referralCheckSeqRef.current;
+    setReferralControlCheck('checking');
+    try {
+      const res = await apiFetch('/api/student/enrollment', {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'check_referral_control',
+          control_number: digits,
+        }),
+      });
+      const json = (await res.json()) as {
+        success?: boolean;
+        available?: boolean;
+        code?: string;
+        error?: string;
+      };
+      if (seq !== referralCheckSeqRef.current) {
+        return 'error';
+      }
+      if (res.ok && json.success && json.available) {
+        setReferralControlCheck('available');
+        return 'available';
+      }
+      const code = String(json.code || '');
+      if (code === 'referral_control_used') {
+        setReferralControlCheck('used');
+        return 'used';
+      }
+      if (code === 'referral_control_not_found') {
+        setReferralControlCheck('not_found');
+        return 'not_found';
+      }
+      if (code === 'referral_control_invalid') {
+        setReferralControlCheck('invalid');
+        return 'invalid';
+      }
+      setReferralControlCheck('error');
+      return 'error';
+    } catch {
+      if (seq === referralCheckSeqRef.current) {
+        setReferralControlCheck('error');
+      }
+      return 'error';
+    }
+  };
+
+  // Live-check referral voucher as soon as 5 digits are entered.
+  useEffect(() => {
+    if (!formData.hasReferralCode) {
+      setReferralControlCheck('idle');
+      return;
+    }
+    const digits = formData.referralCardControlNumber.replace(/\D/g, '');
+    if (digits.length !== 5) {
+      setReferralControlCheck(digits.length === 0 ? 'idle' : 'invalid');
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      void verifyReferralControlNow(digits);
+    }, 350);
+    return () => window.clearTimeout(handle);
+  }, [formData.hasReferralCode, formData.referralCardControlNumber]);
 
   const advanceToNextStep = async () => {
     // Persist the destination step so "Continue enrollment" resumes where the
@@ -2118,7 +2213,28 @@ export function StudentEnrollment() {
     }
     if (currentStep === 3 && !validateStep3()) return;
     if (currentStep === 4 && !validateStep4()) return;
-    if (currentStep === 5 && !validateStep5()) return;
+    if (currentStep === 5) {
+      if (!validateStep5()) return;
+      if (formData.hasReferralCode) {
+        const check = await verifyReferralControlNow(formData.referralCardControlNumber);
+        if (check === 'used') {
+          toast.error(t('form.val.referralControlUsed'));
+          return;
+        }
+        if (check === 'not_found') {
+          toast.error(t('form.val.referralControlNotFound'));
+          return;
+        }
+        if (check === 'invalid') {
+          toast.error(t('form.val.referralControl'));
+          return;
+        }
+        if (check !== 'available') {
+          toast.error(t('form.val.referralGeneric'));
+          return;
+        }
+      }
+    }
     await advanceToNextStep();
   };
 
@@ -2139,6 +2255,24 @@ export function StudentEnrollment() {
     if (!validateStep3()) return;
     if (!validateStep4()) return;
     if (!validateStep5()) return;
+    if (formData.hasReferralCode) {
+      const check = await verifyReferralControlNow(formData.referralCardControlNumber);
+      if (check === 'used') {
+        toast.error(t('form.val.referralControlUsed'));
+        setCurrentStep(5);
+        return;
+      }
+      if (check === 'not_found') {
+        toast.error(t('form.val.referralControlNotFound'));
+        setCurrentStep(5);
+        return;
+      }
+      if (check !== 'available') {
+        toast.error(t('form.val.referralGeneric'));
+        setCurrentStep(5);
+        return;
+      }
+    }
     if (!formData.modeOfPayment?.trim()) {
       toast.error(t('form.val.paymentSelect'));
       return;
@@ -3676,7 +3810,33 @@ export function StudentEnrollment() {
                         value={formData.referralCardControlNumber}
                         onChange={(e) => handleInputChange('referralCardControlNumber', e.target.value)}
                         placeholder={t('form.ph.referralControl')}
+                        className={
+                          referralControlCheck === 'used' || referralControlCheck === 'not_found'
+                            ? 'border-red-500 focus-visible:ring-red-500'
+                            : referralControlCheck === 'available'
+                              ? 'border-green-600 focus-visible:ring-green-600'
+                              : undefined
+                        }
+                        aria-invalid={
+                          referralControlCheck === 'used' || referralControlCheck === 'not_found'
+                        }
                       />
+                      {referralControlCheck === 'checking' && (
+                        <p className="text-xs text-gray-500">{t('form.val.referralControlChecking')}</p>
+                      )}
+                      {referralControlCheck === 'available' && (
+                        <p className="text-xs text-green-700">{t('form.val.referralControlAvailable')}</p>
+                      )}
+                      {referralControlCheck === 'used' && (
+                        <p className="text-xs text-red-600">{t('form.val.referralControlUsed')}</p>
+                      )}
+                      {referralControlCheck === 'not_found' && (
+                        <p className="text-xs text-red-600">{t('form.val.referralControlNotFound')}</p>
+                      )}
+                      {referralControlCheck === 'invalid' &&
+                        formData.referralCardControlNumber.replace(/\D/g, '').length > 0 && (
+                          <p className="text-xs text-red-600">{t('form.val.referralControl')}</p>
+                        )}
                     </div>
                     <div className="space-y-2">
                       <RequiredLabel htmlFor="referrerName">{t('form.payment.referrerName')}</RequiredLabel>
@@ -3956,7 +4116,13 @@ export function StudentEnrollment() {
                 isSaving ||
                 isEnrollmentLocked ||
                 !enrollmentAllowed ||
-                (currentStep === 4 && !documentsAuthenticityConfirmed && !lockGrade12PrefilledSections)
+                (currentStep === 4 && !documentsAuthenticityConfirmed && !lockGrade12PrefilledSections) ||
+                (currentStep === 5 &&
+                  formData.hasReferralCode === true &&
+                  (referralControlCheck === 'used' ||
+                    referralControlCheck === 'not_found' ||
+                    referralControlCheck === 'checking' ||
+                    referralControlCheck === 'invalid'))
               }
               className="bg-[#8B1538] hover:bg-[#8B1538]/90 text-white"
             >

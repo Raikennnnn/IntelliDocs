@@ -279,6 +279,8 @@ const messages = {
       'This referral control number was not issued for this school year. Check the number on your Bring a Friend card.',
     'form.val.referralControlUsed':
       'This referral card has already been used. Ask your referrer for a different card or choose No if you do not have one.',
+    'form.val.referralControlAvailable': 'This referral card is available.',
+    'form.val.referralControlChecking': 'Checking referral card…',
     'form.val.referralGeneric': 'Could not verify your referral card. Please check your details and try again.',
     'form.val.referrerName': "Referrer's name is required.",
     'form.val.referrerContact': "Referrer's contact number must be 11 digits starting with 09.",
@@ -604,6 +606,8 @@ const messages = {
       'Hindi inisyu ang control number na ito para sa school year na ito. Suriin ang numero sa iyong Bring a Friend card.',
     'form.val.referralControlUsed':
       'Nagamit na ang referral card na ito. Humingi ng ibang card sa referrer mo, o piliin ang Hindi kung wala ka nito.',
+    'form.val.referralControlAvailable': 'Available ang referral card na ito.',
+    'form.val.referralControlChecking': 'Tinitingnan ang referral card…',
     'form.val.referralGeneric': 'Hindi ma-verify ang referral card. Suriin ang iyong detalye at subukang muli.',
     'form.val.referrerName': 'Kailangan ang pangalan ng referrer.',
     'form.val.referrerContact': 'Ang numero ng referrer ay dapat 11 digit na nagsisimula sa 09.',

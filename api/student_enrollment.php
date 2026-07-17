@@ -584,6 +584,57 @@ if ($method === 'POST') {
 
     $action = strtolower(trim((string)($payload['action'] ?? 'save_draft')));
 
+    if ($action === 'check_referral_control') {
+        require_once __DIR__ . '/referral_promo_helpers.php';
+        $control = normalizeReferralControlNumber((string)($payload['control_number'] ?? ''));
+        if ($control === '' || !preg_match('/^\d{5}$/', $control)) {
+            http_response_code(400);
+            echo json_encode([
+                'success' => false,
+                'available' => false,
+                'error' => 'Referral card control number must be a 5-digit number.',
+                'code' => 'referral_control_invalid',
+            ]);
+            exit;
+        }
+        $schoolYear = trim((string)(getEnrollmentSchoolYear($pdo) ?? ''));
+        if ($schoolYear === '') {
+            http_response_code(503);
+            echo json_encode(['success' => false, 'available' => false, 'error' => 'Enrollment is closed.']);
+            exit;
+        }
+        $existingIdForReferral = 0;
+        try {
+            $earlyExistingStmt = $pdo->prepare(
+                'SELECT id FROM enrollments
+                  WHERE user_id = :user_id AND TRIM(COALESCE(school_year, \'\')) = :sy
+                  ORDER BY id DESC LIMIT 1'
+            );
+            $earlyExistingStmt->execute([':user_id' => $userId, ':sy' => $schoolYear]);
+            $existingIdForReferral = (int)($earlyExistingStmt->fetchColumn() ?: 0);
+        } catch (Throwable $e) {
+            $existingIdForReferral = 0;
+        }
+        $availability = validateReferralControlAvailable($pdo, $schoolYear, $control, $existingIdForReferral);
+        if (($availability['ok'] ?? false) !== true) {
+            http_response_code(400);
+            echo json_encode([
+                'success' => false,
+                'available' => false,
+                'error' => (string)($availability['error'] ?? 'Referral card is not available.'),
+                'code' => (string)($availability['code'] ?? 'referral_control_used'),
+                'controlNumber' => $control,
+            ]);
+            exit;
+        }
+        echo json_encode([
+            'success' => true,
+            'available' => true,
+            'controlNumber' => $control,
+        ]);
+        exit;
+    }
+
     if ($action === 'decline_grade12_continuation') {
         grade12DeclineMigrateSchema($pdo);
         $syCurrent = getEnrollmentSchoolYear($pdo);
@@ -837,7 +888,7 @@ if ($method === 'POST') {
                 $existingIdForReferral
             );
             if ($controlAvailability['ok'] !== true) {
-                http_response_code(409);
+                http_response_code(400);
                 echo json_encode([
                     'success' => false,
                     'error' => (string)($controlAvailability['error'] ?? 'Referral card already used.'),
