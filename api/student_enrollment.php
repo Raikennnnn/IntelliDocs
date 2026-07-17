@@ -801,10 +801,10 @@ if ($method === 'POST') {
         ? $paymentArrangement
         : '';
 
-    // Validate Bring a Friend referral info as soon as the student reaches the referral step.
-    // This prevents random control numbers from advancing to the next step; a toast is shown
-    // on the client because this endpoint returns 4xx with a helpful message.
-    if ($currentStep >= 5) {
+    // Referral fields live on step 5. Draft saves from Documents use current_step=5
+    // (destination / resume step) before the student has filled referral — do not
+    // block that. Validate when leaving referral (destination step >= 6) or on submit.
+    if ($action === 'submit' || $currentStep >= 6) {
         require_once __DIR__ . '/referral_promo_helpers.php';
         $referralValidation = validateReferralPromoFormData($formData);
         if ($referralValidation['ok'] !== true) {
