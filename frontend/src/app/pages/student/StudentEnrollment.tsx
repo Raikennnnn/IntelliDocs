@@ -2277,7 +2277,11 @@ export function StudentEnrollment() {
       toast.error(t('form.val.paymentSelect'));
       return;
     }
-    if (formData.paymentArrangement !== 'full_payment' && formData.paymentArrangement !== 'installment') {
+    if (
+      formData.modeOfPayment === 'cash' &&
+      formData.paymentArrangement !== 'full_payment' &&
+      formData.paymentArrangement !== 'installment'
+    ) {
       toast.error(t('form.val.paymentArrangementSelect'));
       return;
     }
@@ -3905,7 +3909,13 @@ export function StudentEnrollment() {
                           name="modeOfPayment"
                           value={option.value}
                           checked={formData.modeOfPayment === option.value}
-                          onChange={(e) => handleInputChange('modeOfPayment', e.target.value)}
+                          onChange={(e) => {
+                            const nextMode = e.target.value;
+                            handleInputChange('modeOfPayment', nextMode);
+                            if (nextMode !== 'cash') {
+                              handleInputChange('paymentArrangement', '');
+                            }
+                          }}
                           className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
                         />
                         <span>{option.label}</span>
@@ -3918,29 +3928,31 @@ export function StudentEnrollment() {
                   </p>
                 </div>
 
-                <div className="space-y-4 mt-8 pt-6 border-t">
-                  <RequiredLabel className="mb-3 block">{t('form.payment.arrangement')}</RequiredLabel>
-                  <div className="space-y-2">
-                    {paymentArrangementOptions.map((option) => (
-                      <label key={option.value} className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="paymentArrangement"
-                          value={option.value}
-                          checked={formData.paymentArrangement === option.value}
-                          onChange={(e) =>
-                            handleInputChange(
-                              'paymentArrangement',
-                              e.target.value as EnrollmentFormData['paymentArrangement'],
-                            )
-                          }
-                          className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
-                        />
-                        <span>{option.label}</span>
-                      </label>
-                    ))}
+                {formData.modeOfPayment === 'cash' && (
+                  <div className="space-y-4 mt-8 pt-6 border-t">
+                    <RequiredLabel className="mb-3 block">{t('form.payment.arrangement')}</RequiredLabel>
+                    <div className="space-y-2">
+                      {paymentArrangementOptions.map((option) => (
+                        <label key={option.value} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="paymentArrangement"
+                            value={option.value}
+                            checked={formData.paymentArrangement === option.value}
+                            onChange={(e) =>
+                              handleInputChange(
+                                'paymentArrangement',
+                                e.target.value as EnrollmentFormData['paymentArrangement'],
+                              )
+                            }
+                            className="w-4 h-4 text-[#8B1538] border-gray-300 focus:ring-[#8B1538]"
+                          />
+                          <span>{option.label}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -4048,10 +4060,12 @@ export function StudentEnrollment() {
                       <p className="text-gray-600">{t('form.payment.mode')}</p>
                       <p className="font-medium">{displayEnrollmentText(formData.modeOfPayment)}</p>
                     </div>
-                    <div>
-                      <p className="text-gray-600">{t('form.payment.arrangement')}</p>
-                      <p className="font-medium">{formatPaymentArrangementDisplay(formData.paymentArrangement)}</p>
-                    </div>
+                    {formData.modeOfPayment === 'cash' && (
+                      <div>
+                        <p className="text-gray-600">{t('form.payment.arrangement')}</p>
+                        <p className="font-medium">{formatPaymentArrangementDisplay(formData.paymentArrangement)}</p>
+                      </div>
+                    )}
                     <div>
                       <p className="text-gray-600">{t('form.review.voucherNo')}</p>
                       <p className="font-medium text-gray-700">

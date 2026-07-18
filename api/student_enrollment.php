@@ -835,10 +835,15 @@ if ($method === 'POST') {
         }
     }
 
+    $modeOfPayment = strtolower(trim((string)($formData['modeOfPayment'] ?? '')));
     $paymentArrangement = strtolower(trim((string)($formData['paymentArrangement'] ?? '')));
     $allowedPaymentArrangements = ['full_payment', 'installment'];
+    // Full Payment / Installment only applies to cash. Vouchers must not require it.
+    if ($modeOfPayment !== 'cash') {
+        $paymentArrangement = '';
+    }
     if ($action === 'submit') {
-        if (!in_array($paymentArrangement, $allowedPaymentArrangements, true)) {
+        if ($modeOfPayment === 'cash' && !in_array($paymentArrangement, $allowedPaymentArrangements, true)) {
             http_response_code(400);
             echo json_encode(['success' => false, 'error' => 'Please select Full Payment or Installment.']);
             exit;
