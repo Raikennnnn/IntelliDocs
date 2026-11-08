@@ -108,6 +108,7 @@ frontend/dist/
 frontend/.vite/
 frontend/.env
 frontend/.env.local
+frontend/.env.production
 
 #-------------------------
 # Project-level secrets
@@ -163,3 +164,19 @@ _modules/*
 
 # Per-server session invalidation marker (bumped on restart)
 /var/server_boot_epoch
+
+# Local production data and generated public deployment output
+/backups/
+/uploads/
+/public/app/
+/public/assets/
+/public/report-assets/
+/public/index.html
+/public/favicon.png
+/public/favicon.ico
+/public/apple-touch-icon.png
+
+# Local AI experiments and extracted documents
+/ai/test_*.py
+/ai/_*
+/docs/_paper_extract.txt
