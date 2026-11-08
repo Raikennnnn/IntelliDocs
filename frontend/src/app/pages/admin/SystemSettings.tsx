@@ -70,6 +70,12 @@ type RolePermissions = {
   };
 };
 
+type LoginOtpRoles = {
+  student: boolean;
+  registrar: boolean;
+  admin: boolean;
+};
+
 type MailHealth = {
   ready: boolean;
   provider: string;
@@ -78,6 +84,12 @@ type MailHealth = {
 };
 
 const ROLE_LABELS: Record<keyof RolePermissions, string> = {
+  student: "Student",
+  registrar: "Registrar",
+  admin: "Admin",
+};
+
+const LOGIN_OTP_ROLE_LABELS: Record<keyof LoginOtpRoles, string> = {
   student: "Student",
   registrar: "Registrar",
   admin: "Admin",
@@ -185,6 +197,8 @@ export function SystemSettings() {
 
   const [permissions, setPermissions] = useState<RolePermissions>(defaultPermissions);
   const [savedPermissions, setSavedPermissions] = useState<RolePermissions>(defaultPermissions);
+  const [loginOtpRoles, setLoginOtpRoles] = useState<LoginOtpRoles>({ student: true, registrar: true, admin: true });
+  const [savedLoginOtpRoles, setSavedLoginOtpRoles] = useState<LoginOtpRoles>({ student: true, registrar: true, admin: true });
   const [permissionsConfirmOpen, setPermissionsConfirmOpen] = useState(false);
 
   const loadSettings = useCallback(async () => {
@@ -220,6 +234,17 @@ export function SystemSettings() {
         const loaded = clonePermissions(perms);
         setPermissions(loaded);
         setSavedPermissions(loaded);
+      }
+
+      const otpRoles = json.loginOtpRoles as Partial<LoginOtpRoles> | undefined;
+      if (otpRoles) {
+        const loadedOtpRoles: LoginOtpRoles = {
+          student: otpRoles.student !== false,
+          registrar: otpRoles.registrar !== false,
+          admin: otpRoles.admin !== false,
+        };
+        setLoginOtpRoles(loadedOtpRoles);
+        setSavedLoginOtpRoles(loadedOtpRoles);
       }
 
       const health = json.mailHealth as MailHealth | undefined;
@@ -296,6 +321,31 @@ export function SystemSettings() {
     }
   };
 
+  const handleSaveLoginOtpRoles = async () => {
+    setSavingPermissions(true);
+    try {
+      const res = await apiFetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save",
+          section: "otp",
+          loginOtpRoles,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || "Failed to save OTP settings");
+      }
+      setSavedLoginOtpRoles({ ...loginOtpRoles });
+      toast.success("Login OTP settings saved");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save OTP settings");
+    } finally {
+      setSavingPermissions(false);
+    }
+  };
+
   const permissionChanges = useMemo(
     () => summarizePermissionChanges(savedPermissions, permissions),
     [savedPermissions, permissions],
@@ -303,6 +353,8 @@ export function SystemSettings() {
 
   const permissionsDirty =
     permissionChanges.disabled.length > 0 || permissionChanges.enabled.length > 0;
+  const loginOtpRolesDirty = (Object.keys(LOGIN_OTP_ROLE_LABELS) as Array<keyof LoginOtpRoles>)
+    .some((role) => loginOtpRoles[role] !== savedLoginOtpRoles[role]);
 
   const handleTestEmail = async () => {
     setTestingEmail(true);
@@ -633,6 +685,51 @@ export function SystemSettings() {
               Send Test Email
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Shield className="w-5 h-5 text-[#8B1538]" />
+            Login OTP by Role
+          </CardTitle>
+          <CardDescription>
+            Turn login OTP on or off for each role. OTP remains enabled by default.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Alert className="border-orange-300 bg-orange-50">
+            <AlertCircle className="h-4 w-4 text-orange-700" />
+            <AlertDescription className="text-gray-700">
+              Disabling OTP reduces sign-in protection for that role. This affects login only;
+              registration email verification and password-reset OTP remain unchanged.
+            </AlertDescription>
+          </Alert>
+          {(Object.keys(LOGIN_OTP_ROLE_LABELS) as Array<keyof LoginOtpRoles>).map((role) => (
+            <div key={role} className="flex items-center justify-between rounded-md border border-gray-200 p-4">
+              <div>
+                <p className="text-sm font-medium text-gray-900">{LOGIN_OTP_ROLE_LABELS[role]} login OTP</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {loginOtpRoles[role] ? "Users must enter an email OTP after their password." : "Users sign in with their password only."}
+                </p>
+              </div>
+              <Switch
+                checked={loginOtpRoles[role]}
+                onCheckedChange={(checked) => setLoginOtpRoles({ ...loginOtpRoles, [role]: checked })}
+                disabled={loading || savingPermissions}
+                aria-label={`${LOGIN_OTP_ROLE_LABELS[role]} login OTP`}
+              />
+            </div>
+          ))}
+          <Button
+            onClick={() => void handleSaveLoginOtpRoles()}
+            className="bg-[#2D5016] hover:bg-[#2D5016]/90 text-white"
+            disabled={loading || savingPermissions || !loginOtpRolesDirty}
+          >
+            {savingPermissions ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+            Save login OTP settings
+          </Button>
         </CardContent>
       </Card>
 

@@ -527,13 +527,26 @@ if (!function_exists('loginOtpRequired')) {
 }
 
 if (!function_exists('loginOtpRequiredForRole')) {
-    /** Login MFA after password for all portal roles when AUTH_LOGIN_OTP_REQUIRED is on. */
-    function loginOtpRequiredForRole(string $role): bool
+    /** Login MFA after password, controlled globally and per role. */
+    function loginOtpRequiredForRole(string $role, ?PDO $pdo = null): bool
     {
         if (!loginOtpRequired()) {
             return false;
         }
         $r = strtolower(trim($role));
-        return in_array($r, ['admin', 'registrar', 'student'], true);
+        if (!in_array($r, ['admin', 'registrar', 'student'], true)) {
+            return false;
+        }
+
+        if ($pdo !== null && function_exists('getLoginOtpRoleSettings')) {
+            try {
+                $settings = getLoginOtpRoleSettings($pdo);
+                return (bool)($settings[$r] ?? true);
+            } catch (Throwable $e) {
+                // Preserve the existing secure default if settings cannot be read.
+            }
+        }
+
+        return true;
     }
 }

@@ -670,7 +670,7 @@ if ($action === 'login') {
 
         $accountEmail = strtolower(trim((string)($user['email'] ?? '')));
 
-        if (loginOtpRequiredForRole($resolvedRole)) {
+        if (loginOtpRequiredForRole($resolvedRole, $pdo)) {
             ensureOtpTable($pdo);
             $otpMinutes = getOtpExpiryMinutes($pdo);
             $otpCode = issueLoginOtp($pdo, $accountEmail, $otpMinutes, false);

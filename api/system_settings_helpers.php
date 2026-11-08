@@ -68,6 +68,52 @@ function getOtpExpiryMinutes(PDO $pdo): int
     return max(5, min(60, $minutes));
 }
 
+/** @return array{student: bool, registrar: bool, admin: bool} */
+function defaultLoginOtpRoleSettings(): array
+{
+    return [
+        'student' => true,
+        'registrar' => true,
+        'admin' => true,
+    ];
+}
+
+/** @return array{student: bool, registrar: bool, admin: bool} */
+function getLoginOtpRoleSettings(PDO $pdo): array
+{
+    $defaults = defaultLoginOtpRoleSettings();
+    $raw = readSystemSetting($pdo, 'login_otp_role_settings');
+    if ($raw === null) {
+        return $defaults;
+    }
+
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded)) {
+        return $defaults;
+    }
+
+    foreach ($defaults as $role => $defaultValue) {
+        if (array_key_exists($role, $decoded)) {
+            $defaults[$role] = (bool)$decoded[$role];
+        }
+    }
+
+    return $defaults;
+}
+
+/** @param array<string, mixed> $settings */
+function saveLoginOtpRoleSettings(PDO $pdo, array $settings): void
+{
+    $merged = defaultLoginOtpRoleSettings();
+    foreach ($merged as $role => $_default) {
+        if (array_key_exists($role, $settings)) {
+            $merged[$role] = filter_var($settings[$role], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool)$settings[$role];
+        }
+    }
+
+    writeSystemSetting($pdo, 'login_otp_role_settings', json_encode($merged, JSON_UNESCAPED_UNICODE));
+}
+
 /**
  * Push DB mail overrides into the current request environment.
  */

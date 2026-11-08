@@ -38,6 +38,7 @@ try {
             'success' => true,
             'email' => getSystemEmailConfig($pdo),
             'permissions' => getRolePermissions($pdo),
+            'loginOtpRoles' => getLoginOtpRoleSettings($pdo),
             'mailHealth' => [
                 'ready' => (bool)($mailReport['ready'] ?? false),
                 'provider' => (string)($mailReport['provider'] ?? ''),
@@ -215,6 +216,14 @@ try {
         }
     }
 
+    if ($section === 'otp' || $section === 'all') {
+        requireActorPermission($pdo, $actor, 'manageRoles', false);
+        $otpRoles = $payload['loginOtpRoles'] ?? null;
+        if (is_array($otpRoles)) {
+            saveLoginOtpRoleSettings($pdo, $otpRoles);
+        }
+    }
+
     appLogEvent($pdo, 'admin_settings', 'admin', 'success', $actorId, 'endpoint', 'admin/settings', [
         'action' => 'save',
         'section' => $section,
@@ -225,6 +234,7 @@ try {
         'message' => 'Settings saved',
         'email' => getSystemEmailConfig($pdo),
         'permissions' => getRolePermissions($pdo),
+        'loginOtpRoles' => getLoginOtpRoleSettings($pdo),
     ]);
 } catch (Throwable $e) {
     appLogEvent($pdo, 'admin_settings', 'admin', 'failed', $actorId, 'endpoint', 'admin/settings', ['reason' => 'server_error']);
